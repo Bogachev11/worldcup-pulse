@@ -1,306 +1,261 @@
-// app.js — MONUMENT orchestrator.
-// Fetches the tournament (real /api/monument, falling back to sample-monument.json),
-// owns the single full-screen canvas, drives the MACRO view + time scrubber, and
-// handles the smooth zoom into / out of the MICRO single-match replay.
+// app.js — orchestrator for World Cup Pulse (RICH rebuild).
+// Owns the single full-screen stage canvas, the rAF loop, DPR/resize guard,
+// view switching (MACRO organism <-> MICRO hero match), the dense HUD DOM, the
+// scrubbers, hover labels, and the zoom transition.
 
-import { MonumentView } from './monument.js';
-import { MatchView } from './match.js';
-import { clamp, lerp, easeInOutCubic } from './lib.js';
+import { clamp, rgbStr } from './lib.js';
+import { Monument } from './monument.js';
+import { MicroView } from './match.js';
 
 const canvas = document.getElementById('stage');
 const ctx = canvas.getContext('2d');
-const el = (id) => document.getElementById(id);
 
-// ---------- canvas sizing (DPR aware) ----------
-let W = 0, H = 0, DPR = 1;
+let W = 0, H = 0, dpr = 1;
 function resize() {
-  DPR = Math.min(window.devicePixelRatio || 1, 2);
-  W = window.innerWidth; H = window.innerHeight;
-  canvas.width = Math.max(1, Math.round(W * DPR));
-  canvas.height = Math.max(1, Math.round(H * DPR));
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth || 1;
+  H = window.innerHeight || 1;
+  canvas.width = Math.max(1, Math.round(W * dpr));
+  canvas.height = Math.max(1, Math.round(H * dpr));
   canvas.style.width = W + 'px';
   canvas.style.height = H + 'px';
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  // clear to base so resize doesn't leave smear artifacts
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  monument.layout(W, H, dpr);
+  micro.layout(W, H, dpr);
+  layoutCurve();
+}
+
+const monument = new Monument(ctx);
+const micro = new MicroView(ctx);
+
+let view = 'macro';           // 'macro' | 'micro'
+
+// ---- DOM refs ----
+const macroUI = document.getElementById('macroUI');
+const microUI = document.getElementById('microUI');
+const boot = document.getElementById('boot');
+const hoverLabel = document.getElementById('hoverLabel');
+
+const playBtn = document.getElementById('playBtn');
+const dayRange = document.getElementById('dayRange');
+const dayLabel = document.getElementById('dayLabel');
+
+const backBtn = document.getElementById('backBtn');
+const mHomeAbbr = document.getElementById('mHomeAbbr');
+const mAwayAbbr = document.getElementById('mAwayAbbr');
+const mHomeScore = document.getElementById('mHomeScore');
+const mAwayScore = document.getElementById('mAwayScore');
+const mMeta = document.getElementById('mMeta');
+const mPlayBtn = document.getElementById('mPlayBtn');
+const mClock = document.getElementById('mClock');
+const mClockLabel = document.getElementById('mClockLabel');
+const mCurve = document.getElementById('mCurve');
+const curveCtx = mCurve.getContext('2d');
+const mStats = document.getElementById('mStats');
+
+const MICRO_SPEED = 1.4; // match-minutes per real second
+
+// ---- boot ----
+(async function init() {
+  try {
+    await monument.load();
+    resize();
+    dayRange.min = '0';
+    dayRange.max = String(Math.max(0, monument.days.length - 1));
+    dayRange.value = String(monument.dayIdx);
+    updateDayLabel();
+    boot.classList.add('hidden');
+  } catch (e) {
+    boot.textContent = 'failed to load rich data: ' + e.message;
+  }
+  requestAnimationFrame(loop);
+})();
+
+// ---- macro controls ----
+playBtn.addEventListener('click', () => {
+  monument.playing = !monument.playing;
+  playBtn.textContent = monument.playing ? '❚❚' : '▶';
+});
+dayRange.addEventListener('input', () => {
+  monument.dayIdx = Number(dayRange.value);
+  monument.playing = false;
+  playBtn.textContent = '▶';
+  updateDayLabel();
+});
+function updateDayLabel() {
+  if (!monument.days.length) { dayLabel.textContent = '—'; return; }
+  const d = monument.days[clamp(monument.dayIdx, 0, monument.days.length - 1)] || '—';
+  const revealed = monument.cells.filter((c) => monument.isRevealed(c)).length;
+  dayLabel.textContent = `${d} · ${revealed}/${monument.cells.length}`;
+}
+function syncDaySlider() {
+  if (document.activeElement !== dayRange) dayRange.value = String(monument.dayIdx);
+  updateDayLabel();
+}
+
+// ---- hover + click on macro ----
+canvas.addEventListener('mousemove', (e) => {
+  if (view !== 'macro') { hoverLabel.classList.add('hidden'); return; }
+  const c = monument.pick(e.clientX, e.clientY);
+  monument.hoverCell = c;
+  if (c) {
+    const m = c.meta;
+    hoverLabel.innerHTML =
+      `<span class="hi">${m.home.abbr} ${m.home.score}–${m.away.score} ${m.away.abbr}</span>` +
+      `<br><span class="dim">Group ${m.group} · ${m.date} · ${m.counts ? m.counts.shots + ' shots' : ''}</span>`;
+    hoverLabel.style.left = c.cx + 'px';
+    hoverLabel.style.top = (c.cy - c.r) + 'px';
+    hoverLabel.classList.remove('hidden');
+    canvas.style.cursor = 'pointer';
+  } else {
+    hoverLabel.classList.add('hidden');
+    canvas.style.cursor = 'default';
+  }
+});
+canvas.addEventListener('click', (e) => {
+  if (view !== 'macro') return;
+  const c = monument.pick(e.clientX, e.clientY);
+  if (c) enterMicro(c);
+});
+
+backBtn.addEventListener('click', exitMicro);
+window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && view === 'micro') exitMicro(); });
+
+mPlayBtn.addEventListener('click', () => {
+  if (!micro.prep) return;
+  if (!micro.playing && micro.clock >= micro.prep.duration) micro.clock = 0;
+  micro.playing = !micro.playing;
+  mPlayBtn.textContent = micro.playing ? '❚❚' : '▶';
+});
+mClock.addEventListener('input', () => {
+  if (!micro.prep) return;
+  const t = (Number(mClock.value) / 100) * micro.prep.duration;
+  micro.setClock(t);
+  micro.playing = false;
+  mPlayBtn.textContent = '▶';
+});
+
+// ---- view transitions ----
+async function enterMicro(cell) {
+  hoverLabel.classList.add('hidden');
+  let rich = null;
+  try {
+    const res = await fetch('/api/rich/' + cell.meta.matchId);
+    if (!res.ok) throw new Error('rich ' + res.status);
+    rich = await res.json();
+  } catch (e) { return; }
+  micro.setMatch(rich);
+  micro.layout(W, H, dpr);
+  view = 'micro';
+  micro.playing = true;
+  mPlayBtn.textContent = '❚❚';
+  mHomeAbbr.textContent = micro.prep.home.abbr || 'HOM';
+  mAwayAbbr.textContent = micro.prep.away.abbr || 'AWY';
+  document.documentElement.style.setProperty('--home-color', rgbStr(micro.prep.home.rgb));
+  document.documentElement.style.setProperty('--away-color', rgbStr(micro.prep.away.rgb));
+  mMeta.textContent = `Group ${micro.prep.group} · ${micro.prep.date} · FT ${micro.prep.home.score}–${micro.prep.away.score}`;
+  macroUI.classList.add('hidden');
+  microUI.classList.remove('hidden');
+  layoutCurve();
+}
+function exitMicro() {
+  view = 'macro';
+  microUI.classList.add('hidden');
+  macroUI.classList.remove('hidden');
+}
+
+// ---- micro HUD + momentum curve ----
+function layoutCurve() {
+  const r = mCurve.getBoundingClientRect();
+  if (r.width <= 0) return;
+  mCurve.width = Math.max(1, Math.round(r.width * dpr));
+  mCurve.height = Math.max(1, Math.round(r.height * dpr));
+  curveCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+function drawCurve() {
+  if (!micro.prep) return;
+  const r = mCurve.getBoundingClientRect();
+  const w = r.width, ht = r.height;
+  if (w <= 0 || ht <= 0) return;
+  curveCtx.clearRect(0, 0, w, ht);
+  const series = micro.prep.momentum;
+  if (!series.length) return;
+  const dur = micro.prep.duration || 90;
+  const home = micro.prep.home.rgb, away = micro.prep.away.rgb;
+  const xAt = (t) => (t / dur) * w;
+  const yAt = (v) => ht / 2 - v * (ht / 2 - 4);
+  curveCtx.strokeStyle = 'rgba(255,255,255,0.12)';
+  curveCtx.lineWidth = 1;
+  curveCtx.beginPath(); curveCtx.moveTo(0, ht / 2); curveCtx.lineTo(w, ht / 2); curveCtx.stroke();
+  const t = micro.clock;
+  // filled area up to playhead
+  curveCtx.beginPath();
+  curveCtx.moveTo(0, ht / 2);
+  for (const s of series) { if (s.t > t) break; curveCtx.lineTo(xAt(s.t), yAt(s.v)); }
+  curveCtx.lineTo(xAt(Math.min(t, dur)), ht / 2);
+  curveCtx.closePath();
+  const grad = curveCtx.createLinearGradient(0, 0, 0, ht);
+  grad.addColorStop(0, rgbStr(home, 0.5));
+  grad.addColorStop(0.5, 'rgba(255,255,255,0.05)');
+  grad.addColorStop(1, rgbStr(away, 0.5));
+  curveCtx.fillStyle = grad;
+  curveCtx.fill();
+  // stroke
+  curveCtx.beginPath();
+  let first = true;
+  for (const s of series) {
+    if (s.t > t) break;
+    const X = xAt(s.t), Y = yAt(s.v);
+    if (first) { curveCtx.moveTo(X, Y); first = false; } else curveCtx.lineTo(X, Y);
+  }
+  curveCtx.strokeStyle = 'rgba(255,255,255,0.7)';
+  curveCtx.lineWidth = 1.4;
+  curveCtx.stroke();
+  // playhead
+  const px = xAt(Math.min(t, dur));
+  curveCtx.strokeStyle = 'rgba(255,255,255,0.5)';
+  curveCtx.beginPath(); curveCtx.moveTo(px, 0); curveCtx.lineTo(px, ht); curveCtx.stroke();
+}
+
+function updateMicroHud() {
+  if (!micro.prep) return;
+  const h = micro.hud();
+  mHomeScore.textContent = h.scoreHome;
+  mAwayScore.textContent = h.scoreAway;
+  mClockLabel.textContent = Math.floor(h.minute) + "'";
+  if (document.activeElement !== mClock)
+    mClock.value = String((h.minute / (micro.prep.duration || 90)) * 100);
+  if (mStats) {
+    mStats.innerHTML =
+      `<span class="stat"><b style="color:var(--home-color)">${h.passHome}</b> PASSES <b style="color:var(--away-color)">${h.passAway}</b></span>` +
+      `<span class="stat"><b style="color:var(--home-color)">${h.xgHome.toFixed(2)}</b> xG <b style="color:var(--away-color)">${h.xgAway.toFixed(2)}</b></span>`;
+  }
+  drawCurve();
+}
+
+// ---- main loop ----
+let last = performance.now();
+function loop(now) {
+  if (W !== window.innerWidth || H !== window.innerHeight) resize();
+  const dt = clamp((now - last) / 1000, 0, 0.1);
+  last = now;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
   ctx.fillStyle = '#04050a';
   ctx.fillRect(0, 0, W, H);
-  if (macro) macro.resize();
-}
-const getSize = () => ({ W, H, DPR });
-window.addEventListener('resize', resize);
 
-// ---------- views ----------
-const macro = new MonumentView(ctx, getSize);
-const micro = new MatchView(ctx, getSize);
-
-// mode: 'macro' | 'toMicro' | 'micro' | 'toMacro'
-let mode = 'macro';
-let trans = 0;                 // 0..1 transition progress
-let transFrom = null;          // {cx,cy,w,h} cell rect we zoom from
-let TRANS_MS = 650;
-
-// ---------- data load ----------
-let usingSample = false;
-async function loadData() {
-  let data = null;
-  try {
-    const r = await fetch('/api/monument', { cache: 'no-store' });
-    if (r.ok) {
-      const j = await r.json();
-      if (j && j.matches && j.matches.length) { data = j; usingSample = false; }
-    }
-  } catch (_) { /* fall through */ }
-
-  if (!data) {
-    try {
-      const r = await fetch('sample-monument.json', { cache: 'no-store' });
-      data = await r.json();
-      usingSample = true;
-    } catch (e) {
-      el('boot').textContent = 'no data available';
-      return;
+  if (view === 'macro') {
+    monument.step(dt);
+    monument.draw();
+    syncDaySlider();
+  } else {
+    micro.step(dt, MICRO_SPEED);
+    micro.draw();
+    updateMicroHud();
+    if (!micro.playing && micro.prep && micro.clock >= micro.prep.duration) {
+      mPlayBtn.textContent = '▶';
     }
   }
-
-  if (usingSample) el('sampleBadge').classList.remove('hidden');
-
-  macro.setData(data.tournament, data.matches);
-  setupScrubber(data.tournament);
-  wireMacro();
-
-  const boot = el('boot');
-  if (boot) boot.classList.add('hidden');
+  requestAnimationFrame(loop);
 }
-
-// ---------- scrubber + play ----------
-let playing = true;
-let dayAcc = 0;                  // accumulator for auto-advance
-const DAY_ADVANCE_S = 1.1;       // seconds per day while playing
-let todayIndex = 0;
-
-function setupScrubber(tournament) {
-  const days = tournament?.days || [];
-  const range = el('dayRange');
-  range.min = 0;
-  range.max = Math.max(0, days.length - 1);
-  range.step = 1;
-
-  // find "today" (2026-06-20 per env) → default play target
-  const today = '2026-06-20';
-  todayIndex = days.findIndex((d) => d >= today);
-  if (todayIndex < 0) todayIndex = days.length - 1; // tournament fully past → full
-
-  // start playing from the beginning up to today
-  macro.setDayIndex(0);
-  range.value = 0;
-  updateDayLabel();
-
-  range.addEventListener('input', () => {
-    playing = false; el('playBtn').textContent = '▶';
-    macro.setDayIndex(Number(range.value));
-    updateDayLabel();
-  });
-
-  el('playBtn').addEventListener('click', () => {
-    playing = !playing;
-    el('playBtn').textContent = playing ? '❚❚' : '▶';
-    // if at/after target, restart growth from the beginning
-    if (playing && macro.dayIndex >= macro.dayList().length - 1) {
-      macro.setDayIndex(0);
-    }
-  });
-  el('playBtn').textContent = '❚❚';
-}
-
-function updateDayLabel() {
-  const days = macro.dayList();
-  const d = days[clamp(macro.dayIndex, 0, days.length - 1)] || '—';
-  el('dayLabel').textContent = d;
-  const r = el('dayRange');
-  if (Number(r.value) !== macro.dayIndex) r.value = macro.dayIndex;
-}
-
-// auto-advance days while playing (rest once we reach "today")
-function advanceDays(dt) {
-  if (!playing || mode !== 'macro') return;
-  const days = macro.dayList();
-  if (!days.length) return;
-  const target = todayIndex;
-  if (macro.dayIndex >= target) {
-    // reached today: rest at full (stop auto-advancing, keep play btn as pause)
-    return;
-  }
-  dayAcc += dt;
-  if (dayAcc >= DAY_ADVANCE_S) {
-    dayAcc = 0;
-    macro.setDayIndex(macro.dayIndex + 1);
-    updateDayLabel();
-  }
-}
-
-// ---------- macro interaction ----------
-function wireMacro() {
-  macro.onHover = (m, sx, sy) => {
-    const lbl = el('hoverLabel');
-    if (!m || mode !== 'macro') { lbl.classList.add('hidden'); return; }
-    const round = (m.round || '').toUpperCase();
-    lbl.innerHTML =
-      `<span class="hi">${m.home?.abbr ?? '?'} ${m.home?.score ?? 0}–${m.away?.score ?? 0} ${m.away?.abbr ?? '?'}</span>` +
-      `<span class="dim"> · ${round}</span>`;
-    lbl.style.left = sx + 'px';
-    lbl.style.top = sy + 'px';
-    lbl.classList.remove('hidden');
-    canvas.style.cursor = 'pointer';
-  };
-  macro.onPick = (m) => enterMicro(m);
-}
-
-canvas.addEventListener('mousemove', (e) => {
-  if (mode === 'macro') macro.setMouse(e.clientX, e.clientY);
-});
-canvas.addEventListener('mouseleave', () => { if (mode === 'macro') macro.setMouse(-1, -1); });
-canvas.addEventListener('click', (e) => {
-  if (mode === 'macro') macro.click(e.clientX, e.clientY);
-  else if (mode === 'micro') { /* clicks handled by HUD; click-out via background */ }
-});
-
-// ---------- micro enter/exit with zoom ----------
-async function enterMicro(m) {
-  // optionally refresh full record from /api/match/:id (reuse if it fails)
-  let full = m;
-  try {
-    const r = await fetch(`/api/match/${encodeURIComponent(m.id)}`, { cache: 'no-store' });
-    if (r.ok) {
-      const j = await r.json();
-      if (j && j.fingerprint) full = j;
-    }
-  } catch (_) { /* reuse already-loaded record */ }
-
-  micro.setMatch(full);
-  fillMicroHud(full);
-
-  // capture the source cell rect for the zoom-from animation
-  const cell = macro.layout.find((c) => c.m.id === m.id);
-  transFrom = cell ? { cx: cell.cx, cy: cell.cy, w: cell.w, h: cell.h } : { cx: W / 2, cy: H / 2, w: W * 0.2, h: H * 0.2 };
-
-  mode = 'toMicro'; trans = 0;
-  el('macroUI').classList.add('hidden');
-  el('hoverLabel').classList.add('hidden');
-}
-
-function exitMicro() {
-  mode = 'toMacro'; trans = 0;
-  el('microUI').classList.add('hidden');
-}
-
-function fillMicroHud(m) {
-  el('mHomeAbbr').textContent = m.home?.abbr ?? '?';
-  el('mAwayAbbr').textContent = m.away?.abbr ?? '?';
-  document.documentElement.style.setProperty('--home-color', m.home?.colorHex || '#6cf');
-  document.documentElement.style.setProperty('--away-color', m.away?.colorHex || '#f96');
-  const round = (m.round || '').toUpperCase();
-  const grp = m.group ? ` · GROUP ${m.group}` : '';
-  el('mMeta').textContent = `${round}${grp} · ${m.day || ''}`;
-  el('mClock').max = micro.duration;
-}
-
-// micro HUD wiring
-const mCurveCanvas = el('mCurve');
-const mCurveCtx = mCurveCanvas.getContext('2d');
-function sizeMicroCurve() {
-  const r = mCurveCanvas.getBoundingClientRect();
-  mCurveCanvas.width = Math.max(1, r.width * DPR);
-  mCurveCanvas.height = Math.max(1, r.height * DPR);
-  mCurveCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
-}
-window.addEventListener('resize', sizeMicroCurve);
-
-micro.onClock = (clock, dur, score) => {
-  el('mHomeScore').textContent = score.h;
-  el('mAwayScore').textContent = score.a;
-  el('mClockLabel').textContent = `${Math.floor(clock)}'`;
-  const slider = el('mClock');
-  if (document.activeElement !== slider) slider.value = clock;
-};
-
-el('mClock').addEventListener('input', (e) => {
-  micro.playing = false; el('mPlayBtn').textContent = '▶';
-  micro.setClock(Number(e.target.value));
-});
-el('mPlayBtn').addEventListener('click', () => {
-  if (micro.clock >= micro.duration) micro.setClock(0);
-  micro.playing = !micro.playing;
-  el('mPlayBtn').textContent = micro.playing ? '❚❚' : '▶';
-});
-el('backBtn').addEventListener('click', exitMicro);
-window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && (mode === 'micro' || mode === 'toMicro')) exitMicro();
-});
-
-// ---------- main loop ----------
-let lastT = performance.now();
-function frame(now) {
-  let dt = (now - lastT) / 1000;
-  if (!Number.isFinite(dt) || dt < 0) dt = 0;
-  dt = Math.min(dt, 0.05);
-  lastT = now;
-
-  // guard against an early resize() that ran before the viewport had a size,
-  // and against missed resize events — re-sync whenever the window changes.
-  if (W !== window.innerWidth || H !== window.innerHeight) resize();
-
-  advanceDays(dt);
-
-  if (mode === 'macro') {
-    macro.draw(dt, now, 1);
-  } else if (mode === 'micro') {
-    micro.draw(dt, now, 1);
-  } else if (mode === 'toMicro' || mode === 'toMacro') {
-    trans += (dt * 1000) / TRANS_MS;
-    const e = easeInOutCubic(clamp(trans, 0, 1));
-    // wipe to base each transition frame to avoid double-exposure
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = 'rgba(4,5,10,1)';
-    ctx.fillRect(0, 0, W, H);
-
-    if (mode === 'toMicro') {
-      // macro zooms in toward the cell; micro fades up
-      drawScaled(() => macro.draw(0, now, 1 - e), transFrom, e, 'in');
-      micro.draw(0, now, e);
-      if (trans >= 1) { mode = 'micro'; el('microUI').classList.remove('hidden'); sizeMicroCurve(); }
-    } else {
-      // micro zooms back out into the cell; macro fades in
-      micro.draw(0, now, 1 - e);
-      macro.draw(0, now, e);
-      if (trans >= 1) { mode = 'macro'; el('macroUI').classList.remove('hidden'); }
-    }
-  }
-
-  // micro curve overlay
-  if (mode === 'micro') micro.drawCurve(mCurveCtx, mCurveCanvas.width / DPR, mCurveCanvas.height / DPR);
-
-  requestAnimationFrame(frame);
-}
-
-// scale a draw callback around a focal cell (used for the zoom illusion).
-// We approximate by translating/scaling the canvas transform for the frame.
-function drawScaled(drawFn, rect, e, dir) {
-  if (!rect) { drawFn(); return; }
-  ctx.save();
-  // zoom so the focal cell grows to fill the screen as e→1
-  const targetScale = lerp(1, Math.max(W / rect.w, H / rect.h) * 0.9, e);
-  const focX = rect.cx, focY = rect.cy;
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  ctx.translate(W / 2, H / 2);
-  ctx.scale(targetScale, targetScale);
-  ctx.translate(-focX, -focY);
-  drawFn();
-  ctx.restore();
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-}
-
-// ---------- boot ----------
-resize();
-sizeMicroCurve();
-requestAnimationFrame(frame);
-loadData();

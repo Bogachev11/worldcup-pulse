@@ -1,166 +1,301 @@
-// match.js — MICRO view. Full-screen replay of one match's Territory battle over
-// its 90+ minutes. A virtual clock advances ~60x (scrubbable). Goals/reds/
-// yellows/penalties fire as light-strikes/burns/cracks at their real minute.
+// match.js — MICRO view (the HERO). A single match drawn full-screen on a real
+// pitch, all layers driven by real data, animated over a scrubbable match clock.
+//
+// Layers (back -> front):
+//   1. pitch frame (faint lines)
+//   2. territory / momentum membrane (soft additive field, tinted by momentum)
+//   3. pass-flow tapestry — persistent network baked offscreen + live "recent"
+//      passes glowing brightest (the informational core)
+//   4. shot / xG blooms at real coords; goals pierce + leave scars
+//   5. dense HUD (handled in app.js via DOM + the momentum curve)
 
-import { drawTerritory, hexToRgb, clamp, lerp, momAt, matchDuration, rgbStr } from './lib.js';
+import {
+  clamp, rgbStr, prepareMatch, momAt, xgUpTo,
+} from './lib.js';
 
-export class MatchView {
-  constructor(ctx, getSize) {
+export class MicroView {
+  constructor(ctx) {
     this.ctx = ctx;
-    this.getSize = getSize;
-    this.match = null;
-    this.rgbHome = { r: 90, g: 150, b: 255 };
-    this.rgbAway = { r: 255, g: 120, b: 60 };
-    this.duration = 95;            // match-minutes
-    this.clock = 0;                // current match-minute (virtual)
+    this.prep = null;
+    this.W = 0; this.H = 0; this.dpr = 1;
+    this.clock = 0;        // current match-minute revealed
     this.playing = true;
-    this.speed = 60;               // 60x real time → 1 match-min ≈ 1 real-sec
-    this.firedGoals = new Set();   // goal indices that already triggered a flash
-    this.flashes = [];             // transient bloom flashes
-    this.onClock = null;           // callback(clock, duration, score)
+    this.net = null;       // offscreen canvas of the persistent pass network
+    this.netCtx = null;
+    this.netUpTo = -1;     // last minute baked into the network
+    this.pitchRect = null;
+    this.recentWindow = 4; // minutes; newest passes animate live & glow
   }
 
-  setMatch(m) {
-    this.match = m;
-    this.rgbHome = hexToRgb(m.home?.colorHex);
-    this.rgbAway = hexToRgb(m.away?.colorHex);
-    this.duration = matchDuration(m.fingerprint);
+  setMatch(rich) {
+    this.prep = prepareMatch(rich);
     this.clock = 0;
+    this.net = null;
+    this.netUpTo = -1;
     this.playing = true;
-    this.firedGoals.clear();
-    this.flashes.length = 0;
+    return this.prep;
   }
+
+  // pitch rect inside the viewport (football aspect, centered, generous margins)
+  layout(W, H, dpr) {
+    this.W = W; this.H = H; this.dpr = dpr;
+    const margX = W * 0.07, margY = H * 0.16;
+    let pw = Math.max(10, W - margX * 2), ph = Math.max(10, H - margY * 2);
+    const aspect = 1.55;
+    if (pw / ph > aspect) pw = ph * aspect; else ph = pw / aspect;
+    const px = (W - pw) / 2, py = (H - ph) / 2 + H * 0.01;
+    this.pitchRect = { x: px, y: py, w: pw, h: ph };
+    this.net = null; this.netUpTo = -1; // invalidate bake on resize
+  }
+
+  X(u) { const r = this.pitchRect; return r.x + u * r.w; }
+  Y(u) { const r = this.pitchRect; return r.y + u * r.h; }
 
   setClock(min) {
-    const c = clamp(min, 0, this.duration);
-    // scrubbing backward should let goals re-fire if you pass them again
-    if (c < this.clock) {
-      for (const i of [...this.firedGoals]) {
-        const g = this.match?.fingerprint?.goals?.[i];
-        if (g && g.t > c) this.firedGoals.delete(i);
-      }
+    if (!this.prep) return;
+    this.clock = clamp(min, 0, this.prep.duration);
+    if (this.clock < this.netUpTo - 0.5) { this.net = null; this.netUpTo = -1; }
+  }
+
+  step(dtSec, speedMul) {
+    if (!this.prep || !this.playing) return;
+    this.clock += dtSec * (speedMul || 1);
+    if (this.clock >= this.prep.duration) {
+      this.clock = this.prep.duration;
+      this.playing = false; // pause at full time
     }
-    this.clock = c;
   }
 
-  scoreAt(t) {
-    const fp = this.match?.fingerprint;
-    let h = 0, a = 0;
-    if (fp?.goals) for (const g of fp.goals) {
-      if (g.t <= t) (g.team === 'home' ? h++ : a++);
+  // Build / extend the persistent network offscreen canvas up to settleBefore.
+  ensureNetwork(settleBefore) {
+    const r = this.pitchRect;
+    if (!r || r.w <= 0 || r.h <= 0) return;
+    const needW = Math.max(1, Math.round(r.w * this.dpr));
+    const needH = Math.max(1, Math.round(r.h * this.dpr));
+    if (!this.net || this.net.width !== needW || this.net.height !== needH) {
+      this.net = document.createElement('canvas');
+      this.net.width = needW; this.net.height = needH;
+      this.netCtx = this.net.getContext('2d');
+      this.netCtx.scale(this.dpr, this.dpr);
+      this.netUpTo = -1;
     }
-    return { h, a };
-  }
-
-  // bright transient flash when the clock crosses a goal minute
-  triggerGoalFlashes() {
-    const fp = this.match?.fingerprint;
-    if (!fp?.goals) return;
-    fp.goals.forEach((g, i) => {
-      if (g.t <= this.clock && !this.firedGoals.has(i)) {
-        this.firedGoals.add(i);
-        const { W, H } = this.getSize();
-        const v = momAt(fp.momentumSeries, g.t);
-        const fx = (0.5 + clamp(v, -1, 1) * 0.42) * W;
-        const fy = clamp(g.t / this.duration, 0, 1) * H;
-        this.flashes.push({ x: fx, y: fy, born: performance.now(), dur: 1400 });
-      }
-    });
-  }
-
-  step(dt) {
-    if (this.playing && this.match) {
-      // advance virtual clock: speed multiplier over real seconds
-      this.clock = clamp(this.clock + dt * (this.speed / 60), 0, this.duration);
-      if (this.clock >= this.duration) this.playing = false;
+    if (settleBefore <= this.netUpTo + 0.001) return;
+    const nctx = this.netCtx;
+    nctx.globalCompositeOperation = 'lighter';
+    nctx.lineCap = 'round';
+    const home = this.prep.home.rgb, away = this.prep.away.rgb;
+    for (const p of this.prep.passes) {
+      if (p.minute <= this.netUpTo || p.minute > settleBefore) continue;
+      const col = p.team === 'home' ? home : away;
+      const x0 = p.x0 * r.w, y0 = p.y0 * r.h, x1 = p.x1 * r.w, y1 = p.y1 * r.h;
+      nctx.strokeStyle = rgbStr(col, p.ok ? 0.085 : 0.035);
+      nctx.lineWidth = p.ok ? 1.0 : 0.7;
+      const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+      const dx = x1 - x0, dy = y1 - y0;
+      const cx = mx - dy * 0.12, cy = my + dx * 0.12;
+      nctx.beginPath();
+      nctx.moveTo(x0, y0);
+      nctx.quadraticCurveTo(cx, cy, x1, y1);
+      nctx.stroke();
     }
-    this.triggerGoalFlashes();
+    this.netUpTo = settleBefore;
   }
 
-  draw(dt, now, globalAlpha = 1) {
-    const ctx = this.ctx;
-    const { W, H } = this.getSize();
-    if (!this.match) return;
+  draw() {
+    const ctx = this.ctx, r = this.pitchRect;
+    if (!this.prep || !r) return;
+    const t = this.clock;
 
-    this.step(dt);
+    // 1. pitch frame
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(r.x, r.y, r.w, r.h);
+    ctx.beginPath();
+    ctx.moveTo(r.x + r.w / 2, r.y); ctx.lineTo(r.x + r.w / 2, r.y + r.h);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(r.x + r.w / 2, r.y + r.h / 2, r.h * 0.13, 0, Math.PI * 2);
+    ctx.stroke();
+    const bw = r.w * 0.16, bh = r.h * 0.46;
+    ctx.strokeRect(r.x, r.y + (r.h - bh) / 2, bw, bh);
+    ctx.strokeRect(r.x + r.w - bw, r.y + (r.h - bh) / 2, bw, bh);
+    ctx.restore();
 
-    // dark veil for trails
+    // 2. momentum / territory membrane
+    this.drawMembrane(t);
+
+    // 3a. settled pass network (baked offscreen, blit)
+    const settleBefore = Math.max(0, t - this.recentWindow);
+    this.ensureNetwork(settleBefore);
+    if (this.net) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.drawImage(this.net, r.x, r.y, r.w, r.h);
+      ctx.restore();
+    }
+
+    // 3b. recent passes drawn live, glowing brightest
+    this.drawRecentPasses(t, settleBefore);
+
+    // 4. shots / xG blooms
+    this.drawShots(t);
+
     ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = 'rgba(4,5,10,0.28)';
-    ctx.fillRect(0, 0, W, H);
+  }
 
-    ctx.globalAlpha = globalAlpha;
-
-    // big atmospheric base territory
-    drawTerritory(ctx, 0, 0, W, H, {
-      home: { rgb: this.rgbHome }, away: { rgb: this.rgbAway },
-      fp: this.match.fingerprint,
-      revealT: this.clock,
-      intensity: 0.85,
-      detail: 120,
-      showFloor: true,
-    });
-
-    // current-clock horizontal sweep line (where "now" is on the time axis)
-    const cy = clamp(this.clock / this.duration, 0, 1) * H;
+  drawMembrane(t) {
+    const ctx = this.ctx, r = this.pitchRect;
+    const home = this.prep.home.rgb, away = this.prep.away.rgb;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(r.x, r.y, r.w, r.h); ctx.clip();
     ctx.globalCompositeOperation = 'lighter';
-    const sweep = ctx.createLinearGradient(0, cy - 30, 0, cy + 30);
-    sweep.addColorStop(0, 'rgba(255,255,255,0)');
-    sweep.addColorStop(0.5, 'rgba(255,255,255,0.10)');
-    sweep.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = sweep;
-    ctx.fillRect(0, cy - 30, W, 60);
 
-    // goal flashes
-    for (let i = this.flashes.length - 1; i >= 0; i--) {
-      const f = this.flashes[i];
-      const p = (now - f.born) / f.dur;
-      if (p >= 1) { this.flashes.splice(i, 1); continue; }
-      const r = (0.05 + p * 0.55) * Math.max(W, H);
-      const a = (1 - p) * 0.5;
-      const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, r);
-      g.addColorStop(0, `rgba(255,248,225,${a})`);
-      g.addColorStop(0.5, `rgba(255,230,170,${a * 0.4})`);
-      g.addColorStop(1, 'rgba(255,230,170,0)');
-      ctx.fillStyle = g;
-      ctx.beginPath(); ctx.arc(f.x, f.y, r, 0, Math.PI * 2); ctx.fill();
+    const v = momAt(this.prep.momentum, t);          // [-1,1], + = home pressing
+    const frontU = clamp(0.5 + v * 0.40, 0.08, 0.92);
+    const frontX = r.x + frontU * r.w;
+
+    const gh = ctx.createLinearGradient(r.x, 0, frontX, 0);
+    gh.addColorStop(0, rgbStr(home, 0.22));
+    gh.addColorStop(0.7, rgbStr(home, 0.05));
+    gh.addColorStop(1, rgbStr(home, 0));
+    ctx.fillStyle = gh;
+    ctx.fillRect(r.x, r.y, Math.max(0, frontX - r.x), r.h);
+
+    const ga = ctx.createLinearGradient(r.x + r.w, 0, frontX, 0);
+    ga.addColorStop(0, rgbStr(away, 0.22));
+    ga.addColorStop(0.7, rgbStr(away, 0.05));
+    ga.addColorStop(1, rgbStr(away, 0));
+    ctx.fillStyle = ga;
+    ctx.fillRect(frontX, r.y, Math.max(0, r.x + r.w - frontX), r.h);
+
+    // luminous wavering membrane line
+    ctx.beginPath();
+    const detail = 40;
+    for (let i = 0; i <= detail; i++) {
+      const vy = i / detail;
+      const vv = momAt(this.prep.momentum, t);
+      const fx = r.x + clamp(0.5 + vv * 0.40, 0.08, 0.92) * r.w
+        + Math.sin(vy * 9 + t * 0.4) * r.w * 0.012;
+      if (i === 0) ctx.moveTo(fx, r.y + vy * r.h);
+      else ctx.lineTo(fx, r.y + vy * r.h);
     }
-
-    ctx.globalAlpha = 1;
-    ctx.globalCompositeOperation = 'source-over';
-
-    if (this.onClock) this.onClock(this.clock, this.duration, this.scoreAt(this.clock));
+    ctx.strokeStyle = 'rgba(255,255,255,0.30)';
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.restore();
   }
 
-  // thin momentum curve for the HUD canvas
-  drawCurve(curveCtx, cw, ch) {
-    curveCtx.clearRect(0, 0, cw, ch);
-    const fp = this.match?.fingerprint;
-    const series = fp?.momentumSeries || [];
-    // zero line
-    curveCtx.strokeStyle = 'rgba(255,255,255,0.12)';
-    curveCtx.lineWidth = 1;
-    curveCtx.beginPath();
-    curveCtx.moveTo(0, ch / 2); curveCtx.lineTo(cw, ch / 2); curveCtx.stroke();
-    if (series.length < 2) return;
-
-    const dur = this.duration || 95;
-    curveCtx.lineWidth = 1.6;
-    curveCtx.beginPath();
-    for (let i = 0; i < series.length; i++) {
-      const x = (clamp(series[i].t / dur, 0, 1)) * cw;
-      const v = clamp(series[i].v || 0, -1, 1);
-      const y = ch / 2 - v * (ch / 2 - 3);
-      if (i === 0) curveCtx.moveTo(x, y); else curveCtx.lineTo(x, y);
+  drawRecentPasses(t, settleBefore) {
+    const ctx = this.ctx, r = this.pitchRect;
+    const home = this.prep.home.rgb, away = this.prep.away.rgb;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(r.x, r.y, r.w, r.h); ctx.clip();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    for (const p of this.prep.passes) {
+      if (p.minute <= settleBefore || p.minute > t) continue;
+      const age = clamp((t - p.minute) / this.recentWindow, 0, 1);
+      const fresh = 1 - age;
+      const col = p.team === 'home' ? home : away;
+      const x0 = this.X(p.x0), y0 = this.Y(p.y0);
+      const x1 = this.X(p.x1), y1 = this.Y(p.y1);
+      const baseA = p.ok ? 0.6 : 0.28;
+      const a = baseA * (0.18 + fresh * 0.82);
+      const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+      const dx = x1 - x0, dy = y1 - y0;
+      const cx = mx - dy * 0.12, cy = my + dx * 0.12;
+      ctx.strokeStyle = rgbStr(col, a);
+      ctx.lineWidth = (p.ok ? 1.6 : 1.0) * (0.6 + fresh * 0.9);
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.quadraticCurveTo(cx, cy, x1, y1);
+      ctx.stroke();
+      if (fresh > 0.5) {
+        const hr = (1.5 + fresh * 3.5);
+        const g = ctx.createRadialGradient(x1, y1, 0, x1, y1, hr);
+        g.addColorStop(0, rgbStr(col, 0.9 * fresh));
+        g.addColorStop(1, rgbStr(col, 0));
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(x1, y1, hr, 0, Math.PI * 2); ctx.fill();
+      }
     }
-    const lastV = momAt(series, this.clock);
-    curveCtx.strokeStyle = lastV >= 0 ? rgbStr(this.rgbHome) : rgbStr(this.rgbAway);
-    curveCtx.stroke();
+    ctx.restore();
+  }
 
-    // playhead
-    const px = clamp(this.clock / dur, 0, 1) * cw;
-    curveCtx.strokeStyle = 'rgba(255,255,255,0.55)';
-    curveCtx.lineWidth = 1;
-    curveCtx.beginPath(); curveCtx.moveTo(px, 0); curveCtx.lineTo(px, ch); curveCtx.stroke();
+  drawShots(t) {
+    const ctx = this.ctx, r = this.pitchRect;
+    const home = this.prep.home.rgb, away = this.prep.away.rgb;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const sh of this.prep.shots) {
+      if (sh.minute > t) continue;
+      const col = sh.team === 'home' ? home : away;
+      const cx = this.X(sh.x), cy = this.Y(sh.y);
+      const age = clamp((t - sh.minute) / 6, 0, 1);
+      const fresh = 1 - age;
+      const baseR = (4 + sh.xg * 70) * (r.w / 1100 + 0.5);
+
+      if (sh.isGoal) {
+        const goalX = sh.team === 'home' ? r.x + r.w : r.x;
+        const grad = ctx.createLinearGradient(cx, cy, goalX, cy);
+        grad.addColorStop(0, `rgba(255,245,210,${0.55 + 0.4 * fresh})`);
+        grad.addColorStop(1, 'rgba(255,245,210,0)');
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = 2 + fresh * 4;
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(goalX, cy); ctx.stroke();
+        const rr = baseR * (1.6 + fresh * 1.4);
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, rr);
+        g.addColorStop(0, `rgba(255,250,235,${0.5 + 0.45 * fresh})`);
+        g.addColorStop(0.35, rgbStr(col, 0.5 + 0.3 * fresh));
+        g.addColorStop(1, rgbStr(col, 0));
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.fill();
+      } else {
+        const rr = baseR * (1 + fresh * 0.6);
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, rr);
+        const peak = 0.25 + fresh * 0.5;
+        g.addColorStop(0, rgbStr(col, peak));
+        g.addColorStop(1, rgbStr(col, 0));
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.fill();
+        if (sh.xgot > 0 && fresh > 0.05) {
+          ctx.strokeStyle = rgbStr(col, 0.5 * fresh);
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.arc(cx, cy, rr + (1 - fresh) * baseR * 2.2, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  hud() {
+    const t = this.clock;
+    const p = this.prep;
+    // Progressive score from real timed goal-strikes (isGoal shots). Some
+    // matches' shot feeds miss penalties/own-goals, so the OFFICIAL final score
+    // (p.home.score / p.away.score) is authoritative; once the clock reaches
+    // full time we snap to it so the HUD never contradicts the real result.
+    let goalsH = p.shots.filter((s) => s.team === 'home' && s.isGoal && s.minute <= t).length;
+    let goalsA = p.shots.filter((s) => s.team === 'away' && s.isGoal && s.minute <= t).length;
+    const atFT = t >= p.duration - 0.01;
+    if (atFT) {
+      if (Number.isFinite(p.home.score)) goalsH = p.home.score;
+      if (Number.isFinite(p.away.score)) goalsA = p.away.score;
+    } else {
+      if (Number.isFinite(p.home.score)) goalsH = Math.min(goalsH, p.home.score);
+      if (Number.isFinite(p.away.score)) goalsA = Math.min(goalsA, p.away.score);
+    }
+    return {
+      minute: t,
+      scoreHome: goalsH, scoreAway: goalsA,
+      xgHome: xgUpTo(p.shots, 'home', t),
+      xgAway: xgUpTo(p.shots, 'away', t),
+      passHome: p.passes.filter((q) => q.team === 'home' && q.minute <= t).length,
+      passAway: p.passes.filter((q) => q.team === 'away' && q.minute <= t).length,
+      momentum: momAt(p.momentum, t),
+    };
   }
 }

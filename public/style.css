@@ -148,6 +148,12 @@ html, body {
   font-size: 11px; letter-spacing: 0.2em; color: var(--ink-dim);
   text-transform: uppercase;
 }
+.stats {
+  display: flex; gap: 22px; margin-top: 4px;
+  font-size: 11px; letter-spacing: 0.14em; color: var(--ink-dim);
+  text-transform: uppercase; font-variant-numeric: tabular-nums;
+}
+.stats b { font-weight: 600; font-size: 13px; }
 
 .micro-bottom {
   position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%);

@@ -244,6 +244,40 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Rich tournament index (real passes/shots/momentum harvest). From disk.
+    if (p === '/api/rich') {
+      try {
+        const buf = await readFile(path.join(DATA, 'rich_index.json'), 'utf8');
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'access-control-allow-origin': '*',
+          'cache-control': 'public, max-age=60',
+        });
+        res.end(buf);
+      } catch {
+        sendJson(res, { error: 'rich index not found' }, 404);
+      }
+      return;
+    }
+
+    // Full per-match RICH record (passes/shots/momentum/events). From disk.
+    if (p.startsWith('/api/rich/')) {
+      const id = decodeURIComponent(p.slice('/api/rich/'.length)).replace(/[^0-9]/g, '');
+      if (!id) { sendJson(res, { error: 'missing match id' }, 400); return; }
+      try {
+        const buf = await readFile(path.join(DATA, 'rich', `${id}.json`), 'utf8');
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'access-control-allow-origin': '*',
+          'cache-control': 'public, max-age=300',
+        });
+        res.end(buf);
+      } catch {
+        sendJson(res, { error: `rich match ${id} not found` }, 404);
+      }
+      return;
+    }
+
     // Full per-match fingerprint record. Served from disk (404 if absent).
     if (p.startsWith('/api/match/')) {
       const id = decodeURIComponent(p.slice('/api/match/'.length)).replace(/[^0-9A-Za-z_-]/g, '');
