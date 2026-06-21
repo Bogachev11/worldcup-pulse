@@ -1,0 +1,13 @@
+{
+  "name": "worldcup-pulse",
+  "version": "0.1.0",
+  "description": "Real-time generative data-art visualization of FIFA World Cup 2026 matches, driven entirely by live ESPN data.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

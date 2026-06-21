@@ -1,0 +1,176 @@
+:root {
+  --ink: rgba(255, 255, 255, 0.88);
+  --ink-dim: rgba(255, 255, 255, 0.40);
+  --ink-faint: rgba(255, 255, 255, 0.18);
+  --panel: rgba(10, 12, 20, 0.34);
+  --stroke: rgba(255, 255, 255, 0.12);
+  --home-color: #6cf;
+  --away-color: #f96;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0; height: 100%;
+  background: #04050a;
+  overflow: hidden;
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+#stage {
+  position: fixed; inset: 0;
+  width: 100vw; height: 100vh; display: block;
+}
+
+/* soft film grain over everything (kept lightweight: a heavy fullscreen
+   feTurbulence + mix-blend-mode layer is a real perf/compat hazard) */
+#grain {
+  position: fixed; inset: 0; z-index: 5;
+  pointer-events: none; opacity: 0.5;
+  background: radial-gradient(120% 120% at 50% 40%, rgba(0,0,0,0) 55%, rgba(0,0,0,0.45) 100%);
+}
+
+.hidden { opacity: 0 !important; pointer-events: none !important; }
+
+/* ---------- MACRO ---------- */
+#macroUI, #microUI {
+  position: fixed; inset: 0; z-index: 10; pointer-events: none;
+  transition: opacity 0.7s ease;
+}
+
+.title {
+  position: absolute; top: 30px; left: 0; right: 0;
+  text-align: center;
+}
+.title h1 {
+  margin: 0; font-size: 22px; font-weight: 300;
+  letter-spacing: 0.62em; text-indent: 0.62em;
+  text-shadow: 0 0 34px rgba(255,255,255,0.16);
+}
+.title .sub {
+  margin: 8px 0 0; font-size: 11px; letter-spacing: 0.26em;
+  color: var(--ink-dim); text-transform: uppercase;
+}
+
+.badge {
+  position: absolute; top: 28px; right: 26px;
+  font-size: 10px; letter-spacing: 0.28em; padding: 4px 11px;
+  border: 1px solid rgba(255,209,102,0.4); color: #ffd166;
+  border-radius: 999px;
+  background: rgba(255,209,102,0.06);
+  transition: opacity 0.5s ease;
+}
+
+.hover-label {
+  position: fixed; z-index: 12; pointer-events: none;
+  transform: translate(-50%, -140%);
+  background: var(--panel); border: 1px solid var(--stroke);
+  border-radius: 8px; padding: 6px 11px;
+  font-size: 11px; letter-spacing: 0.08em; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  transition: opacity 0.25s ease;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+}
+.hover-label .hi { color: var(--ink); }
+.hover-label .dim { color: var(--ink-dim); }
+
+/* time scrubber */
+.scrubber {
+  position: absolute; left: 50%; bottom: 30px; transform: translateX(-50%);
+  width: min(680px, 80vw);
+  display: flex; align-items: center; gap: 16px;
+  pointer-events: auto;
+  background: var(--panel); border: 1px solid var(--stroke);
+  border-radius: 14px; padding: 12px 18px;
+}
+
+.play {
+  flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%;
+  border: 1px solid var(--stroke); background: rgba(255,255,255,0.05);
+  color: var(--ink); cursor: pointer; font-size: 12px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  transition: border-color 0.2s, background 0.2s;
+}
+.play:hover { border-color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.1); }
+.play.small { width: 28px; height: 28px; font-size: 10px; }
+
+.range {
+  -webkit-appearance: none; appearance: none;
+  flex: 1; height: 3px; border-radius: 2px; outline: none; cursor: pointer;
+  background: linear-gradient(90deg, var(--ink-faint), var(--ink-faint));
+}
+.range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; box-shadow: 0 0 12px rgba(255,255,255,0.7);
+  cursor: pointer;
+}
+.range::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%; border: none;
+  background: #fff; box-shadow: 0 0 12px rgba(255,255,255,0.7); cursor: pointer;
+}
+
+.day-label {
+  flex: 0 0 auto; min-width: 96px; text-align: right;
+  font-size: 11px; letter-spacing: 0.12em; color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- MICRO ---------- */
+.back {
+  position: absolute; top: 26px; left: 26px; pointer-events: auto;
+  background: var(--panel); border: 1px solid var(--stroke);
+  border-radius: 8px; padding: 8px 14px; color: var(--ink);
+  font-size: 11px; letter-spacing: 0.14em; cursor: pointer;
+  transition: border-color 0.2s;
+}
+.back:hover { border-color: rgba(255,255,255,0.3); }
+
+.match-hud {
+  position: absolute; top: 26px; left: 50%; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+}
+.score-block {
+  display: flex; align-items: baseline; gap: 12px;
+  font-variant-numeric: tabular-nums; letter-spacing: 0.04em;
+}
+.score-block .abbr { font-size: 15px; font-weight: 600; letter-spacing: 0.12em; }
+.score-block .abbr.home { color: var(--home-color); text-shadow: 0 0 16px var(--home-color); }
+.score-block .abbr.away { color: var(--away-color); text-shadow: 0 0 16px var(--away-color); }
+.score-block .score {
+  font-size: 40px; font-weight: 200; line-height: 1;
+  text-shadow: 0 0 26px rgba(255,255,255,0.2);
+}
+.score-block .dash { font-size: 26px; opacity: 0.4; font-weight: 200; }
+.meta {
+  font-size: 11px; letter-spacing: 0.2em; color: var(--ink-dim);
+  text-transform: uppercase;
+}
+
+.micro-bottom {
+  position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%);
+  width: min(640px, 86vw);
+  display: flex; flex-direction: column; gap: 10px;
+  background: var(--panel); border: 1px solid var(--stroke);
+  border-radius: 14px; padding: 14px 18px;
+  pointer-events: auto;
+}
+#mCurve { width: 100%; height: 54px; display: block; }
+.clock-row { display: flex; align-items: center; gap: 14px; }
+.clock {
+  flex: 0 0 auto; min-width: 48px; text-align: right;
+  font-size: 12px; letter-spacing: 0.14em; color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- boot ---------- */
+#boot {
+  position: fixed; inset: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; letter-spacing: 0.24em; color: var(--ink-dim);
+  text-transform: uppercase; pointer-events: none;
+  transition: opacity 0.8s ease;
+}
+#boot.hidden { opacity: 0; }

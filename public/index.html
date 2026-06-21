@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>MONUMENT — FIFA World Cup 2026</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- single luminous field; both macro and micro draw here -->
+  <canvas id="stage"></canvas>
+
+  <!-- grain overlay -->
+  <div id="grain"></div>
+
+  <!-- ---------- MACRO overlay ---------- -->
+  <div id="macroUI">
+    <header class="title">
+      <h1>MONUMENT</h1>
+      <p class="sub">FIFA World Cup 2026 · one growing field of every battle</p>
+    </header>
+
+    <div id="sampleBadge" class="badge hidden">SAMPLE DATA</div>
+
+    <!-- hover label -->
+    <div id="hoverLabel" class="hover-label hidden"></div>
+
+    <!-- time scrubber -->
+    <div class="scrubber">
+      <button id="playBtn" class="play" title="Play / pause">❚❚</button>
+      <input id="dayRange" class="range" type="range" min="0" max="1" step="1" value="1" />
+      <div class="day-label" id="dayLabel">—</div>
+    </div>
+  </div>
+
+  <!-- ---------- MICRO overlay (single match) ---------- -->
+  <div id="microUI" class="hidden">
+    <button id="backBtn" class="back" title="Back (Esc)">← MACRO</button>
+    <div class="match-hud">
+      <div class="score-block">
+        <span class="abbr home" id="mHomeAbbr">HOM</span>
+        <span class="score" id="mHomeScore">0</span>
+        <span class="dash">–</span>
+        <span class="score" id="mAwayScore">0</span>
+        <span class="abbr away" id="mAwayAbbr">AWY</span>
+      </div>
+      <div class="meta" id="mMeta">—</div>
+    </div>
+    <div class="micro-bottom">
+      <canvas id="mCurve" width="420" height="54"></canvas>
+      <div class="clock-row">
+        <button id="mPlayBtn" class="play small" title="Play / pause">❚❚</button>
+        <input id="mClock" class="range" type="range" min="0" max="100" step="0.1" value="0" />
+        <div class="clock" id="mClockLabel">0'</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="boot">assembling the monument…</div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

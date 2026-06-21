@@ -1,0 +1,10 @@
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.log
+
+# node (none currently, but future-proof)
+node_modules/
+
+# dev capture artifact
+public/_cap.png

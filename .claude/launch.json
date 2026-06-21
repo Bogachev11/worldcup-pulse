@@ -1,0 +1,5 @@
+{
+  "port": 5280,
+  "command": "node server/index.js",
+  "url": "http://localhost:5280"
+}
