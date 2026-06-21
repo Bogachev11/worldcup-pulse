@@ -3,22 +3,21 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>STAGE — France · Senegal</title>
+  <title>STAGE 3D — France · Senegal</title>
   <link rel="stylesheet" href="style.css" />
   <style>
-    /* polishing stage chrome */
     #panel {
       position: fixed; top: 14px; left: 14px; z-index: 30; pointer-events: auto;
-      display: flex; flex-direction: column; gap: 10px;
+      display: flex; flex-direction: column; gap: 9px;
       background: rgba(10,12,20,0.55); border: 1px solid var(--stroke);
-      border-radius: 12px; padding: 12px 14px; width: 250px;
+      border-radius: 12px; padding: 12px 14px; width: 260px;
       font-size: 11px; letter-spacing: 0.04em;
     }
     #panel .row { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
     #panel label { color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.12em; }
     #panel input[type=range] { flex: 1; }
-    #panel .val { min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
-    #title2 { font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--ink); }
+    #panel .val { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
+    #title2 { font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink); }
     #hud2 {
       position: fixed; top: 14px; right: 14px; z-index: 30;
       text-align: right; font-variant-numeric: tabular-nums; line-height: 1.5;
@@ -30,24 +29,29 @@
     .btn { cursor: pointer; border: 1px solid var(--stroke); background: rgba(255,255,255,0.05);
       color: var(--ink); border-radius: 7px; padding: 5px 10px; font-size: 11px; }
     .btn:hover { border-color: rgba(255,255,255,0.3); }
+    #panel .chk { text-transform: none; letter-spacing: 0; color: var(--ink); }
   </style>
 </head>
 <body>
   <canvas id="stage"></canvas>
 
   <div id="panel">
-    <div id="title2">STAGE · loading…</div>
+    <div id="title2">STAGE 3D · loading…</div>
     <div class="row">
       <button id="play" class="btn">❚❚ pause</button>
       <button id="restart" class="btn">↺ restart</button>
     </div>
     <div class="row"><label>clock</label><input id="clock" type="range" min="0" max="100" step="0.1" value="0"><span class="val" id="clockV">0'</span></div>
-    <div class="row"><label>speed</label><input id="speed" type="range" min="0.3" max="6" step="0.1" value="1.6"><span class="val" id="speedV">1.6×</span></div>
-    <div class="row"><label>recent win</label><input id="recent" type="range" min="0.5" max="12" step="0.5" value="4"><span class="val" id="recentV">4m</span></div>
+    <div class="row"><label>speed</label><input id="speed" type="range" min="0.3" max="8" step="0.1" value="2"><span class="val" id="speedV">2.0×</span></div>
+    <div class="row"><label>fade</label><input id="fade" type="range" min="0" max="1" step="0.02" value="0.7"><span class="val" id="fadeV">0.70</span></div>
+    <div class="row"><label>height Z</label><input id="zscale" type="range" min="0" max="1.4" step="0.02" value="0.7"><span class="val" id="zscaleV">0.70</span></div>
+    <div class="row"><label>poss win</label><input id="pwin" type="range" min="1" max="12" step="0.5" value="4"><span class="val" id="pwinV">4m</span></div>
     <div class="row"><label>layers</label>
-      <span><label style="text-transform:none"><input type="checkbox" id="lPass" checked>pass</label>
-      <label style="text-transform:none"><input type="checkbox" id="lShot" checked>shot</label>
-      <label style="text-transform:none"><input type="checkbox" id="lMom" checked>mom</label></span>
+      <span>
+        <label class="chk"><input type="checkbox" id="lPass" checked>pass</label>
+        <label class="chk"><input type="checkbox" id="lShot" checked>shot</label>
+        <label class="chk"><input type="checkbox" id="lGrid" checked>pitch</label>
+      </span>
     </div>
   </div>
 
@@ -55,6 +59,7 @@
     <div class="dim"><span id="hAbbr">FRA</span> vs <span id="aAbbr">SEN</span></div>
     <div class="big"><span id="hScore">0</span> – <span id="aScore">0</span></div>
     <div class="dim"><span id="clk">0'</span></div>
+    <div class="dim">poss <span id="hPoss">50</span> – <span id="aPoss">50</span>%</div>
     <div class="dim">xG <span id="hXg">0.00</span> – <span id="aXg">0.00</span></div>
     <div class="dim">pass <span id="hPass">0</span> – <span id="aPass">0</span></div>
   </div>
