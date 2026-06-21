@@ -14,16 +14,17 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildModel, at, xgUpTo, rgb01, hexToRgb, liftColor } from './claybattle.js';
-import { normPasses, placeXY, PassGrid, RunningMax, clamp, lerp } from './passfield.js';
+import { normPasses, placeXY, PassGrid, RunningMax, clamp, lerp,
+         buildDuels, normTurnovers } from './passfield.js';
 
 const ID = new URLSearchParams(location.search).get('id') || '1953888';
 const el = (id) => document.getElementById(id);
 
-// Reproduce the real JERSEY colours worn in this match (by team abbr).
-// France home shirt = NAVY blue, Senegal = WHITE. Fall back to model hex.
-const KIT = {
-  FRA: '#22356d',   // France navy
-  SEN: '#eef1f6',   // Senegal white
+// PRIMARY team colour ONLY (Layer 2 carries colour). France blue, Senegal green.
+// Keyed by abbr; falls back to the model hex if the abbr is unknown.
+const PRIMARY = {
+  FRA: '#1a37c8',   // France blue
+  SEN: '#00b85a',   // Senegal green
 };
 
 // ---- grid resolution (sim cells = vertices; texture is GX×GY) ---------------
@@ -38,22 +39,35 @@ let renderer, scene, camera, controls;
 let mesh, material, slab;
 let heightTex, heightData;      // R32F, GX×GY normalized cell height
 let colTex, colData;            // R32F, GX×GY away-share (0=home .. 1=away), -1=empty
+let duelTex, duelData;          // RG32F, GX×GY: R=spike height, G=winner share
 let model = null, passes = [];
-let grid, hMaxTrack;
+let duels = [], turnovers = [];
+let grid, hMaxTrack, dMaxTrack;
 let clock = 0, prevClock = 0, playing = true;
 let passCursor = 0;             // next pass to deposit (passes sorted by t)
+let duelCursor = 0;            // next duel to spawn
+let turnCursor = 0;           // next turnover to credit
 let domHome = 0.5;              // smoothed "who dominates recent passes" for HUD
 let lastDeposited = null;       // last pass deposited (for flow interpolation)
 
+// LAYER 1 — cumulative DOMINANCE bias. Slowly accumulating territory/possession
+// differential (home minus away), smoothed; raises the half of the pitch the
+// dominant team has controlled more. Sent to the shader as uDomBias.
+let domAccum = 0;              // raw cumulative differential (decays slowly)
+let domBias = 0;              // smoothed signal → -1 (home leans) .. +1 (away leans)
+
 // ---- exclusive possession signal -------------------------------------------
-// uPoss ∈ [0,1]: 0 = home has the ball, 1 = away. Computed from a short trailing
-// window of recent passes (decaying home/away weights), smoothed toward target
-// each frame so it flips on turnovers within ~0.5–1s.
-let possHomeW = 0, possAwayW = 0;   // decaying recent-pass weights (match-time)
+// uPoss ∈ [0,1]: 0 = home has the ball, 1 = away. Computed from a trailing window
+// of recent passes (decaying home/away weights) PLUS turnover events crediting
+// the winning team. SMOOTHED with a slow time constant (~4–6 match-seconds) so a
+// brief interception only nudges; a sustained counter-attack flips the colour.
+let possHomeW = 0, possAwayW = 0;   // decaying recent-pass + turnover weights
 let uPossTarget = 0.5;              // raw target from the window
 let uPoss = 0.5;                    // smoothed signal sent to the shader
-const POSS_WINDOW = 8;             // trailing window ≈ match-seconds → minutes
+const POSS_WINDOW = 10;            // trailing window in match-seconds
 const POSS_DECAY = 1 / (POSS_WINDOW / 60); // decay rate per match-minute
+const POSS_TAU_SEC = 5.0;          // smoothing time constant in MATCH-seconds (~4–6)
+const TURNOVER_W = 1.4;            // weight a turnover adds (a bit more than 1 pass)
 
 // tuning (bound to sliders)
 const tune = {
@@ -62,6 +76,8 @@ const tune = {
   fade: 0.85,         // zone sink rate (per second decay rate)
   wave: 0.5,          // base noise wave amount
   steps: 14,          // terrace levels (height quantisation) — the Variable look
+  duels: 1.0,         // duel spike amount (Layer 3)
+  dim: 0.08,          // how hard the passive (non-possessing) team fades
 };
 
 // transient event spikes (goals) that rise fast then settle.
@@ -81,6 +97,11 @@ async function init() {
   model = buildModel(raw);
   passes = normPasses(raw.passes);
   if (!passes.length) throw new Error('no passes in match data');
+  // on-ball events: raw.events[] ({t,team,type,x,y,outcome,...}). buildDuels /
+  // normTurnovers tolerate an empty list, so this never throws on sparse feeds.
+  const evt = raw.events || [];
+  duels = buildDuels(evt);
+  turnovers = normTurnovers(evt);
 
   setupThree();
   buildHeightfield();
@@ -188,6 +209,7 @@ function rebuildMesh() {
   if (mesh) { scene.remove(mesh); mesh.geometry.dispose(); }
   if (heightTex) heightTex.dispose();
   if (colTex) colTex.dispose();
+  if (duelTex) duelTex.dispose();
 
   // Mesh segments ≥ grid resolution (≈2× grid dim) so flat cell tops + near-
   // vertical step walls are crisp, but capped for perf at fine grids.
@@ -198,9 +220,12 @@ function rebuildMesh() {
 
   heightData = new Float32Array(GX * GY);
   colData = new Float32Array(GX * GY).fill(-1);
+  // DUEL texture: RG → R = spike height (0..~1.4), G = winner share (0=home..1=away)
+  duelData = new Float32Array(GX * GY * 2);
   heightTex = new THREE.DataTexture(heightData, GX, GY, THREE.RedFormat, THREE.FloatType);
   colTex = new THREE.DataTexture(colData, GX, GY, THREE.RedFormat, THREE.FloatType);
-  for (const tx of [heightTex, colTex]) {
+  duelTex = new THREE.DataTexture(duelData, GX, GY, THREE.RGFormat, THREE.FloatType);
+  for (const tx of [heightTex, colTex, duelTex]) {
     // NEAREST → each grid cell becomes a FLAT-TOPPED plateau with hard edges
     // (extruded-cell look), not a smooth interpolated surface.
     tx.magFilter = THREE.NearestFilter;
@@ -215,21 +240,22 @@ function rebuildMesh() {
       uniforms: {
         uHeight: { value: heightTex },
         uCol: { value: colTex },
+        uDuel: { value: duelTex },
         uTexel: { value: new THREE.Vector2(1 / GX, 1 / GY) },
         uHScale: { value: tune.height },
         uWave: { value: tune.wave },
         uLevels: { value: tune.steps },
-        uHome: { value: new THREE.Color(0x22356d) },
-        uAway: { value: new THREE.Color(0xeef1f6) },
-        // each team's flag palette (3 colours) drawn as diagonal bands
-        uH0: { value: new THREE.Vector3() }, uH1: { value: new THREE.Vector3() }, uH2: { value: new THREE.Vector3() },
-        uA0: { value: new THREE.Vector3() }, uA1: { value: new THREE.Vector3() }, uA2: { value: new THREE.Vector3() },
+        uDuelAmt: { value: tune.duels },
+        // PRIMARY team colours ONLY (Layer 2 carries colour). Home / away.
+        uHome: { value: new THREE.Color(0x1a37c8) },
+        uAway: { value: new THREE.Color(0x00b85a) },
         uLightDir: { value: new THREE.Vector3(-6, 9, 4).normalize() },
         uLightDir2: { value: new THREE.Vector3(7, 4, -6).normalize() },
         uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
         uTime: { value: 0 },
         uPoss: { value: 0.5 },           // 0 home has ball .. 1 away has ball
-        uDim: { value: 0.15 },           // brightness floor for non-possessing team
+        uDim: { value: tune.dim },       // brightness floor for non-possessing team
+        uDomBias: { value: 0.0 },        // Layer 1 dominance lean (-1 home .. +1 away)
       },
       vertexShader: VERT,
       fragmentShader: FRAG,
@@ -238,6 +264,7 @@ function rebuildMesh() {
   } else {
     material.uniforms.uHeight.value = heightTex;
     material.uniforms.uCol.value = colTex;
+    material.uniforms.uDuel.value = duelTex;
     material.uniforms.uTexel.value.set(1 / GX, 1 / GY);
   }
 
@@ -260,13 +287,17 @@ function rebuildMesh() {
 // via finite differences of the SAME H so lighting reads the relief.
 const VERT = /* glsl */`
   uniform sampler2D uHeight;
+  uniform sampler2D uDuel;
   uniform vec2 uTexel;
   uniform float uHScale;
   uniform float uWave;
-  uniform float uLevels;   // terrace count (height quantisation)
+  uniform float uLevels;    // terrace count (height quantisation)
+  uniform float uDuelAmt;   // duel spike amount (Layer 3)
+  uniform float uDomBias;   // Layer 1 dominance lean (-1 home .. +1 away)
   uniform vec2 uWorld;
   uniform float uTime;
-  varying float vH;        // pass-relief only (for colour intensity)
+  varying float vH;         // pass-relief only (for colour intensity)
+  varying float vDuel;      // duel spike intensity (for colour)
   varying vec2 vUvN;
   varying vec3 vNormalW;
   varying vec3 vWorldPos;
@@ -278,39 +309,44 @@ const VERT = /* glsl */`
     float a=h21(i), b=h21(i+vec2(1,0)), c=h21(i+vec2(0,1)), d=h21(i+vec2(1,1));
     return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
   }
-  // MACRO ROLLING WAVES — two+ wave trains travelling in DIFFERENT directions
-  // so the whole surface visibly rolls one way AND another. Smooth (NOT stepped):
-  // this is the living base the stepped pass-relief sits on. Amplitude is driven
-  // by the WAVE slider (uWave), so it's meaningful again (user runs it ~1.6).
+  // LAYER 1 — MACRO ROLLING WAVES (NEUTRAL): two+ wave trains travelling in
+  // DIFFERENT directions so the whole surface visibly rolls. PLUS a low-frequency
+  // DOMINANCE lean: raise the half of the pitch the dominant team controlled more
+  // (height += domBias * (x-0.5)). uDomBias is a slow cumulative signal.
   float waveBase(vec2 uv){
-    // map uv→world-ish coords so wavelengths read across the pitch
+    // P is a VEC2 (world-ish coords) — use only .x / .y, never .z.
     vec2 P = (uv - 0.5) * vec2(uWorld.x, uWorld.y);
     float t = uTime;
-    // train 1: rolls along +X, modulated across Z  (one direction)
     float w  = 0.55 * sin(P.x * 0.95 + t * 0.85) * cos(P.y * 0.70 - t * 0.45);
-    // train 2: rolls along the diagonal the OTHER way
     float w2 = 0.38 * sin((P.x + P.y) * 0.62 - t * 0.65);
-    // train 3: a slow long swell across Z for extra life
     float w3 = 0.22 * sin(P.y * 0.40 + t * 0.30);
-    // faint value-noise ripple so crests aren't perfectly regular
     float wn = (vn(uv * 3.0 + vec2(t * 0.05, t * 0.03)) - 0.5) * 0.35;
-    return (w + w2 + w3 + wn) * uWave * 0.22;
+    float wave = (w + w2 + w3 + wn) * uWave * 0.22;
+    // dominance lean: low-frequency tilt across X toward the dominant side
+    float lean = uDomBias * (uv.x - 0.5) * 1.1;
+    return wave + lean;
   }
-  // Relief sampled with NEAREST (flat cell tops), then QUANTISED into discrete
-  // terraces → the staged "лесенка" / extruded-blocks Variable aesthetic.
+  // LAYER 2 — Relief sampled with NEAREST (flat cell tops), QUANTISED into
+  // discrete terraces → the staged extruded-blocks Variable aesthetic.
   float relief(vec2 uv){
     float r = texture2D(uHeight, uv).r;            // 0..~1.4, flat per cell
     float L = max(uLevels, 1.0);
     r = floor(r * L + 0.5) / L;                    // terrace into L steps
     return r * uHScale;
   }
-  float H(vec2 uv){ return waveBase(uv) + relief(uv); }
+  // LAYER 3 — duel spike height (sharp, NOT terraced, capped so no vertical facet)
+  float duelH(vec2 uv){
+    float d = texture2D(uDuel, uv).r;              // already capped on CPU side
+    return min(d, 1.4) * uHScale * 0.9 * uDuelAmt;
+  }
+  float H(vec2 uv){ return waveBase(uv) + relief(uv) + duelH(uv); }
 
   void main(){
     vec2 fuv = uv;
     vUvN = fuv;
     float h = H(fuv);
     vH = relief(fuv);
+    vDuel = duelH(fuv);
 
     float hl = H(fuv - vec2(uTexel.x, 0.0));
     float hr = H(fuv + vec2(uTexel.x, 0.0));
@@ -318,7 +354,9 @@ const VERT = /* glsl */`
     float hu = H(fuv + vec2(0.0, uTexel.y));
     float dx = (uWorld.x * uTexel.x) * 2.0;
     float dz = (uWorld.y * uTexel.y) * 2.0;
-    vec3 n = normalize(vec3(-(hr-hl)/max(dx,1e-4), 1.0, -(hu-hd)/max(dz,1e-4)));
+    vec3 n = vec3(-(hr-hl)/max(dx,1e-4), 1.0, -(hu-hd)/max(dz,1e-4));
+    // robust normal: if it collapses, fall back to straight up (no black facets)
+    n = (length(n) > 1e-4) ? normalize(n) : vec3(0.0, 1.0, 0.0);
     vNormalW = n;
 
     vec3 pos = position;
@@ -335,16 +373,16 @@ const VERT = /* glsl */`
 const FRAG = /* glsl */`
   precision highp float;
   uniform sampler2D uCol;
-  uniform vec3 uHome;
-  uniform vec3 uAway;
-  uniform vec3 uH0; uniform vec3 uH1; uniform vec3 uH2;
-  uniform vec3 uA0; uniform vec3 uA1; uniform vec3 uA2;
+  uniform sampler2D uDuel;
+  uniform vec3 uHome;      // home PRIMARY colour
+  uniform vec3 uAway;      // away PRIMARY colour
   uniform vec3 uLightDir;
   uniform vec3 uLightDir2;
   uniform float uTime;
   uniform float uPoss;     // 0 home has ball .. 1 away has ball
   uniform float uDim;      // brightness floor for the team NOT in possession
   varying float vH;
+  varying float vDuel;
   varying vec2 vUvN;
   varying vec3 vNormalW;
   varying vec3 vWorldPos;
@@ -356,111 +394,99 @@ const FRAG = /* glsl */`
     return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
   }
 
-  vec3 triFlag(vec3 a, vec3 b, vec3 c, float x){
-    x = fract(x) * 3.0;
-    float i = floor(x), f = fract(x);
-    vec3 c0 = (i < 0.5) ? a : ((i < 1.5) ? b : c);
-    vec3 c1 = (i < 0.5) ? b : ((i < 1.5) ? c : a);
-    return mix(c0, c1, smoothstep(0.42, 0.58, f));
-  }
-
   void main(){
-    // NORMAL GUARD: flat quantized plateaus give a near-zero finite-difference
-    // normal → dot(N,L)=0 → black blotches. If the interpolated normal collapses,
-    // fall back to straight up so lighting never zeroes out.
+    // NORMAL GUARD: collapsed finite-difference normal → fall back to straight up
+    // so dot(N,L) never zeroes (no black facets on flat plateaus).
     vec3 N = vNormalW;
     float nlen = length(N);
-    N = (nlen > 1e-3) ? N / nlen : vec3(0.0, 1.0, 0.0);
+    N = (nlen > 1e-4) ? N / nlen : vec3(0.0, 1.0, 0.0);
 
-    // base calm landscape colour (cool slate) where no passes are happening
-    vec3 baseCol = vec3(0.10, 0.13, 0.20);
+    // LAYER 1 base: NEUTRAL dark slate (carries NO team colour — this is the tide)
+    vec3 baseNeutral = vec3(0.11, 0.14, 0.21);
+    vec3 col = baseNeutral;
 
+    // ---- LAYER 2: POSSESSION colour (the ball) ------------------------------
     float share = texture2D(uCol, vUvN).r;       // -1 empty, else away-share 0..1
     if (!(share == share)) share = -1.0;          // NaN guard
     float occupied = step(0.0, share);
     float shareC = clamp(share, 0.0, 1.0);
-    // each team painted in its own flag colours as diagonal bands; blend at the seam
-    float diag = (vUvN.x + vUvN.y) * 4.5;
-    vec3 fHome = triFlag(uH0, uH1, uH2, diag);
-    vec3 fAway = triFlag(uA0, uA1, uA2, diag);
-    vec3 team = mix(fHome, fAway, smoothstep(0.42, 0.58, shareC));
+    // SOLID PRIMARY colour per occupied cell (no flag tri-band).
+    vec3 team = mix(uHome, uAway, step(0.5, shareC));
 
-    // EXCLUSIVE POSSESSION: only the team currently on the ball glows; the other
-    // recedes. active ≈1 when this cell's team has the ball, ≈0 when it doesn't.
+    // possession gate: how much THIS cell's team currently has the ball.
+    // possActive ≈1 if cell-team == possessing team, ≈0 otherwise.
     float possActive = mix(1.0 - uPoss, uPoss, shareC);
-    float possGate = mix(uDim, 1.0, possActive);   // ∈ [uDim .. 1]
+    // STRENGTHENED dim: passive team falls hard toward the neutral base (uDim).
+    float possGate = mix(uDim, 1.0, possActive);
 
-    // how risen this cell is → how much team colour shows over the base
     float relief = max(vH, 0.0);
     float lift = clamp(relief * 1.4, 0.0, 1.0);
-    vec3 col = mix(baseCol, team, occupied * (0.25 + 0.75 * lift));
+    // add the possessing team's colour where its relief rises; passive team's
+    // cells barely lift off the neutral base.
+    float teamMix = occupied * (0.30 + 0.70 * lift) * possGate;
+    col = mix(baseNeutral, team, clamp(teamMix, 0.0, 1.0));
 
-    // subtle marble so the surface reads as textured landscape
+    // subtle marble so the surface reads as a textured landscape
     float marble = vn(vUvN*26.0 + vec2(0.0, uTime*0.03))*0.5 + vn(vUvN*70.0)*0.25;
-    col *= 0.78 + 0.34*marble;
+    col *= 0.80 + 0.30*marble;
 
-    // lighting: two directional + RAISED ambient floor (so nothing goes black)
+    // lighting: two directional + raised ambient floor (so nothing goes black)
     float d1 = max(dot(N, normalize(uLightDir)), 0.0);
     float d2 = max(dot(N, normalize(uLightDir2)), 0.0) * 0.5;
-    col *= (0.40 + d1*1.0 + d2);
+    col *= (0.42 + d1*1.0 + d2);
 
-    // peaks read brighter, valleys sink darker (relief AO-ish)
+    // peaks read brighter, valleys sink (relief AO-ish)
     col *= 0.86 + clamp(relief*0.6, 0.0, 0.5);
 
-    // gentle emissive glow on risen team zones (where the action is hot)
-    col += team * occupied * smoothstep(0.35, 1.0, relief) * 0.35;
+    // gentle emissive on hot possessing zones
+    col += team * occupied * possGate * smoothstep(0.35, 1.0, relief) * 0.35;
 
-    // gate occupied team COLOUR/brightness by possession (relief height stays).
-    // the empty base never dims; only painted team zones swap lit/recede.
-    col *= mix(1.0, possGate, occupied);
+    // ---- LAYER 3: DUEL sparks (winner-tinted, bright, ON TOP) ---------------
+    vec2 duel = texture2D(uDuel, vUvN).rg;        // r = spike height, g = winner share
+    float dInt = duel.r;
+    float dShareC = clamp(duel.g, 0.0, 1.0);
+    if (!(dInt == dInt)) dInt = 0.0;              // NaN guard
+    vec3 duelTeam = mix(uHome, uAway, step(0.5, dShareC));
+    // crisp spark: sharp response to intensity, ACCENT brighter than the base.
+    float spark = smoothstep(0.04, 0.7, dInt);
+    col += duelTeam * spark * 1.15;               // additive accent so they pop
+    col += vec3(1.0) * spark * 0.18;              // tiny white-hot core
 
     // cinematic fresnel rim
     vec3 V = normalize(cameraPosition - vWorldPos);
     float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-    col += fres * 0.08 * mix(baseCol, team, occupied);
+    col += fres * 0.07 * mix(baseNeutral, team, occupied * possGate);
 
-    // BRIGHTNESS FLOOR: nothing ever goes fully black (kills floating black spots)
-    col = max(col, baseCol * 0.35);
+    // BRIGHTNESS FLOOR: never darker than the lit neutral base (kills black spots).
+    // Empty / quiet cells therefore render as the neutral tide, never pure black.
+    col = max(col, baseNeutral * 0.5);
     // final NaN guard
-    if (!(col.r == col.r) || !(col.g == col.g) || !(col.b == col.b)) col = baseCol * 0.35;
+    if (!(col.r == col.r) || !(col.g == col.g) || !(col.b == col.b)) col = baseNeutral * 0.5;
 
     gl_FragColor = vec4(col, 1.0);
   }
 `;
 
 // ---- colours ----------------------------------------------------------------
+// PRIMARY team colour only (Layer 2). By abbr, else the lifted model hex.
 function teamRgb(side) {
   const abbr = model[side].abbr;
-  if (abbr && KIT[abbr]) return rgb01(hexToRgb(KIT[abbr]));
+  if (abbr && PRIMARY[abbr]) return rgb01(hexToRgb(PRIMARY[abbr]));
   return rgb01(model[side].rgb);                // already lifted in buildModel
 }
-function teamCss(side) {
+function primaryCss(side) {
   const abbr = model[side].abbr;
-  const c = (abbr && KIT[abbr]) ? hexToRgb(KIT[abbr]) : model[side].rgb;
+  const c = (abbr && PRIMARY[abbr]) ? hexToRgb(PRIMARY[abbr]) : (model[side].rgb || { r: 200, g: 200, b: 200 });
   return `rgb(${c.r | 0},${c.g | 0},${c.b | 0})`;
-}
-// national flag palettes (each team painted in its own colours, diagonal bands)
-const FLAG = {
-  FRA: ['#0055A4', '#FFFFFF', '#EF4135'],   // blue / white / red
-  SEN: ['#00853F', '#FDEF42', '#E31B23'],   // green / yellow / red
-};
-function flagRgb(side) {
-  const abbr = model[side].abbr;
-  const hexes = (abbr && FLAG[abbr]) || [KIT[abbr] || '#888888', '#dddddd', '#444444'];
-  return hexes.map((hx) => rgb01(hexToRgb(hx)));   // [[r,g,b],...] 0..1
 }
 function applyTeamColors() {
   if (!material || !model) return;
   const h = teamRgb('home'), a = teamRgb('away');
   material.uniforms.uHome.value.setRGB(h[0], h[1], h[2]);
   material.uniforms.uAway.value.setRGB(a[0], a[1], a[2]);
-  const fh = flagRgb('home'), fa = flagRgb('away');
-  material.uniforms.uH0.value.set(...fh[0]); material.uniforms.uH1.value.set(...fh[1]); material.uniforms.uH2.value.set(...fh[2]);
-  material.uniforms.uA0.value.set(...fa[0]); material.uniforms.uA1.value.set(...fa[1]); material.uniforms.uA2.value.set(...fa[2]);
-  // HUD label colour = each team's primary flag colour
-  const primary = (side) => { const abbr = model[side].abbr; const hx = (abbr && FLAG[abbr]) ? FLAG[abbr][0] : null; const c = hx ? hexToRgb(hx) : (model[side].rgb || { r: 200, g: 200, b: 200 }); return `rgb(${c.r | 0},${c.g | 0},${c.b | 0})`; };
-  document.documentElement.style.setProperty('--home-color', primary('home'));
-  document.documentElement.style.setProperty('--away-color', primary('away'));
+  // HUD label colour = each team's primary colour
+  document.documentElement.style.setProperty('--home-color', primaryCss('home'));
+  document.documentElement.style.setProperty('--away-color', primaryCss('away'));
 }
 
 // ============================================================================
@@ -479,18 +505,24 @@ const END_SPLAT = 0.45;         // lighter splat weight at the pass end
 function resetSim() {
   grid = new PassGrid(GX, GY);
   hMaxTrack = new RunningMax(0.4);
+  dMaxTrack = new RunningMax(0.4);
   passCursor = 0;
+  duelCursor = 0;
+  turnCursor = 0;
   eventCursor = 0;
   activeEvents = [];
   prevClock = 0;            // sim cursor only; module `clock` is owned by callers
   domHome = 0.5;
+  domAccum = 0; domBias = 0;
   possHomeW = 0; possAwayW = 0;
   uPossTarget = 0.5; uPoss = 0.5;
   lastDeposited = null;
   heightData.fill(0);
   colData.fill(-1);
+  duelData.fill(0);
   heightTex.needsUpdate = true;
   colTex.needsUpdate = true;
+  duelTex.needsUpdate = true;
 }
 
 // Deposit a chain of light splats along a segment so the lit crest GLIDES across
@@ -527,8 +559,42 @@ function depositRange(a, b) {
 
       // feed the possession window (recent-pass weights per team)
       if (p.team === 'away') possAwayW += 1.0; else possHomeW += 1.0;
+
+      // LAYER 1 — cumulative DOMINANCE: count this pass's TERRITORY toward the
+      // attacking team. Pass placed on the shared pitch; how far into the
+      // attacking half it is (x for home, 1-x for away) scores possession+
+      // territory differential. Home positive, away negative.
+      const adv = (p.team === 'home') ? s.x : (1 - s.x);   // 0..1 attacking depth
+      const sign = (p.team === 'home') ? 1 : -1;
+      domAccum += sign * (0.4 + 0.6 * clamp(adv, 0, 1));
     }
     passCursor++;
+  }
+}
+
+// Spawn DUEL spikes (Layer 3) for duels whose t falls in (a,b]. Sharp/narrow.
+function spawnDuels(a, b) {
+  const radius = Math.max(0.7, SPLAT_PITCH * GX * 0.45);   // ~1 cell core, very small
+  while (duelCursor < duels.length && duels[duelCursor].t <= b) {
+    const d = duels[duelCursor];
+    if (d.t > a) {
+      const pl = placeXY(d.xn, d.yn, d.team, d.t);
+      // tall+narrow but CAPPED amplitude so no near-vertical facet
+      grid.duelSplat(pl.x, pl.y, d.team, 1.4 * tune.duels, radius);
+    }
+    duelCursor++;
+  }
+}
+
+// Credit TURNOVERS to the possession window (Layer 2). A turnover nudges the
+// winning team's weight; only SUSTAINED pressure (many) flips the smoothed colour.
+function creditTurnovers(a, b) {
+  while (turnCursor < turnovers.length && turnovers[turnCursor].t <= b) {
+    const to = turnovers[turnCursor];
+    if (to.t > a) {
+      if (to.team === 'away') possAwayW += TURNOVER_W; else possHomeW += TURNOVER_W;
+    }
+    turnCursor++;
   }
 }
 
@@ -539,6 +605,12 @@ function updatePossession(dtMin) {
   possHomeW *= keep; possAwayW *= keep;
   const tot = possHomeW + possAwayW;
   uPossTarget = tot > 1e-4 ? (possAwayW / tot) : uPossTarget;
+  // decay the cumulative dominance slowly (long memory) and recompute the bias.
+  // domAccum spans roughly ±(#passes); squash to ~[-1,1] with a soft saturate.
+  domAccum *= Math.exp(-0.02 * Math.max(dtMin, 0));
+  // away positive lean → +; home → -. tanh-ish saturate.
+  const x = -domAccum / 40;          // sign: home accum positive → lean home (x<0)
+  domBias = clamp(x / (1 + Math.abs(x)), -1, 1);
 }
 
 // Goal events: a sharp tall spike near the scoring team's attacking third that
@@ -566,11 +638,14 @@ function applyEventSpikes(t) {
     const age = t - e.tStart;
     if (age < 0) continue;
     if (age > e.life) { activeEvents.splice(i, 1); continue; }
-    // fast rise (~0.15 min) then ease down; finer + taller than base relief
+    // fast rise (~0.15 min) then ease down; finer + taller than base relief.
+    // CAPPED so no near-vertical facet appears (black-spot fix).
     const rise = Math.min(1, age / 0.15);
     const fall = 1 - clamp((age - 0.15) / (e.life - 0.15), 0, 1);
-    const amp = 2.6 * rise * fall;
-    grid.splat(e.x, e.y, e.team, amp, radius);
+    let amp = 2.6 * rise * fall;
+    if (!Number.isFinite(amp)) amp = 0;
+    amp = Math.min(amp, 3.0);
+    if (amp > 0) grid.splat(e.x, e.y, e.team, amp, radius);
   }
 }
 
@@ -586,14 +661,19 @@ function stepSim(t, dt) {
   }
 
   depositRange(prevClock, t);
+  creditTurnovers(prevClock, t);
+  spawnDuels(prevClock, t);
   syncEvents(t);
   applyEventSpikes(t);
   updatePossession(Math.max(0, t - prevClock));
 
   // decay everything: rate scaled by fade slider; dt is REAL seconds (so the
-  // visible sink speed is tied to wall time, feels consistent across speeds)
+  // visible sink speed is tied to wall time, feels consistent across speeds).
+  // DUELS decay much faster (~3×) so sparks are brief (≈0.6–1.2 match-min).
   const rate = tune.fade * 1.1;
-  grid.decay(Math.exp(-rate * Math.max(dt, 1e-4)));
+  const keep = Math.exp(-rate * Math.max(dt, 1e-4));
+  const duelKeep = Math.exp(-rate * 3.0 * Math.max(dt, 1e-4));
+  grid.decay(keep, duelKeep);
 
   prevClock = t;
   writeTextures();
@@ -610,22 +690,32 @@ function fastForward(t) {
   while (a < t) {
     const b = Math.min(t, a + CHUNK);
     depositRange(a, b);
+    creditTurnovers(a, b);
+    spawnDuels(a, b);
     syncEvents(b);
     applyEventSpikes(b);
     updatePossession(b - a);
-    grid.decay(Math.exp(-rate * (b - a) * secPerMin));
+    const dtSec = (b - a) * secPerMin;
+    grid.decay(Math.exp(-rate * dtSec), Math.exp(-rate * 3.0 * dtSec));
     a = b;
   }
 }
 
-// Write normalized cell height + away-share into the DataTextures.
+// Write normalized cell height + away-share + duel channel into the DataTextures.
+// EVERY write is finite-guarded and clamped so NO NaN/Inf ever reaches the GPU
+// (black-spot fix) and heights are capped so no near-vertical facet appears.
 function writeTextures() {
   const n = GX * GY;
-  // find frame max to feed the running-max normalizer
-  let frameMax = 0;
-  for (let k = 0; k < n; k++) { const v = grid.total(k); if (v > frameMax) frameMax = v; }
+  // find frame max (possession + duel) to feed the running-max normalizers
+  let frameMax = 0, duelMax = 0;
+  for (let k = 0; k < n; k++) {
+    const v = grid.total(k); if (Number.isFinite(v) && v > frameMax) frameMax = v;
+    const dv = grid.dInt[k]; if (Number.isFinite(dv) && dv > duelMax) duelMax = dv;
+  }
   hMaxTrack.observe(frameMax);
-  const inv = 1 / hMaxTrack.m;
+  dMaxTrack.observe(duelMax);
+  const inv = (Number.isFinite(hMaxTrack.m) && hMaxTrack.m > 1e-6) ? 1 / hMaxTrack.m : 0;
+  const dinv = (Number.isFinite(dMaxTrack.m) && dMaxTrack.m > 1e-6) ? 1 / dMaxTrack.m : 0;
 
   let hSum = 0, aSum = 0;
   for (let k = 0; k < n; k++) {
@@ -634,8 +724,18 @@ function writeTextures() {
     let nh = tot * inv;
     if (!Number.isFinite(nh)) nh = 0;
     heightData[k] = nh > 0 ? Math.min(nh, 1.4) : 0;
-    // colour: away-share where occupied, else -1 (empty → base wave colour)
-    colData[k] = tot > 1e-4 ? (ha / tot) : -1;
+    // colour: away-share where occupied, else -1 (empty → neutral base)
+    let cs = tot > 1e-4 ? (ha / tot) : -1;
+    if (!Number.isFinite(cs)) cs = -1;
+    colData[k] = cs;
+    // DUEL channel: R = normalized+capped spike height, G = winner away-share
+    let dh = grid.dInt[k] * dinv;
+    if (!Number.isFinite(dh)) dh = 0;
+    dh = dh > 0 ? Math.min(dh, 1.4) : 0;
+    let ds = grid.duelShare(k);
+    if (!Number.isFinite(ds)) ds = 0.5;
+    duelData[k * 2] = dh;
+    duelData[k * 2 + 1] = clamp(ds, 0, 1);
     hSum += hh; aSum += ha;
   }
   // smoothed "who dominates recent passes" for the HUD
@@ -645,6 +745,7 @@ function writeTextures() {
 
   heightTex.needsUpdate = true;
   colTex.needsUpdate = true;
+  duelTex.needsUpdate = true;
 }
 
 // ---- grid-resolution change -------------------------------------------------
@@ -681,16 +782,23 @@ function loop(now) {
 
   if (model && grid) stepSim(clock, dt);
 
-  // smooth possession toward its target (time constant ~0.3s → flips in <1s)
-  const kPoss = 1 - Math.exp(-dt / 0.3);
+  // smooth possession toward its target with a MATCH-seconds time constant
+  // (~POSS_TAU_SEC). dtMatch = real dt × speed, so a brief interception only
+  // nudges uPoss; a sustained counter-attack flips the colour.
+  const dtMatchSec = dt * Math.max(0.2, tune.speed);
+  const kPoss = 1 - Math.exp(-dtMatchSec / POSS_TAU_SEC);
   uPoss = lerp(uPoss, uPossTarget, kPoss);
 
   if (material) {
     material.uniforms.uHScale.value = tune.height;
     material.uniforms.uWave.value = tune.wave;
     material.uniforms.uLevels.value = tune.steps;
+    material.uniforms.uDuelAmt.value = tune.duels;
+    material.uniforms.uDim.value = tune.dim;
+    material.uniforms.uDomBias.value = Number.isFinite(domBias) ? domBias : 0;
     material.uniforms.uPoss.value = uPoss;
     hMaxTrack.ease(dt);
+    dMaxTrack.ease(dt);
     material.uniforms.uTime.value = now / 1000;
   }
 
@@ -754,11 +862,17 @@ function bindUI() {
     // stepSim handles backward scrub; forward scrub just deposits the gap.
   });
 
+  // inject the new DUELS + DIM slider rows (HTML untouched: build them in JS).
+  injectSlider('duels', 'duelsV', 'duels', 0, 3, 0.05, tune.duels, 'wave');
+  injectSlider('dim', 'dimV', 'dim', 0, 0.4, 0.01, tune.dim, 'duels');
+
   bindSlider('speed', 'speedV', (v) => { tune.speed = v; return v.toFixed(1) + '×'; });
   bindSlider('height', 'heightV', (v) => { tune.height = v; return v.toFixed(2); });
   bindSlider('fade', 'fadeV', (v) => { tune.fade = v; return v.toFixed(2); });
   bindSlider('wave', 'waveV', (v) => { tune.wave = v; return v.toFixed(2); });
   bindSlider('steps', 'stepsV', (v) => { tune.steps = Math.round(v); return String(Math.round(v)); });
+  if (el('duels')) bindSlider('duels', 'duelsV', (v) => { tune.duels = v; return v.toFixed(2); });
+  if (el('dim')) bindSlider('dim', 'dimV', (v) => { tune.dim = v; return v.toFixed(2); });
 
   // grid resolution: one slider drives both axes (keeps ~5:3 aspect)
   const gridS = el('grid'), gridV = el('gridV');
@@ -784,9 +898,28 @@ function bindUI() {
 
 function bindSlider(id, valId, fn) {
   const s = el(id), v = el(valId);
+  if (!s || !v) return;
   const apply = () => { v.textContent = fn(+s.value); };
   s.addEventListener('input', apply);
   apply();
+}
+
+// Build a new slider row in the control panel (HTML is not edited). Inserts the
+// row after the row containing `afterId` so ordering stays sensible. Idempotent.
+function injectSlider(id, valId, label, min, max, step, value, afterId) {
+  if (el(id)) return;                              // already present
+  const anchor = el(afterId);
+  const row = anchor && anchor.closest ? anchor.closest('.row') : null;
+  const panel = row ? row.parentNode : (document.querySelector('.pnl') || document.body);
+  if (!panel) return;
+  const div = document.createElement('div');
+  div.className = 'row';
+  div.innerHTML =
+    `<label>${label}</label>` +
+    `<input id="${id}" type="range" min="${min}" max="${max}" step="${step}" value="${value}">` +
+    `<span class="val" id="${valId}">${(+value).toFixed(2)}</span>`;
+  if (row && row.nextSibling) panel.insertBefore(div, row.nextSibling);
+  else panel.appendChild(div);
 }
 
 // ---- dev hook ---------------------------------------------------------------
@@ -802,6 +935,9 @@ window.__setClock = (min) => {
     material.uniforms.uHScale.value = tune.height;
     material.uniforms.uWave.value = tune.wave;
     material.uniforms.uLevels.value = tune.steps;
+    material.uniforms.uDuelAmt.value = tune.duels;
+    material.uniforms.uDim.value = tune.dim;
+    material.uniforms.uDomBias.value = Number.isFinite(domBias) ? domBias : 0;
     material.uniforms.uPoss.value = uPoss;
   }
   controls.update();
