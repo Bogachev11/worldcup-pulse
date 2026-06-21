@@ -31,9 +31,9 @@ let lastSimT = -1;                       // last match-time we recomputed H at
 
 // tuning (bound to sliders)
 const tune = {
-  speed: 2.0,
-  heightScale: 1.0,
-  turbulence: 1.0,
+  speed: 3.7,
+  heightScale: 2.2,
+  turbulence: 3.0,
   ridgeSharp: 1.0,
   flowSpeed: 1.0,
 };
