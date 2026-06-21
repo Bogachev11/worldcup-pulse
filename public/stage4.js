@@ -198,6 +198,9 @@ function rebuildMesh() {
         uLevels: { value: tune.steps },
         uHome: { value: new THREE.Color(0x22356d) },
         uAway: { value: new THREE.Color(0xeef1f6) },
+        // each team's flag palette (3 colours) drawn as diagonal bands
+        uH0: { value: new THREE.Vector3() }, uH1: { value: new THREE.Vector3() }, uH2: { value: new THREE.Vector3() },
+        uA0: { value: new THREE.Vector3() }, uA1: { value: new THREE.Vector3() }, uA2: { value: new THREE.Vector3() },
         uLightDir: { value: new THREE.Vector3(-6, 9, 4).normalize() },
         uLightDir2: { value: new THREE.Vector3(7, 4, -6).normalize() },
         uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
@@ -299,6 +302,8 @@ const FRAG = /* glsl */`
   uniform sampler2D uCol;
   uniform vec3 uHome;
   uniform vec3 uAway;
+  uniform vec3 uH0; uniform vec3 uH1; uniform vec3 uH2;
+  uniform vec3 uA0; uniform vec3 uA1; uniform vec3 uA2;
   uniform vec3 uLightDir;
   uniform vec3 uLightDir2;
   uniform float uTime;
@@ -314,6 +319,14 @@ const FRAG = /* glsl */`
     return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
   }
 
+  vec3 triFlag(vec3 a, vec3 b, vec3 c, float x){
+    x = fract(x) * 3.0;
+    float i = floor(x), f = fract(x);
+    vec3 c0 = (i < 0.5) ? a : ((i < 1.5) ? b : c);
+    vec3 c1 = (i < 0.5) ? b : ((i < 1.5) ? c : a);
+    return mix(c0, c1, smoothstep(0.42, 0.58, f));
+  }
+
   void main(){
     vec3 N = normalize(vNormalW);
 
@@ -322,7 +335,11 @@ const FRAG = /* glsl */`
 
     float share = texture2D(uCol, vUvN).r;       // -1 empty, else away-share 0..1
     float occupied = step(0.0, share);
-    vec3 team = mix(uHome, uAway, clamp(share, 0.0, 1.0));
+    // each team painted in its own flag colours as diagonal bands; blend at the seam
+    float diag = (vUvN.x + vUvN.y) * 4.5;
+    vec3 fHome = triFlag(uH0, uH1, uH2, diag);
+    vec3 fAway = triFlag(uA0, uA1, uA2, diag);
+    vec3 team = mix(fHome, fAway, smoothstep(0.42, 0.58, clamp(share, 0.0, 1.0)));
 
     // how risen this cell is → how much team colour shows over the base
     float lift = clamp(vH * 1.4, 0.0, 1.0);
@@ -363,13 +380,28 @@ function teamCss(side) {
   const c = (abbr && KIT[abbr]) ? hexToRgb(KIT[abbr]) : model[side].rgb;
   return `rgb(${c.r | 0},${c.g | 0},${c.b | 0})`;
 }
+// national flag palettes (each team painted in its own colours, diagonal bands)
+const FLAG = {
+  FRA: ['#0055A4', '#FFFFFF', '#EF4135'],   // blue / white / red
+  SEN: ['#00853F', '#FDEF42', '#E31B23'],   // green / yellow / red
+};
+function flagRgb(side) {
+  const abbr = model[side].abbr;
+  const hexes = (abbr && FLAG[abbr]) || [KIT[abbr] || '#888888', '#dddddd', '#444444'];
+  return hexes.map((hx) => rgb01(hexToRgb(hx)));   // [[r,g,b],...] 0..1
+}
 function applyTeamColors() {
   if (!material || !model) return;
   const h = teamRgb('home'), a = teamRgb('away');
   material.uniforms.uHome.value.setRGB(h[0], h[1], h[2]);
   material.uniforms.uAway.value.setRGB(a[0], a[1], a[2]);
-  document.documentElement.style.setProperty('--home-color', teamCss('home'));
-  document.documentElement.style.setProperty('--away-color', teamCss('away'));
+  const fh = flagRgb('home'), fa = flagRgb('away');
+  material.uniforms.uH0.value.set(...fh[0]); material.uniforms.uH1.value.set(...fh[1]); material.uniforms.uH2.value.set(...fh[2]);
+  material.uniforms.uA0.value.set(...fa[0]); material.uniforms.uA1.value.set(...fa[1]); material.uniforms.uA2.value.set(...fa[2]);
+  // HUD label colour = each team's primary flag colour
+  const primary = (side) => { const abbr = model[side].abbr; const hx = (abbr && FLAG[abbr]) ? FLAG[abbr][0] : null; const c = hx ? hexToRgb(hx) : (model[side].rgb || { r: 200, g: 200, b: 200 }); return `rgb(${c.r | 0},${c.g | 0},${c.b | 0})`; };
+  document.documentElement.style.setProperty('--home-color', primary('home'));
+  document.documentElement.style.setProperty('--away-color', primary('away'));
 }
 
 // ============================================================================
