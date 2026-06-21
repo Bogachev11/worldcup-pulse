@@ -74,7 +74,7 @@ const tune = {
   speed: 14.8,        // stage2 default 3.7 × 4
   height: 1.6,        // relief height multiplier
   fade: 0.85,         // zone sink rate (per second decay rate)
-  wave: 0.5,          // base noise wave amount
+  wave: 1.1,          // macro rolling-wave amplitude
   steps: 14,          // terrace levels (height quantisation) — the Variable look
   duels: 1.0,         // duel spike amount (Layer 3)
   dim: 0.08,          // how hard the passive (non-possessing) team fades
@@ -259,6 +259,7 @@ function rebuildMesh() {
       },
       vertexShader: VERT,
       fragmentShader: FRAG,
+      side: THREE.DoubleSide,   // strong waves + low camera → render backfaces (no see-through holes)
     });
     applyTeamColors();
   } else {
@@ -321,7 +322,7 @@ const VERT = /* glsl */`
     float w2 = 0.38 * sin((P.x + P.y) * 0.62 - t * 0.65);
     float w3 = 0.22 * sin(P.y * 0.40 + t * 0.30);
     float wn = (vn(uv * 3.0 + vec2(t * 0.05, t * 0.03)) - 0.5) * 0.35;
-    float wave = (w + w2 + w3 + wn) * uWave * 0.22;
+    float wave = (w + w2 + w3 + wn) * uWave * 0.78;
     // dominance lean: low-frequency tilt across X toward the dominant side
     float lean = uDomBias * (uv.x - 0.5) * 1.1;
     return wave + lean;
@@ -345,6 +346,8 @@ const VERT = /* glsl */`
     vec2 fuv = uv;
     vUvN = fuv;
     float h = H(fuv);
+    if (!(h == h)) h = 0.0;          // NaN guard → no degenerate (see-through) triangles
+    h = clamp(h, -4.0, 7.0);         // clamp so extreme spikes can't tear the mesh
     vH = relief(fuv);
     vDuel = duelH(fuv);
 
@@ -402,7 +405,7 @@ const FRAG = /* glsl */`
     N = (nlen > 1e-4) ? N / nlen : vec3(0.0, 1.0, 0.0);
 
     // LAYER 1 base: NEUTRAL dark slate (carries NO team colour — this is the tide)
-    vec3 baseNeutral = vec3(0.11, 0.14, 0.21);
+    vec3 baseNeutral = vec3(0.15, 0.18, 0.26);
     vec3 col = baseNeutral;
 
     // ---- LAYER 2: POSSESSION colour (the ball) ------------------------------
@@ -433,7 +436,7 @@ const FRAG = /* glsl */`
     // lighting: two directional + raised ambient floor (so nothing goes black)
     float d1 = max(dot(N, normalize(uLightDir)), 0.0);
     float d2 = max(dot(N, normalize(uLightDir2)), 0.0) * 0.5;
-    col *= (0.42 + d1*1.0 + d2);
+    col *= (0.60 + d1*0.85 + d2);
 
     // peaks read brighter, valleys sink (relief AO-ish)
     col *= 0.86 + clamp(relief*0.6, 0.0, 0.5);
@@ -459,7 +462,7 @@ const FRAG = /* glsl */`
 
     // BRIGHTNESS FLOOR: never darker than the lit neutral base (kills black spots).
     // Empty / quiet cells therefore render as the neutral tide, never pure black.
-    col = max(col, baseNeutral * 0.5);
+    col = max(col, baseNeutral * 0.85);
     // final NaN guard
     if (!(col.r == col.r) || !(col.g == col.g) || !(col.b == col.b)) col = baseNeutral * 0.5;
 
