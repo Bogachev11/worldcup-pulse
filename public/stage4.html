@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>PASS LANDSCAPE — 3D</title>
+  <!-- three.js via CDN import map (esm.sh) -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://esm.sh/three@0.160.0",
+      "three/addons/": "https://esm.sh/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <style>
+    :root {
+      --ink: #eef1f7; --ink-dim: #8a93a8; --stroke: rgba(255,255,255,0.14);
+      --home-color: #1a37c8; --away-color: #00b85a;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #04050a; color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; overflow: hidden; }
+    #stage { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: grab; }
+    #stage:active { cursor: grabbing; }
+    .pnl {
+      position: fixed; z-index: 30; pointer-events: auto;
+      display: flex; flex-direction: column; gap: 9px;
+      background: rgba(8,10,18,0.62); border: 1px solid var(--stroke);
+      border-radius: 12px; padding: 12px 14px; width: 272px;
+      font-size: 11px; letter-spacing: 0.04em; backdrop-filter: blur(7px);
+    }
+    #panel { top: 14px; left: 14px; }
+    #campanel { bottom: 14px; left: 14px; width: 272px; }
+    .pnl .row { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+    .pnl label { color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.12em; }
+    .pnl input[type=range] { flex: 1; accent-color: #6aa0ff; }
+    .pnl .val { min-width: 58px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
+    #title4 { font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink); }
+    #camread { min-width: auto; color: #9fd; letter-spacing: 0.06em; }
+    .dim { color: var(--ink-dim); }
+    #hud4 {
+      position: fixed; top: 14px; right: 14px; z-index: 30;
+      text-align: right; font-variant-numeric: tabular-nums; line-height: 1.5;
+      background: rgba(8,10,18,0.5); border: 1px solid var(--stroke);
+      border-radius: 12px; padding: 10px 14px; font-size: 12px; letter-spacing: 0.06em;
+      backdrop-filter: blur(7px);
+    }
+    #hud4 .big { font-size: 28px; font-weight: 200; }
+    #hud4 .hd { color: var(--ink-dim); font-size: 11px; letter-spacing: 0.12em; }
+    #hud4 .home { color: var(--home-color); font-weight: 600; }
+    #hud4 .away { color: var(--away-color); font-weight: 600; }
+    .btn { cursor: pointer; border: 1px solid var(--stroke); background: rgba(255,255,255,0.06);
+      color: var(--ink); border-radius: 7px; padding: 5px 10px; font-size: 11px; }
+    .btn:hover { border-color: rgba(255,255,255,0.34); }
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <!-- data / playback / tuning -->
+  <div id="panel" class="pnl">
+    <div id="title4">PASS LANDSCAPE · loading…</div>
+    <div class="row">
+      <button id="play" class="btn">❚❚ pause</button>
+      <button id="restart" class="btn">↺ restart</button>
+    </div>
+    <div class="row"><label>clock</label><input id="clock" type="range" min="0" max="100" step="0.1" value="0"><span class="val" id="clockV">0'</span></div>
+    <div class="row"><label>speed</label><input id="speed" type="range" min="1" max="40" step="0.2" value="14.8"><span class="val" id="speedV">14.8×</span></div>
+    <div class="row"><label>grid res</label><input id="grid" type="range" min="24" max="200" step="2" value="40"><span class="val" id="gridV">40×24</span></div>
+    <div class="row"><label>fade</label><input id="fade" type="range" min="0.1" max="3" step="0.02" value="0.85"><span class="val" id="fadeV">0.85</span></div>
+    <div class="row"><label>height</label><input id="height" type="range" min="0.2" max="4" step="0.02" value="1.6"><span class="val" id="heightV">1.60</span></div>
+    <div class="row"><label>wave</label><input id="wave" type="range" min="0" max="2" step="0.02" value="0.5"><span class="val" id="waveV">0.50</span></div>
+  </div>
+
+  <!-- camera / ракурс -->
+  <div id="campanel" class="pnl">
+    <div class="row"><label>camera ▸ ракурс</label><span class="val" id="camread">—</span></div>
+    <div class="row">
+      <button id="copycam" class="btn">copy camera</button>
+      <button id="resetcam" class="btn">reset</button>
+    </div>
+    <div class="dim" style="font-size:10px">drag to orbit · wheel to zoom · relief rises where the play is, coloured by team</div>
+  </div>
+
+  <div id="hud4">
+    <div class="hd"><span class="home" id="hAbbr">FRA</span> vs <span class="away" id="aAbbr">SEN</span></div>
+    <div class="big"><span id="hScore">0</span> – <span id="aScore">0</span></div>
+    <div class="hd"><span id="clk">0'</span></div>
+    <div class="hd">poss <span id="hPoss">50</span> – <span id="aPoss">50</span>%</div>
+    <div class="hd">dominating <span id="dom" class="home">FRA</span></div>
+    <div class="hd">xG <span id="hXg">0.00</span> – <span id="aXg">0.00</span></div>
+  </div>
+
+  <noscript>This stage requires JavaScript (ES modules) and WebGL.</noscript>
+  <script type="module" src="stage4.js"></script>
+</body>
+</html>
