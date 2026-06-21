@@ -32,6 +32,7 @@ let fadeTime = +el('fadet').value;   // minutes: half-life of fade (smaller = so
 let fadeFloor = +el('fadef').value;  // 0..1 minimum alpha old events keep
 let zScale = +el('zscale').value;
 let pwin = +el('pwin').value;
+let shotSize = +el('shotsz').value;
 const cam = { yaw: 45, elev: 32, zoom: 1 };
 
 // ---- possession (real-data derived): rolling home pass-share per minute ----
@@ -119,11 +120,11 @@ function drawShots() {
     const accurate = sh.isGoal || sh.xgot > 0 || sh.type === 'SavedShot' || sh.type === 'AttemptSaved';
     const col = mix(teamRgb(sh.team), accurate ? SHOT_ACC : SHOT_INACC, 0.55);
     const af = ageAlpha(sh.minute);
-    const r = Math.max(2.5, (3 + sh.xg * 34)) * (Math.min(W, H) / 900);
+    const r = Math.max(2.5, (3 + sh.xg * 34)) * (Math.min(W, H) / 900) * shotSize;
     if (sh.isGoal) {
       ctx.fillStyle = rgbStr({ r: 255, g: 250, b: 235 }, 0.9 * af);
       ctx.beginPath(); ctx.arc(pt[0], pt[1], r * 1.2, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = rgbStr(col, 0.85 * af); ctx.lineWidth = 1.5;
+      ctx.strokeStyle = rgbStr(col, 0.85 * af); ctx.lineWidth = Math.max(1.5, 1.2 * shotSize);
       ctx.beginPath(); ctx.arc(pt[0], pt[1], r * 2.0, 0, Math.PI * 2); ctx.stroke();
     } else {
       ctx.fillStyle = rgbStr(col, (accurate ? 0.75 : 0.5) * af);
@@ -204,6 +205,7 @@ el('fadet').addEventListener('input', () => { fadeTime = +el('fadet').value; el(
 el('fadef').addEventListener('input', () => { fadeFloor = +el('fadef').value; el('fadefV').textContent = fadeFloor.toFixed(2); });
 el('zscale').addEventListener('input', () => { zScale = +el('zscale').value; el('zscaleV').textContent = zScale.toFixed(2); });
 el('pwin').addEventListener('input', () => { pwin = +el('pwin').value; el('pwinV').textContent = pwin + 'm'; if (prep) possSeries = buildPossession(prep.passes, prep.duration, pwin); });
+el('shotsz').addEventListener('input', () => { shotSize = +el('shotsz').value; el('shotszV').textContent = shotSize.toFixed(1) + '×'; });
 
 // ---- boot ----
 (async function init() {
