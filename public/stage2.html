@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>BATTLE OF MASSES — 3D</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- three.js via CDN import map (esm.sh; unpkg is a manual fallback) -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://esm.sh/three@0.160.0",
+      "three/addons/": "https://esm.sh/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <style>
+    #stage { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: grab; }
+    #stage:active { cursor: grabbing; }
+    .pnl {
+      position: fixed; z-index: 30; pointer-events: auto;
+      display: flex; flex-direction: column; gap: 9px;
+      background: rgba(10,12,20,0.6); border: 1px solid var(--stroke);
+      border-radius: 12px; padding: 12px 14px; width: 264px;
+      font-size: 11px; letter-spacing: 0.04em;
+    }
+    #panel { top: 14px; left: 14px; }
+    #campanel { bottom: 14px; left: 14px; }
+    .pnl .row { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+    .pnl label { color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.12em; }
+    .pnl input[type=range] { flex: 1; }
+    .pnl .val { min-width: 52px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
+    #title2 { font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink); }
+    #camread { min-width: auto; color: #9fd; letter-spacing: 0.06em; }
+    #hud2 {
+      position: fixed; top: 14px; right: 14px; z-index: 30;
+      text-align: right; font-variant-numeric: tabular-nums; line-height: 1.5;
+      background: rgba(10,12,20,0.45); border: 1px solid var(--stroke);
+      border-radius: 12px; padding: 10px 14px; font-size: 12px; letter-spacing: 0.06em;
+    }
+    #hud2 .big { font-size: 26px; font-weight: 200; }
+    #hud2 .dim { color: var(--ink-dim); font-size: 11px; letter-spacing: 0.12em; }
+    #hud2 .home { color: var(--home-color); }
+    #hud2 .away { color: var(--away-color); }
+    .btn { cursor: pointer; border: 1px solid var(--stroke); background: rgba(255,255,255,0.05);
+      color: var(--ink); border-radius: 7px; padding: 5px 10px; font-size: 11px; }
+    .btn:hover { border-color: rgba(255,255,255,0.3); }
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <!-- data / playback / tuning -->
+  <div id="panel" class="pnl">
+    <div id="title2">BATTLE 3D · loading…</div>
+    <div class="row">
+      <button id="play" class="btn">❚❚ pause</button>
+      <button id="restart" class="btn">↺ restart</button>
+    </div>
+    <div class="row"><label>clock</label><input id="clock" type="range" min="0" max="100" step="0.1" value="0"><span class="val" id="clockV">0'</span></div>
+    <div class="row"><label>speed</label><input id="speed" type="range" min="0.3" max="10" step="0.1" value="2"><span class="val" id="speedV">2.0×</span></div>
+    <div class="row"><label>height</label><input id="hscale" type="range" min="0.2" max="3" step="0.02" value="1"><span class="val" id="hscaleV">1.00</span></div>
+    <div class="row"><label>turbulence</label><input id="turb" type="range" min="0" max="3" step="0.02" value="1"><span class="val" id="turbV">1.00</span></div>
+    <div class="row"><label>ridge</label><input id="ridge" type="range" min="0.4" max="3" step="0.02" value="1"><span class="val" id="ridgeV">1.00</span></div>
+    <div class="row"><label>flow</label><input id="flow" type="range" min="0" max="3" step="0.02" value="1"><span class="val" id="flowV">1.00</span></div>
+  </div>
+
+  <!-- camera / ракурс (set it, then tell me the values) -->
+  <div id="campanel" class="pnl">
+    <div class="row"><label>camera ▸ ракурс</label><span class="val" id="camread">—</span></div>
+    <div class="row">
+      <button id="copycam" class="btn">copy camera</button>
+      <button id="resetcam" class="btn">reset</button>
+    </div>
+    <div class="dim" style="color:var(--ink-dim);font-size:10px">drag to orbit · wheel to zoom · копни ракурс и передай числа</div>
+  </div>
+
+  <div id="hud2">
+    <div class="dim"><span class="home" id="hAbbr">FRA</span> vs <span class="away" id="aAbbr">SEN</span></div>
+    <div class="big"><span id="hScore">0</span> – <span id="aScore">0</span></div>
+    <div class="dim"><span id="clk">0'</span></div>
+    <div class="dim">poss <span id="hPoss">50</span> – <span id="aPoss">50</span>%</div>
+    <div class="dim">mom <span id="mom">0.00</span></div>
+    <div class="dim">xG <span id="hXg">0.00</span> – <span id="aXg">0.00</span></div>
+  </div>
+
+  <noscript>This stage requires JavaScript (ES modules) and WebGL.</noscript>
+  <script type="module" src="stage2.js"></script>
+</body>
+</html>
