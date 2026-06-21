@@ -101,10 +101,13 @@ export class MicroView {
     this.netUpTo = settleBefore;
   }
 
-  draw() {
+  draw(opts = {}) {
     const ctx = this.ctx, r = this.pitchRect;
     if (!this.prep || !r) return;
     const t = this.clock;
+    const showPass = opts.pass !== false;
+    const showShot = opts.shot !== false;
+    const showMom = opts.mom !== false;
 
     // 1. pitch frame
     ctx.save();
@@ -123,23 +126,24 @@ export class MicroView {
     ctx.restore();
 
     // 2. momentum / territory membrane
-    this.drawMembrane(t);
+    if (showMom) this.drawMembrane(t);
 
     // 3a. settled pass network (baked offscreen, blit)
-    const settleBefore = Math.max(0, t - this.recentWindow);
-    this.ensureNetwork(settleBefore);
-    if (this.net) {
-      ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.drawImage(this.net, r.x, r.y, r.w, r.h);
-      ctx.restore();
+    if (showPass) {
+      const settleBefore = Math.max(0, t - this.recentWindow);
+      this.ensureNetwork(settleBefore);
+      if (this.net) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.drawImage(this.net, r.x, r.y, r.w, r.h);
+        ctx.restore();
+      }
+      // 3b. recent passes drawn live, glowing brightest
+      this.drawRecentPasses(t, settleBefore);
     }
 
-    // 3b. recent passes drawn live, glowing brightest
-    this.drawRecentPasses(t, settleBefore);
-
     // 4. shots / xG blooms
-    this.drawShots(t);
+    if (showShot) this.drawShots(t);
 
     ctx.globalCompositeOperation = 'source-over';
   }
