@@ -43,6 +43,17 @@ let grid, hMaxTrack;
 let clock = 0, prevClock = 0, playing = true;
 let passCursor = 0;             // next pass to deposit (passes sorted by t)
 let domHome = 0.5;              // smoothed "who dominates recent passes" for HUD
+let lastDeposited = null;       // last pass deposited (for flow interpolation)
+
+// ---- exclusive possession signal -------------------------------------------
+// uPoss ∈ [0,1]: 0 = home has the ball, 1 = away. Computed from a short trailing
+// window of recent passes (decaying home/away weights), smoothed toward target
+// each frame so it flips on turnovers within ~0.5–1s.
+let possHomeW = 0, possAwayW = 0;   // decaying recent-pass weights (match-time)
+let uPossTarget = 0.5;              // raw target from the window
+let uPoss = 0.5;                    // smoothed signal sent to the shader
+const POSS_WINDOW = 8;             // trailing window ≈ match-seconds → minutes
+const POSS_DECAY = 1 / (POSS_WINDOW / 60); // decay rate per match-minute
 
 // tuning (bound to sliders)
 const tune = {
@@ -97,11 +108,24 @@ function fail(msg) {
   document.body.appendChild(o);
 }
 
-// Cinematic 3/4 default angle (more side-on than top-down).
-const DEFAULT_CAM = { az: 0.5, pol: 1.3, dist: 9 };   // radians, radians, world
+// Default camera — exact pos/target the user dialed in. Stored as pos+target
+// (most robust) and applied directly; we also keep a spherical helper for orbit.
+const DEFAULT_CAM = {
+  pos: { x: -8.45, y: 10.96, z: 12.31 },
+  target: { x: -1.96, y: -0.92, z: 1.17 },
+};
+
+// Snap the camera+orbit target to the dialed-in default and sync controls.
+function applyDefaultCamera() {
+  const d = DEFAULT_CAM;
+  controls.target.set(d.target.x, d.target.y, d.target.z);
+  camera.position.set(d.pos.x, d.pos.y, d.pos.z);
+  camera.lookAt(controls.target);
+  controls.update();
+}
 
 // Position the camera from spherical angles (azimuth, polar, distance) around
-// the current orbit target. polar≈1.3 sits closer to the horizon (side-on).
+// the current orbit target. Kept for completeness; default uses pos+target.
 function setCamera(az, pol, dist) {
   const t = controls.target;
   const sp = Math.sin(pol), cp = Math.cos(pol);
@@ -138,10 +162,9 @@ function setupThree() {
   controls.minDistance = 4;
   controls.maxDistance = 30;
   controls.maxPolarAngle = Math.PI * 0.495;
-  controls.target.set(0, 0.4, 0);
 
-  // Cinematic 3/4 default: lower (closer to horizon), slightly side-on.
-  setCamera(DEFAULT_CAM.az, DEFAULT_CAM.pol, DEFAULT_CAM.dist);
+  // Default to the exact pos/target the user dialed in.
+  applyDefaultCamera();
 
   const key = new THREE.DirectionalLight(0xfff2e6, 1.7);
   key.position.set(-6, 9, 4);
@@ -205,6 +228,8 @@ function rebuildMesh() {
         uLightDir2: { value: new THREE.Vector3(7, 4, -6).normalize() },
         uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
         uTime: { value: 0 },
+        uPoss: { value: 0.5 },           // 0 home has ball .. 1 away has ball
+        uDim: { value: 0.15 },           // brightness floor for non-possessing team
       },
       vertexShader: VERT,
       fragmentShader: FRAG,
@@ -253,13 +278,23 @@ const VERT = /* glsl */`
     float a=h21(i), b=h21(i+vec2(1,0)), c=h21(i+vec2(0,1)), d=h21(i+vec2(1,1));
     return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
   }
+  // MACRO ROLLING WAVES — two+ wave trains travelling in DIFFERENT directions
+  // so the whole surface visibly rolls one way AND another. Smooth (NOT stepped):
+  // this is the living base the stepped pass-relief sits on. Amplitude is driven
+  // by the WAVE slider (uWave), so it's meaningful again (user runs it ~1.6).
   float waveBase(vec2 uv){
-    float w = 0.0;
-    w += sin(uv.x*6.2831*1.5 + uTime*0.6) * 0.5;
-    w += sin((uv.x*0.7+uv.y*1.3)*6.2831 - uTime*0.4) * 0.3;
-    w += (vn(uv*3.0 + vec2(uTime*0.05, uTime*0.03))-0.5) * 0.9;
-    // subtler now — the stepped relief is the star
-    return w * uWave * 0.10;
+    // map uv→world-ish coords so wavelengths read across the pitch
+    vec2 P = (uv - 0.5) * vec2(uWorld.x, uWorld.y);
+    float t = uTime;
+    // train 1: rolls along +X, modulated across Z  (one direction)
+    float w  = 0.55 * sin(P.x * 0.95 + t * 0.85) * cos(P.y * 0.70 - t * 0.45);
+    // train 2: rolls along the diagonal the OTHER way
+    float w2 = 0.38 * sin((P.x + P.y) * 0.62 - t * 0.65);
+    // train 3: a slow long swell across Z for extra life
+    float w3 = 0.22 * sin(P.y * 0.40 + t * 0.30);
+    // faint value-noise ripple so crests aren't perfectly regular
+    float wn = (vn(uv * 3.0 + vec2(t * 0.05, t * 0.03)) - 0.5) * 0.35;
+    return (w + w2 + w3 + wn) * uWave * 0.22;
   }
   // Relief sampled with NEAREST (flat cell tops), then QUANTISED into discrete
   // terraces → the staged "лесенка" / extruded-blocks Variable aesthetic.
@@ -307,6 +342,8 @@ const FRAG = /* glsl */`
   uniform vec3 uLightDir;
   uniform vec3 uLightDir2;
   uniform float uTime;
+  uniform float uPoss;     // 0 home has ball .. 1 away has ball
+  uniform float uDim;      // brightness floor for the team NOT in possession
   varying float vH;
   varying vec2 vUvN;
   varying vec3 vNormalW;
@@ -328,42 +365,64 @@ const FRAG = /* glsl */`
   }
 
   void main(){
-    vec3 N = normalize(vNormalW);
+    // NORMAL GUARD: flat quantized plateaus give a near-zero finite-difference
+    // normal → dot(N,L)=0 → black blotches. If the interpolated normal collapses,
+    // fall back to straight up so lighting never zeroes out.
+    vec3 N = vNormalW;
+    float nlen = length(N);
+    N = (nlen > 1e-3) ? N / nlen : vec3(0.0, 1.0, 0.0);
 
     // base calm landscape colour (cool slate) where no passes are happening
     vec3 baseCol = vec3(0.10, 0.13, 0.20);
 
     float share = texture2D(uCol, vUvN).r;       // -1 empty, else away-share 0..1
+    if (!(share == share)) share = -1.0;          // NaN guard
     float occupied = step(0.0, share);
+    float shareC = clamp(share, 0.0, 1.0);
     // each team painted in its own flag colours as diagonal bands; blend at the seam
     float diag = (vUvN.x + vUvN.y) * 4.5;
     vec3 fHome = triFlag(uH0, uH1, uH2, diag);
     vec3 fAway = triFlag(uA0, uA1, uA2, diag);
-    vec3 team = mix(fHome, fAway, smoothstep(0.42, 0.58, clamp(share, 0.0, 1.0)));
+    vec3 team = mix(fHome, fAway, smoothstep(0.42, 0.58, shareC));
+
+    // EXCLUSIVE POSSESSION: only the team currently on the ball glows; the other
+    // recedes. active ≈1 when this cell's team has the ball, ≈0 when it doesn't.
+    float possActive = mix(1.0 - uPoss, uPoss, shareC);
+    float possGate = mix(uDim, 1.0, possActive);   // ∈ [uDim .. 1]
 
     // how risen this cell is → how much team colour shows over the base
-    float lift = clamp(vH * 1.4, 0.0, 1.0);
+    float relief = max(vH, 0.0);
+    float lift = clamp(relief * 1.4, 0.0, 1.0);
     vec3 col = mix(baseCol, team, occupied * (0.25 + 0.75 * lift));
 
     // subtle marble so the surface reads as textured landscape
     float marble = vn(vUvN*26.0 + vec2(0.0, uTime*0.03))*0.5 + vn(vUvN*70.0)*0.25;
     col *= 0.78 + 0.34*marble;
 
-    // lighting: two directional + ambient
+    // lighting: two directional + RAISED ambient floor (so nothing goes black)
     float d1 = max(dot(N, normalize(uLightDir)), 0.0);
     float d2 = max(dot(N, normalize(uLightDir2)), 0.0) * 0.5;
-    col *= (0.24 + d1*1.0 + d2);
+    col *= (0.40 + d1*1.0 + d2);
 
     // peaks read brighter, valleys sink darker (relief AO-ish)
-    col *= 0.82 + clamp(vH*0.6, 0.0, 0.5);
+    col *= 0.86 + clamp(relief*0.6, 0.0, 0.5);
 
     // gentle emissive glow on risen team zones (where the action is hot)
-    col += team * occupied * smoothstep(0.35, 1.0, vH) * 0.35;
+    col += team * occupied * smoothstep(0.35, 1.0, relief) * 0.35;
+
+    // gate occupied team COLOUR/brightness by possession (relief height stays).
+    // the empty base never dims; only painted team zones swap lit/recede.
+    col *= mix(1.0, possGate, occupied);
 
     // cinematic fresnel rim
     vec3 V = normalize(cameraPosition - vWorldPos);
     float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
     col += fres * 0.08 * mix(baseCol, team, occupied);
+
+    // BRIGHTNESS FLOOR: nothing ever goes fully black (kills floating black spots)
+    col = max(col, baseCol * 0.35);
+    // final NaN guard
+    if (!(col.r == col.r) || !(col.g == col.g) || !(col.b == col.b)) col = baseCol * 0.35;
 
     gl_FragColor = vec4(col, 1.0);
   }
@@ -425,10 +484,25 @@ function resetSim() {
   activeEvents = [];
   prevClock = 0;            // sim cursor only; module `clock` is owned by callers
   domHome = 0.5;
+  possHomeW = 0; possAwayW = 0;
+  uPossTarget = 0.5; uPoss = 0.5;
+  lastDeposited = null;
   heightData.fill(0);
   colData.fill(-1);
   heightTex.needsUpdate = true;
   colTex.needsUpdate = true;
+}
+
+// Deposit a chain of light splats along a segment so the lit crest GLIDES across
+// the pitch instead of popping cell-to-cell. n interpolated points, total weight
+// ≈ amp (so flow doesn't inflate height vs. a single splat).
+function splatSeg(x0, y0, x1, y1, team, amp, radius, n) {
+  const steps = Math.max(1, n | 0);
+  const w = amp / steps;
+  for (let i = 0; i < steps; i++) {
+    const u = (i + 0.5) / steps;
+    grid.splat(lerp(x0, x1, u), lerp(y0, y1, u), team, w, radius);
+  }
 }
 
 // Deposit all passes whose t falls in (a, b].
@@ -441,11 +515,30 @@ function depositRange(a, b) {
       // half-time end-swap placement (per-team normalised → shared pitch)
       const s = placeXY(p.xn, p.yn, p.team, p.t);
       const e = placeXY(p.exn, p.eyn, p.team, p.t);
-      grid.splat(s.x, s.y, p.team, 1.0, radius);
+      // FLOW: glide the crest along start→end of this pass (interpolated splats)
+      // plus from the previous deposited pass into this one, so the bright zone
+      // streams across the field following where the ball is going.
+      splatSeg(s.x, s.y, e.x, e.y, p.team, 1.0, radius, 4);
       grid.splat(e.x, e.y, p.team, END_SPLAT, radius);
+      if (lastDeposited && lastDeposited.team === p.team) {
+        splatSeg(lastDeposited.x, lastDeposited.y, s.x, s.y, p.team, 0.6, radius, 4);
+      }
+      lastDeposited = { x: e.x, y: e.y, team: p.team };
+
+      // feed the possession window (recent-pass weights per team)
+      if (p.team === 'away') possAwayW += 1.0; else possHomeW += 1.0;
     }
     passCursor++;
   }
+}
+
+// Decay the possession window and recompute the raw target. Called per sim step
+// with the match-minutes elapsed so the trailing window stays ~POSS_WINDOW sec.
+function updatePossession(dtMin) {
+  const keep = Math.exp(-POSS_DECAY * Math.max(dtMin, 0));
+  possHomeW *= keep; possAwayW *= keep;
+  const tot = possHomeW + possAwayW;
+  uPossTarget = tot > 1e-4 ? (possAwayW / tot) : uPossTarget;
 }
 
 // Goal events: a sharp tall spike near the scoring team's attacking third that
@@ -495,6 +588,7 @@ function stepSim(t, dt) {
   depositRange(prevClock, t);
   syncEvents(t);
   applyEventSpikes(t);
+  updatePossession(Math.max(0, t - prevClock));
 
   // decay everything: rate scaled by fade slider; dt is REAL seconds (so the
   // visible sink speed is tied to wall time, feels consistent across speeds)
@@ -518,6 +612,7 @@ function fastForward(t) {
     depositRange(a, b);
     syncEvents(b);
     applyEventSpikes(b);
+    updatePossession(b - a);
     grid.decay(Math.exp(-rate * (b - a) * secPerMin));
     a = b;
   }
@@ -586,10 +681,15 @@ function loop(now) {
 
   if (model && grid) stepSim(clock, dt);
 
+  // smooth possession toward its target (time constant ~0.3s → flips in <1s)
+  const kPoss = 1 - Math.exp(-dt / 0.3);
+  uPoss = lerp(uPoss, uPossTarget, kPoss);
+
   if (material) {
     material.uniforms.uHScale.value = tune.height;
     material.uniforms.uWave.value = tune.wave;
     material.uniforms.uLevels.value = tune.steps;
+    material.uniforms.uPoss.value = uPoss;
     hMaxTrack.ease(dt);
     material.uniforms.uTime.value = now / 1000;
   }
@@ -672,8 +772,7 @@ function bindUI() {
   gridV.textContent = `${GX}×${GY}`;
 
   el('resetcam').addEventListener('click', () => {
-    controls.target.set(0, 0.4, 0);
-    setCamera(DEFAULT_CAM.az, DEFAULT_CAM.pol, DEFAULT_CAM.dist);
+    applyDefaultCamera();
   });
   el('copycam').addEventListener('click', async () => {
     const s = `{ pos: [${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)}], ` +
@@ -698,10 +797,12 @@ window.__setClock = (min) => {
   playing = false;
   const playBtn = el('play'); if (playBtn) playBtn.textContent = '▶ play';
   if (grid) stepSim(clock, 1 / 60);
+  uPoss = uPossTarget;   // snap (no animation in single-frame mode)
   if (material) {
     material.uniforms.uHScale.value = tune.height;
     material.uniforms.uWave.value = tune.wave;
     material.uniforms.uLevels.value = tune.steps;
+    material.uniforms.uPoss.value = uPoss;
   }
   controls.update();
   renderer.render(scene, camera);
