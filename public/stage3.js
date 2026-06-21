@@ -1,16 +1,22 @@
-// stage3.js — "ERUPTION" — two coherent foam masses raymarched as SDFs.
+// stage3.js — "ERUPTION" — two LIVING coherent masses raymarched as SDFs that
+// FIGHT at a deforming seam (they do NOT merge).
 //
-// Vision: a flask-of-cola-and-Mentos battle. Each country is ONE coherent foam
-// mass (a tapered capsule / round cone) that ERUPTS upward at ~45° from its goal
-// end toward the centre. The two masses are combined with a smooth-minimum
-// (smin) so they MERGE and PRESS into each other near the top-centre, forming a
-// bulging collision seam that marbles blue↔green. Over match time the masses
-// grow taller and bulkier and push harder; goals trigger a cola-burst surge.
+// Vision: from t=0 the two country-masses already stand in contact at the
+// centre, pressing into each other. They keep their OWN identity and colour —
+// the contact is a CLIPPED, deforming seam (max(blob, ±seam)), never a smooth
+// smin union. When a team has momentum it BULGES into the opponent and DENTS
+// its surface; momentum reverses → the other side dents back. Both masses grow
+// continuously and powerfully through the match (swelling + rising upward like
+// erupting/overflowing matter). On vigorous play each sprouts a few organic
+// tendrils (capsules smin'd INTO its own blob). A slow churn keeps the surface
+// alive even when paused.
 //
 // Tech: a single full-screen quad with a fragment shader that RAYMARCHES the
-// signed-distance field. ONE SDF primitive per country (not many blobs). fbm
-// noise displaces the surface for churning foam. Matte clay/foam shading with a
-// key + soft fill + faint fresnel rim. NO bloom, NO emissive glow.
+// signed-distance field. ONE growing ellipsoid per country + a few intra-team
+// branch capsules. fbm noise displaces the surface (foam/clay). The two teams
+// meet via a clipped, fbm-deformed seam plane — momentum shoves the plane.
+// Matte clay/foam shading with a key + soft fill + faint fresnel rim. NO bloom,
+// NO emissive glow.
 //
 // Hosted in three.js (CDN). Data model from claybattle.js; palette/math helpers
 // from massbattle.js. Does NOT modify any other file.
@@ -36,10 +42,11 @@ const camLimits = { polMin: 0.18, polMax: 1.50, distMin: 5.0, distMax: 26.0 };
 
 const tune = {
   speed: 4.0,
-  mass: 1.0,        // overall radius/thickness multiplier
-  rise: 1.0,        // eruption height multiplier
-  merge: 0.6,       // smin k — how gooey the press is
-  foam: 1.0,        // foam noise amount
+  growth: 1.0,      // overall size multiplier (both masses)
+  push: 1.0,        // how hard the winner dents the loser (seam shove gain)
+  bulge: 1.0,       // living seam deformation amount
+  branches: 1.0,    // tendril amount
+  foam: 1.0,        // surface noise amount
 };
 
 // transient eruptions (goals / shots) advanced as the clock passes them
@@ -130,18 +137,20 @@ function setupThree() {
       uAzimuth: { value: cam.az },
       uPolar: { value: cam.pol },
       uDist: { value: cam.dist },
-      // two-mass geometry (data driven, set per frame)
-      uBaseHome: { value: new THREE.Vector3(-2.2, 0, 0) },
-      uBaseAway: { value: new THREE.Vector3(2.2, 0, 0) },
-      uDirHome: { value: new THREE.Vector3(1, 1, 0).normalize() },
-      uDirAway: { value: new THREE.Vector3(-1, 1, 0).normalize() },
-      uLenHome: { value: 0.6 },
-      uLenAway: { value: 0.6 },
-      uRadHome: { value: 0.9 },
-      uRadAway: { value: 0.9 },
-      uTipHome: { value: 0.45 },
-      uTipAway: { value: 0.45 },
-      uMergeK: { value: tune.merge },
+      // two-mass geometry (data driven, set per frame).
+      // Each blob is an ellipsoid: centre + per-axis radii (rx,ry,rz). It grows
+      // outward from its own side and rises (+y) over the match.
+      uCenHome: { value: new THREE.Vector3(-0.95, 0.9, 0) },
+      uCenAway: { value: new THREE.Vector3(0.95, 0.9, 0) },
+      uRadHome: { value: new THREE.Vector3(1.2, 1.4, 1.0) },
+      uRadAway: { value: new THREE.Vector3(1.2, 1.4, 1.0) },
+      // fighting seam: plane x = uSeamX + bulge; uPush shoves it (momentum).
+      uSeamX: { value: 0.0 },
+      uPush: { value: 0.0 },
+      uSeamBulge: { value: 0.25 },
+      // branches/tendrils per team (intra-team smin)
+      uBranchHome: { value: 0.0 },     // amount [0..1]*tune.branches
+      uBranchAway: { value: 0.0 },
       uFoam: { value: tune.foam },
       uTurb: { value: 0.0 },        // extra turbulence from intensity/goals
       uColHome: { value: new THREE.Vector3(0.1, 0.2, 0.8) },
@@ -163,12 +172,14 @@ function setupThree() {
 // ============================================================================
 // SIMULATION — set the SDF uniforms for match-time t each frame.
 //
-//   Each country = ONE round cone from its goal-end base, erupting at 45° toward
-//   the centre. LEN grows over the match (more if they dominated possession);
-//   RAD (thickness) grows modestly + permanent goal bumps. Momentum pushes the
-//   seam (uPush) — the stronger team shoves the collision into the weaker side.
-//   Goals = fast LEN/RAD surge decaying over ~6 match-min + a small permanent
-//   bump. The smin(k) merges the two cones into a pressing collision ridge.
+//   Each country = ONE growing ellipsoid on its own side, already in contact at
+//   the centre from t=0. Both grow CONTINUOUSLY (swell + rise upward) over the
+//   match, the dominant side growing more. Momentum drives uPush, which shoves
+//   the deforming seam plane toward the loser so the winner BULGES into and
+//   DENTS the loser; momentum reversal dents back. They are combined by a
+//   CLIPPED seam (max(blob, ±seam)), NOT smin → no fusing, distinct colours.
+//   Vigorous play sprouts intra-team tendrils. Goals = a smooth ~6-min surge
+//   (extra growth + stronger shove) settling to a small permanent bump.
 // ============================================================================
 function syncEruptions(t) {
   if (t < lastSimT - 0.001) {           // scrubbed backwards → reset transients
@@ -217,44 +228,44 @@ function updateUniforms(t) {
   const cumMom = clampSafe(at(S.cumMom, t, model.STEP), -1, 1);
   const er = eruptionState(t);
 
-  // --- eruption height: grows over the match, more if they dominated ----------
+  // --- continuous growth: starts solid (already touching), swells to full -----
+  // growH ∈ ~[0.35..1] * dominance. Smooth + monotonic (tiny alive pulse only).
   const timeF = clamp(t / dur, 0, 1);
-  const growthHome = clamp(0.2 + 0.8 * timeF * (0.6 + 0.8 * cumPH), 0, 1);
-  const growthAway = clamp(0.2 + 0.8 * timeF * (0.6 + 0.8 * cumPA), 0, 1);
-  const lenHome = lerp(0.6, 3.4, growthHome) * tune.rise + er.surgeHome * 0.9 * tune.rise;
-  const lenAway = lerp(0.6, 3.4, growthAway) * tune.rise + er.surgeAway * 0.9 * tune.rise;
+  const baseGrow = 0.35 + 0.65 * timeF;
+  const alive = 0.04 * Math.sin(t * 0.55 + 0.4) + 0.03 * intensity; // gentle, non-jerky
+  const growH = clamp((baseGrow * (0.7 + 0.6 * cumPH) + permHome + er.surgeHome * 0.35 + alive)
+    * tune.growth, 0.2, 2.4);
+  const growA = clamp((baseGrow * (0.7 + 0.6 * cumPA) + permAway + er.surgeAway * 0.35 + alive)
+    * tune.growth, 0.2, 2.4);
 
-  // --- thickness: modest growth + permanent goal bumps + active pulsing --------
-  const pulse = 0.06 * intensity;
-  const radHome = (0.85 + 0.45 * cumPH + permHome + 0.30 * er.surgeHome + pulse) * tune.mass;
-  const radAway = (0.85 + 0.45 * cumPA + permAway + 0.30 * er.surgeAway + pulse) * tune.mass;
+  // ellipsoid radii: swell outward + rise (taller as it grows). Keep z slimmer.
+  const rxH = 0.85 + 0.85 * growH, ryH = 1.05 + 1.35 * growH, rzH = 0.72 + 0.55 * growH;
+  const rxA = 0.85 + 0.85 * growA, ryA = 1.05 + 1.35 * growA, rzA = 0.72 + 0.55 * growA;
 
-  // --- pressing: momentum shifts the seam; stronger team pushes into weaker ----
-  // uPush ∈ ~[-0.5,0.5]; +push = home advancing (shove seam toward away/+x).
-  const push = clamp(0.18 * mom + 0.22 * cumMom + permPush, -0.55, 0.55);
+  // centres sit just off the seam so the contact faces touch at the middle, and
+  // drift outward + rise as the masses swell (erupting/overflowing read).
+  const cyH = 0.6 + 0.55 * growH, cyA = 0.6 + 0.55 * growA;
+  u.uCenHome.value.set(-(0.55 + 0.35 * growH), cyH, 0);
+  u.uCenAway.value.set(+(0.55 + 0.35 * growA), cyA, 0);
+  u.uRadHome.value.set(rxH, ryH, rzH);
+  u.uRadAway.value.set(rxA, ryA, rzA);
 
-  // Bias the bases & aim along x by push so the collision point moves and the
-  // stronger mass leans further over the opponent. Keep z thin but a bit fat.
-  const baseHomeX = -2.2 + push * 0.6;
-  const baseAwayX = 2.2 + push * 0.6;
-  u.uBaseHome.value.set(baseHomeX, 0, 0);
-  u.uBaseAway.value.set(baseAwayX, 0, 0);
+  // --- the fighting seam: momentum shoves it into the loser -------------------
+  // +push  → home presses, seam moves toward away (+x): home bulges in, dents away.
+  // -push  → away presses back. Goals add permPush. Driven by live + cumulative.
+  const push = clamp(0.6 * (0.25 * mom + 0.3 * cumMom + permPush), -0.9, 0.9) * tune.push;
+  u.uSeamX.value = 0.0;
+  u.uPush.value = push;
 
-  // aim: home erupts toward +x,+y; push nudges aim further over centre when
-  // dominating. Keep a slight z so masses are not razor-thin.
-  const aimHome = new THREE.Vector3(1 + push * 0.5, 1, 0).normalize();
-  const aimAway = new THREE.Vector3(-1 + push * 0.5, 1, 0).normalize();
-  u.uDirHome.value.copy(aimHome);
-  u.uDirAway.value.copy(aimAway);
+  // seam deformation churns harder during intense play / goals.
+  u.uSeamBulge.value = clamp((0.18 + 0.45 * intensity + 0.6 * er.turb) * tune.bulge, 0.0, 1.4);
 
-  u.uLenHome.value = clamp(lenHome, 0.4, 5.5);
-  u.uLenAway.value = clamp(lenAway, 0.4, 5.5);
-  u.uRadHome.value = clamp(radHome, 0.4, 2.6);
-  u.uRadAway.value = clamp(radAway, 0.4, 2.6);
-  u.uTipHome.value = clamp(u.uRadHome.value * (0.42 + 0.10 * er.surgeHome), 0.18, 1.4);
-  u.uTipAway.value = clamp(u.uRadAway.value * (0.42 + 0.10 * er.surgeAway), 0.18, 1.4);
+  // --- branches/tendrils: sprout on vigorous play, retract when calm ----------
+  const vigorH = clamp(0.55 * intensity + 0.7 * Math.max(0, mom) + er.surgeHome, 0, 1.6);
+  const vigorA = clamp(0.55 * intensity + 0.7 * Math.max(0, -mom) + er.surgeAway, 0, 1.6);
+  u.uBranchHome.value = clamp(vigorH * tune.branches, 0, 1.6);
+  u.uBranchAway.value = clamp(vigorA * tune.branches, 0, 1.6);
 
-  u.uMergeK.value = clamp(tune.merge, 0.05, 1.6);
   u.uFoam.value = tune.foam;
   u.uTurb.value = clamp(0.4 * intensity + 1.0 * er.turb, 0, 2);
   u.uTime.value = t;
@@ -365,9 +376,10 @@ function bindUI() {
   });
 
   bindSlider('speed', 'speedV', (v) => { tune.speed = v; return v.toFixed(1) + '×'; });
-  bindSlider('mass', 'massV', (v) => { tune.mass = v; return v.toFixed(2); });
-  bindSlider('rise', 'riseV', (v) => { tune.rise = v; return v.toFixed(2); });
-  bindSlider('merge', 'mergeV', (v) => { tune.merge = v; return v.toFixed(2); });
+  bindSlider('growth', 'growthV', (v) => { tune.growth = v; return v.toFixed(2); });
+  bindSlider('push', 'pushV', (v) => { tune.push = v; return v.toFixed(2); });
+  bindSlider('bulge', 'bulgeV', (v) => { tune.bulge = v; return v.toFixed(2); });
+  bindSlider('branches', 'branchesV', (v) => { tune.branches = v; return v.toFixed(2); });
   bindSlider('foam', 'foamV', (v) => { tune.foam = v; return v.toFixed(2); });
 
   el('resetcam').addEventListener('click', () => {
@@ -433,25 +445,34 @@ const FRAG = /* glsl */`
   uniform float uTime;
   uniform float uAzimuth, uPolar, uDist;
 
-  uniform vec3  uBaseHome, uBaseAway, uDirHome, uDirAway;
-  uniform float uLenHome, uLenAway, uRadHome, uRadAway, uTipHome, uTipAway;
-  uniform float uMergeK, uFoam, uTurb;
+  uniform vec3  uCenHome, uCenAway;     // ellipsoid centres
+  uniform vec3  uRadHome, uRadAway;     // ellipsoid per-axis radii
+  uniform float uSeamX, uPush, uSeamBulge;
+  uniform float uBranchHome, uBranchAway;
+  uniform float uFoam, uTurb;
   uniform vec3  uColHome, uColAway;
 
-  // ---- smooth minimum (the press/merge) -------------------------------------
+  // ---- smooth minimum (used ONLY intra-team, for tendrils) ------------------
   float smin(float a, float b, float k){
     float h = clamp(0.5 + 0.5*(b-a)/k, 0.0, 1.0);
     return mix(b, a, h) - k*h*(1.0-h);
   }
 
-  // tapered capsule / round cone between a and b with radii ra (base) -> rb (tip)
-  float sdRoundCone(vec3 p, vec3 a, vec3 b, float ra, float rb){
-    vec3 ba = b - a;
-    float l2 = max(dot(ba, ba), 1e-5);
-    float y = clamp(dot(p - a, ba) / l2, 0.0, 1.0);
-    vec3 pa = p - a - ba * y;
-    return length(pa) - mix(ra, rb, y);
+  // ellipsoid SDF (bounded, ~Lipschitz). r = per-axis radii.
+  float sdEllipsoid(vec3 p, vec3 c, vec3 r){
+    vec3 q = (p - c) / r;
+    float k0 = length(q);
+    float k1 = length(q / r);
+    return k0 * (k0 - 1.0) / max(k1, 1e-4);
   }
+
+  // capsule (line segment a->b, radius rr) — for organic tendrils
+  float sdCapsule(vec3 p, vec3 a, vec3 b, float rr){
+    vec3 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-5), 0.0, 1.0);
+    return length(pa - ba * h) - rr;
+  }
+  float h11(float n){ return fract(sin(n) * 43758.5453); }
 
   // ---- value noise + fbm (foam) ---------------------------------------------
   float h31(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
@@ -475,29 +496,59 @@ const FRAG = /* glsl */`
   }
 
   // foam displacement amount (shared so normals match the surface)
-  float foamAmp(){ return uFoam * (0.16 + 0.10 * uTurb); }
+  float foamAmp(){ return uFoam * (0.14 + 0.10 * uTurb); }
 
-  // ---- the scene SDF: two round cones merged with smin + foam ---------------
+  // a few wandering tendrils sprouting from a blob centre, smin'd into it.
+  // dir seeds vary with a hash over time so they slowly wander (living growth).
+  float teamBlobWithBranches(vec3 p, vec3 cen, vec3 rad, float branch, float seed){
+    float d = sdEllipsoid(p, cen, rad);
+    if (branch <= 0.001) return d;
+    float churn = uTime * 0.18;
+    // up to 3 tendrils; count scales with branch amount
+    for (int i = 0; i < 3; i++){
+      float fi = float(i);
+      if (branch < fi * 0.45) break;
+      float s = seed + fi * 17.13;
+      // wandering direction (mostly upward/outward), hash-jittered over time
+      float a = h11(s + floor(churn)) * 6.2831 + churn;
+      float upw = 0.55 + 0.4 * h11(s + 3.0);
+      vec3 dir = normalize(vec3(cos(a) * 0.9, upw + 0.7, sin(a) * 0.6));
+      // root just inside the surface, tip reaches outward
+      float reach = (0.9 + 0.8 * h11(s + 7.0)) * (0.6 + branch);
+      vec3 a0 = cen + dir * (0.35 * length(rad));
+      vec3 b0 = cen + dir * (0.35 * length(rad) + reach);
+      float rr = 0.18 + 0.10 * h11(s + 11.0);
+      float dc = sdCapsule(p, a0, b0, rr);
+      d = smin(d, dc, 0.35);            // intra-team blend → part of same entity
+    }
+    return d;
+  }
+
+  // ---- the scene SDF: two living blobs that FIGHT at a clipped seam ----------
   // returns distance; writes which mass is closer into sel (0=home..1=away)
   float mapBlend(vec3 p, out float sel){
-    vec3 tipH = uBaseHome + normalize(uDirHome) * uLenHome;
-    vec3 tipA = uBaseAway + normalize(uDirAway) * uLenAway;
-    float dH = sdRoundCone(p, uBaseHome, tipH, uRadHome, uTipHome);
-    float dA = sdRoundCone(p, uBaseAway, tipA, uRadAway, uTipAway);
+    float dHome = teamBlobWithBranches(p, uCenHome, uRadHome, uBranchHome, 11.0);
+    float dAway = teamBlobWithBranches(p, uCenAway, uRadAway, uBranchAway, 91.0);
 
-    // colour selection blended across the smin contact band → marbled seam
-    float band = max(uMergeK, 0.3);
-    sel = clamp(0.5 + 0.5*(dH - dA)/band, 0.0, 1.0);
-
-    float d = smin(dH, dA, uMergeK);
-
-    // churning foam surface: displace inward by fbm so the surface looks like
-    // erupting foam. Flow upward + swirl over time.
+    // churning foam surface: displace inward by fbm (flows upward, swirls).
     float flow = uTime * 0.25;
     float f = fbm(p * 1.15 + vec3(0.0, -flow, flow*0.4))
             + 0.5 * fbm(p * 2.7 + vec3(flow*0.3, flow*0.6, 0.0));
-    d -= foamAmp() * f;
-    return d;
+    float disp = foamAmp() * f;
+    dHome -= disp;
+    dAway -= disp;
+
+    // --- deforming-seam clip: each team owns one side of a living plane ------
+    // bulge: fbm-driven living deformation of the contact + momentum shove.
+    float bulge = fbm(vec3(p.y * 1.3, p.z * 1.3, uTime * 0.25)) * uSeamBulge + uPush;
+    float seam = p.x - (uSeamX + bulge);     // <0 home side, >0 away side
+    dHome = max(dHome,  seam);                // home occupies x < seam; face carved by seam
+    dAway = max(dAway, -seam);                // away occupies x > seam; the loser is dented
+
+    // colour: pick by closer mass with a tiny smooth band at the seam.
+    sel = clamp(0.5 + 0.5 * (dHome - dAway) / 0.06, 0.0, 1.0);
+
+    return min(dHome, dAway);                 // NOT smin → sharp fighting seam
   }
   float map(vec3 p){ float s; return mapBlend(p, s); }
 
@@ -555,7 +606,8 @@ const FRAG = /* glsl */`
       p = ro + rd * t;
       float d = mapBlend(p, sel);
       if (d < 0.001){ hit = true; break; }
-      t += max(d * 0.7, 0.004);           // shrink steps near surface for stability
+      // clip(max) + fbm break the Lipschitz bound → conservative step factor.
+      t += clamp(d * 0.6, 0.004, 0.5);    // shrink near surface; cap big leaps
       if (t > tmax) break;
     }
 
