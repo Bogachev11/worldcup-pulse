@@ -14,17 +14,24 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildModel, at, xgUpTo, rgb01, hexToRgb, liftColor } from './claybattle.js';
-import { normPasses, PassGrid, RunningMax, clamp, lerp } from './passfield.js';
+import { normPasses, placeXY, PassGrid, RunningMax, clamp, lerp } from './passfield.js';
 
 const ID = new URLSearchParams(location.search).get('id') || '1953888';
 const el = (id) => document.getElementById(id);
 
-// Explicit kit colours requested for the default match; fall back to model hex.
-const KIT = { FRA: '#1a37c8', SEN: '#00b85a' };
+// Reproduce the real JERSEY colours worn in this match (by team abbr).
+// France home shirt = NAVY blue, Senegal = WHITE. Fall back to model hex.
+const KIT = {
+  FRA: '#22356d',   // France navy
+  SEN: '#eef1f6',   // Senegal white
+};
 
 // ---- grid resolution (sim cells = vertices; texture is GX×GY) ---------------
-let GX = 40, GY = 24;           // default coarse zone relief
+// Fine extruded-cell landscape (Variable look). Default 120×72; up to 360×216.
+let GX = 120, GY = 72;          // default fine zone relief
 const GX_MIN = 24, GY_MIN = 14;
+const GX_MAX = 360, GY_MAX = 216;
+const MESH_SEG_CAP = 256;       // cap plane segments per axis for perf
 
 // ---- scene state ------------------------------------------------------------
 let renderer, scene, camera, controls;
@@ -43,6 +50,7 @@ const tune = {
   height: 1.6,        // relief height multiplier
   fade: 0.85,         // zone sink rate (per second decay rate)
   wave: 0.5,          // base noise wave amount
+  steps: 14,          // terrace levels (height quantisation) — the Variable look
 };
 
 // transient event spikes (goals) that rise fast then settle.
@@ -89,6 +97,23 @@ function fail(msg) {
   document.body.appendChild(o);
 }
 
+// Cinematic 3/4 default angle (more side-on than top-down).
+const DEFAULT_CAM = { az: 0.5, pol: 1.3, dist: 9 };   // radians, radians, world
+
+// Position the camera from spherical angles (azimuth, polar, distance) around
+// the current orbit target. polar≈1.3 sits closer to the horizon (side-on).
+function setCamera(az, pol, dist) {
+  const t = controls.target;
+  const sp = Math.sin(pol), cp = Math.cos(pol);
+  camera.position.set(
+    t.x + dist * sp * Math.sin(az),
+    t.y + dist * cp,
+    t.z + dist * sp * Math.cos(az)
+  );
+  camera.lookAt(t);
+  controls.update();
+}
+
 // ---- three.js setup (based on stage2) ---------------------------------------
 function setupThree() {
   const canvas = el('stage');
@@ -106,7 +131,6 @@ function setupThree() {
   scene.fog = new THREE.FogExp2(0x04050a, 0.072);
 
   camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
-  camera.position.set(0.0, 7.6, 12.0);
 
   controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
@@ -115,6 +139,9 @@ function setupThree() {
   controls.maxDistance = 30;
   controls.maxPolarAngle = Math.PI * 0.495;
   controls.target.set(0, 0.4, 0);
+
+  // Cinematic 3/4 default: lower (closer to horizon), slightly side-on.
+  setCamera(DEFAULT_CAM.az, DEFAULT_CAM.pol, DEFAULT_CAM.dist);
 
   const key = new THREE.DirectionalLight(0xfff2e6, 1.7);
   key.position.set(-6, 9, 4);
@@ -139,7 +166,11 @@ function rebuildMesh() {
   if (heightTex) heightTex.dispose();
   if (colTex) colTex.dispose();
 
-  const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, GX - 1, GY - 1);
+  // Mesh segments ≥ grid resolution (≈2× grid dim) so flat cell tops + near-
+  // vertical step walls are crisp, but capped for perf at fine grids.
+  const segX = Math.min(MESH_SEG_CAP, Math.max(GX, Math.min(GX * 2, MESH_SEG_CAP)));
+  const segY = Math.min(MESH_SEG_CAP, Math.max(GY, Math.min(GY * 2, MESH_SEG_CAP)));
+  const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, segX, segY);
   geo.rotateX(-Math.PI / 2);                 // flat in XZ, +Y up
 
   heightData = new Float32Array(GX * GY);
@@ -147,8 +178,10 @@ function rebuildMesh() {
   heightTex = new THREE.DataTexture(heightData, GX, GY, THREE.RedFormat, THREE.FloatType);
   colTex = new THREE.DataTexture(colData, GX, GY, THREE.RedFormat, THREE.FloatType);
   for (const tx of [heightTex, colTex]) {
-    tx.magFilter = THREE.LinearFilter;       // smooth interpolation between cells
-    tx.minFilter = THREE.LinearFilter;
+    // NEAREST → each grid cell becomes a FLAT-TOPPED plateau with hard edges
+    // (extruded-cell look), not a smooth interpolated surface.
+    tx.magFilter = THREE.NearestFilter;
+    tx.minFilter = THREE.NearestFilter;
     tx.wrapS = THREE.ClampToEdgeWrapping;
     tx.wrapT = THREE.ClampToEdgeWrapping;
     tx.needsUpdate = true;
@@ -162,8 +195,9 @@ function rebuildMesh() {
         uTexel: { value: new THREE.Vector2(1 / GX, 1 / GY) },
         uHScale: { value: tune.height },
         uWave: { value: tune.wave },
-        uHome: { value: new THREE.Color(0x1a37c8) },
-        uAway: { value: new THREE.Color(0x00b85a) },
+        uLevels: { value: tune.steps },
+        uHome: { value: new THREE.Color(0x22356d) },
+        uAway: { value: new THREE.Color(0xeef1f6) },
         uLightDir: { value: new THREE.Vector3(-6, 9, 4).normalize() },
         uLightDir2: { value: new THREE.Vector3(7, 4, -6).normalize() },
         uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
@@ -201,6 +235,7 @@ const VERT = /* glsl */`
   uniform vec2 uTexel;
   uniform float uHScale;
   uniform float uWave;
+  uniform float uLevels;   // terrace count (height quantisation)
   uniform vec2 uWorld;
   uniform float uTime;
   varying float vH;        // pass-relief only (for colour intensity)
@@ -220,9 +255,17 @@ const VERT = /* glsl */`
     w += sin(uv.x*6.2831*1.5 + uTime*0.6) * 0.5;
     w += sin((uv.x*0.7+uv.y*1.3)*6.2831 - uTime*0.4) * 0.3;
     w += (vn(uv*3.0 + vec2(uTime*0.05, uTime*0.03))-0.5) * 0.9;
-    return w * uWave * 0.18;
+    // subtler now — the stepped relief is the star
+    return w * uWave * 0.10;
   }
-  float relief(vec2 uv){ return texture2D(uHeight, uv).r * uHScale; }
+  // Relief sampled with NEAREST (flat cell tops), then QUANTISED into discrete
+  // terraces → the staged "лесенка" / extruded-blocks Variable aesthetic.
+  float relief(vec2 uv){
+    float r = texture2D(uHeight, uv).r;            // 0..~1.4, flat per cell
+    float L = max(uLevels, 1.0);
+    r = floor(r * L + 0.5) / L;                    // terrace into L steps
+    return r * uHScale;
+  }
   float H(vec2 uv){ return waveBase(uv) + relief(uv); }
 
   void main(){
@@ -337,7 +380,9 @@ function applyTeamColors() {
 // normalized (hHome+hAway) → relief; cell colour = away-share = hAway/(hH+hA).
 // Backward scrub → reset grid + cursor and fast-forward to the new clock.
 // ============================================================================
-const SPLAT_RADIUS = 1.6;       // in cells (auto-scales a bit with resolution)
+// Splat radius in PITCH units (fraction of pitch width). Converted to cells per
+// resolution so pass zones read the same physical size at any grid fineness.
+const SPLAT_PITCH = 0.04;       // ~4% of pitch width
 const END_SPLAT = 0.45;         // lighter splat weight at the pass end
 
 function resetSim() {
@@ -356,13 +401,16 @@ function resetSim() {
 
 // Deposit all passes whose t falls in (a, b].
 function depositRange(a, b) {
-  // advance cursor past anything <= a (skip; only happens after a reset/ff)
-  const radius = SPLAT_RADIUS * (GX / 40);     // keep splat physically similar across res
+  // splat radius in CELLS = pitch fraction × grid width (physically constant)
+  const radius = Math.max(1, SPLAT_PITCH * GX);
   while (passCursor < passes.length && passes[passCursor].t <= b) {
     const p = passes[passCursor];
     if (p.t > a) {
-      grid.splat(p.x, p.y, p.team, 1.0, radius);
-      grid.splat(p.ex, p.ey, p.team, END_SPLAT, radius);
+      // half-time end-swap placement (per-team normalised → shared pitch)
+      const s = placeXY(p.xn, p.yn, p.team, p.t);
+      const e = placeXY(p.exn, p.eyn, p.team, p.t);
+      grid.splat(s.x, s.y, p.team, 1.0, radius);
+      grid.splat(e.x, e.y, p.team, END_SPLAT, radius);
     }
     passCursor++;
   }
@@ -374,14 +422,20 @@ function syncEvents(t) {
   while (eventCursor < model.shots.length && model.shots[eventCursor].t <= t) {
     const s = model.shots[eventCursor++];
     if (s.isGoal) {
-      const ex = s.team === 'home' ? Math.max(s.x, 0.72) : Math.min(s.x, 0.28);
-      activeEvents.push({ x: ex, y: s.y, team: s.team, tStart: s.t, life: 5 });
+      // place the goal on the shared pitch with the half-time end-swap, then
+      // bias toward whichever goal this team is ATTACKING at that moment.
+      const pl = placeXY(s.x, s.y, s.team, s.t);
+      const secondHalf = s.t >= 45;
+      // home attacks x=1 in 1st half, x=0 in 2nd (and vice-versa for away)
+      const attacksRight = (s.team === 'home') ? !secondHalf : secondHalf;
+      const ex = attacksRight ? Math.max(pl.x, 0.72) : Math.min(pl.x, 0.28);
+      activeEvents.push({ x: ex, y: pl.y, team: s.team, tStart: s.t, life: 5 });
       // >>> EVENT GLYPH HOOK: place a raised triangle / marker mesh here later.
     }
   }
 }
 function applyEventSpikes(t) {
-  const radius = Math.max(1, 1.1 * (GX / 40));
+  const radius = Math.max(1, SPLAT_PITCH * GX);
   for (let i = activeEvents.length - 1; i >= 0; i--) {
     const e = activeEvents[i];
     const age = t - e.tStart;
@@ -468,8 +522,8 @@ function writeTextures() {
 
 // ---- grid-resolution change -------------------------------------------------
 function setResolution(gx, gy) {
-  GX = Math.max(GX_MIN, gx | 0);
-  GY = Math.max(GY_MIN, gy | 0);
+  GX = clamp(gx | 0, GX_MIN, GX_MAX);
+  GY = clamp(gy | 0, GY_MIN, GY_MAX);
   rebuildMesh();
   resetSim();
   // re-run the sim up to the current clock so the new grid matches the moment
@@ -503,6 +557,7 @@ function loop(now) {
   if (material) {
     material.uniforms.uHScale.value = tune.height;
     material.uniforms.uWave.value = tune.wave;
+    material.uniforms.uLevels.value = tune.steps;
     hMaxTrack.ease(dt);
     material.uniforms.uTime.value = now / 1000;
   }
@@ -571,12 +626,13 @@ function bindUI() {
   bindSlider('height', 'heightV', (v) => { tune.height = v; return v.toFixed(2); });
   bindSlider('fade', 'fadeV', (v) => { tune.fade = v; return v.toFixed(2); });
   bindSlider('wave', 'waveV', (v) => { tune.wave = v; return v.toFixed(2); });
+  bindSlider('steps', 'stepsV', (v) => { tune.steps = Math.round(v); return String(Math.round(v)); });
 
   // grid resolution: one slider drives both axes (keeps ~5:3 aspect)
   const gridS = el('grid'), gridV = el('gridV');
   const applyGrid = () => {
-    const gx = +gridS.value;
-    const gy = Math.max(GY_MIN, Math.round(gx * 0.6));
+    const gx = clamp(+gridS.value, GX_MIN, GX_MAX);
+    const gy = clamp(Math.round(gx * 0.6), GY_MIN, GY_MAX);
     gridV.textContent = `${gx}×${gy}`;
     setResolution(gx, gy);
   };
@@ -584,9 +640,8 @@ function bindUI() {
   gridV.textContent = `${GX}×${GY}`;
 
   el('resetcam').addEventListener('click', () => {
-    camera.position.set(0.0, 7.6, 12.0);
     controls.target.set(0, 0.4, 0);
-    controls.update();
+    setCamera(DEFAULT_CAM.az, DEFAULT_CAM.pol, DEFAULT_CAM.dist);
   });
   el('copycam').addEventListener('click', async () => {
     const s = `{ pos: [${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)}], ` +
@@ -611,7 +666,11 @@ window.__setClock = (min) => {
   playing = false;
   const playBtn = el('play'); if (playBtn) playBtn.textContent = '▶ play';
   if (grid) stepSim(clock, 1 / 60);
-  if (material) { material.uniforms.uHScale.value = tune.height; material.uniforms.uWave.value = tune.wave; }
+  if (material) {
+    material.uniforms.uHScale.value = tune.height;
+    material.uniforms.uWave.value = tune.wave;
+    material.uniforms.uLevels.value = tune.steps;
+  }
   controls.update();
   renderer.render(scene, camera);
   updateHud();

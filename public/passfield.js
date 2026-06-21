@@ -3,16 +3,34 @@
 // and runs a decaying, splatting per-cell accumulation grid whose relief +
 // colour track WHERE THE PLAY IS, by passes, per team.
 //
-// Coordinate frame (matches lib.js): x in [0,1] left->right, HOME goal at x=0,
-// AWAY goal at x=1 (home attacks toward x=1). y in [0,1] top->bottom. Passes
-// come from WhoScored in an ABSOLUTE pitch frame (0..100) so we map directly,
-// no per-team mirror.
+// Coordinate frame: shared unit pitch x in [0,1] left->right (x=0 left goal,
+// x=1 right goal), y in [0,1] top->bottom.
+//
+// IMPORTANT (verified): WhoScored pass coords are PER-TEAM NORMALISED — each
+// team's (x,y) is in its OWN "attack toward x=100" frame and the data does NOT
+// flip at half-time. So we place teams on a SHARED pitch and mirror the 2nd
+// half ourselves: 1st half home attacks right / away left; at half-time they
+// swap ends (like real football). See placeXY below.
+
+export const HALFTIME = 45;            // match-minutes (end swap happens here)
 
 export function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 export function lerp(a, b, t) { return a + (b - a) * t; }
 
-// Normalize the raw pass stream to the unit frame. Keeps start + end + team +
-// precise time. Sorted ascending by t so we can advance a cursor each frame.
+// Place a raw per-team coord (xn,yn in [0,1]) onto the shared pitch for a team
+// at match-minute t, applying the half-time 180° end swap. Returns {x,y}.
+export function placeXY(xn, yn, team, t) {
+  const secondHalf = t >= HALFTIME;
+  let X = xn, Y = yn;
+  const flip = (team === 'home') ? secondHalf : !secondHalf;
+  if (flip) { X = 1 - X; Y = 1 - Y; }   // 180° end swap
+  return { x: clamp(X, 0, 1), y: clamp(Y, 0, 1) };
+}
+
+// Normalize the raw pass stream to the unit frame. Keeps RAW per-team start/end
+// (xn/yn 0..1), team and precise time; the half-time placement transform is
+// applied at deposit time (see placeXY) since it depends on t. Sorted ascending
+// by t so we can advance a cursor each frame.
 export function normPasses(rawPasses) {
   const out = [];
   for (const p of (rawPasses || [])) {
@@ -20,10 +38,10 @@ export function normPasses(rawPasses) {
     const t = Number.isFinite(p.t) ? p.t : (Number(p.minute) || 0);
     out.push({
       t,
-      x: clamp(p.x / 100, 0, 1),
-      y: clamp(p.y / 100, 0, 1),
-      ex: Number.isFinite(p.endX) ? clamp(p.endX / 100, 0, 1) : clamp(p.x / 100, 0, 1),
-      ey: Number.isFinite(p.endY) ? clamp(p.endY / 100, 0, 1) : clamp(p.y / 100, 0, 1),
+      xn: clamp(p.x / 100, 0, 1),
+      yn: clamp(p.y / 100, 0, 1),
+      exn: Number.isFinite(p.endX) ? clamp(p.endX / 100, 0, 1) : clamp(p.x / 100, 0, 1),
+      eyn: Number.isFinite(p.endY) ? clamp(p.endY / 100, 0, 1) : clamp(p.y / 100, 0, 1),
       team: p.team === 'away' ? 'away' : 'home',
     });
   }
