@@ -99,28 +99,52 @@ function drawPitch() {
 
 function drawPasses() {
   ctx.lineCap = 'round';
+  // each pass "draws on" over ~0.35s of real time, regardless of replay speed
+  const drawDur = Math.max(0.05, 0.35 * speed); // in match-minutes
   for (const p of prep.passes) {
-    if (p.minute > clock) break;
-    const z = zFor(p.team, p.minute);
+    if (p.t > clock) break;                       // passes are t-sorted → real sequence
+    const z = zFor(p.team, p.t);
     const a = proj(p.x0, p.y0, z), b = proj(p.x1, p.y1, z);
+    const prog = clamp((clock - p.t) / drawDur, 0, 1);
+    const ex = lerp(a[0], b[0], prog), ey = lerp(a[1], b[1], prog);
     const base = p.ok ? teamRgb(p.team) : mix(teamRgb(p.team), FAIL, 0.7);
-    const alpha = (p.ok ? 0.55 : 0.3) * ageAlpha(p.minute);
+    const alpha = (p.ok ? 0.55 : 0.3) * ageAlpha(p.t);
     if (alpha < 0.012) continue;
     ctx.strokeStyle = rgbStr(base, alpha);
     ctx.lineWidth = p.ok ? 1.1 : 0.8;
-    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(ex, ey); ctx.stroke();
+    // bright travelling head while the line is still being drawn
+    if (prog < 1) {
+      const hr = 2.2;
+      const g = ctx.createRadialGradient(ex, ey, 0, ex, ey, hr);
+      g.addColorStop(0, rgbStr(p.ok ? { r: 255, g: 255, b: 255 } : base, 0.9));
+      g.addColorStop(1, rgbStr(base, 0));
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(ex, ey, hr, 0, Math.PI * 2); ctx.fill();
+    }
   }
 }
 
 function drawShots() {
+  ctx.lineCap = 'round';
   for (const sh of prep.shots) {
-    if (sh.minute > clock) continue;
-    const z = zFor(sh.team, sh.minute);          // shots sit at the possession level too
+    if (sh.t > clock) continue;
+    const z = zFor(sh.team, sh.t);               // shots sit at the possession level too
     const pt = proj(sh.x, sh.y, z);
     const accurate = sh.isGoal || sh.xgot > 0 || sh.type === 'SavedShot' || sh.type === 'AttemptSaved';
     const col = mix(teamRgb(sh.team), accurate ? SHOT_ACC : SHOT_INACC, 0.55);
-    const af = ageAlpha(sh.minute);
+    const af = ageAlpha(sh.t);
     const r = Math.max(2.5, (3 + sh.xg * 34)) * (Math.min(W, H) / 900) * shotSize;
+
+    // SHOT LINE — trajectory from the shot location to the goal (same Z plane)
+    const goalEndX = sh.team === 'home' ? 1 : 0;
+    const gpt = proj(goalEndX, 0.5, z);
+    const lg = ctx.createLinearGradient(pt[0], pt[1], gpt[0], gpt[1]);
+    lg.addColorStop(0, rgbStr(sh.isGoal ? { r: 255, g: 250, b: 235 } : col, (sh.isGoal ? 0.95 : 0.7) * af));
+    lg.addColorStop(1, rgbStr(col, 0));
+    ctx.strokeStyle = lg;
+    ctx.lineWidth = Math.max(1.2, (sh.isGoal ? 2.4 : 1.6) * shotSize);
+    ctx.beginPath(); ctx.moveTo(pt[0], pt[1]); ctx.lineTo(gpt[0], gpt[1]); ctx.stroke();
+
     if (sh.isGoal) {
       ctx.fillStyle = rgbStr({ r: 255, g: 250, b: 235 }, 0.9 * af);
       ctx.beginPath(); ctx.arc(pt[0], pt[1], r * 1.2, 0, Math.PI * 2); ctx.fill();

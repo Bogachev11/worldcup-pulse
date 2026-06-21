@@ -69,6 +69,7 @@ export function normPass(p) {
     team: p.team,
     ok: p.outcome === 'Successful',
     minute: p.minute,
+    t: Number.isFinite(p.t) ? p.t : p.minute,   // precise time (min + sec/60)
   };
 }
 
@@ -86,6 +87,7 @@ export function normShot(s) {
     type: s.type || '',
     situation: s.situation || '',
     minute: s.minute,
+    t: Number.isFinite(s.t) ? s.t : s.minute,
     player: s.player || '',
   };
 }
@@ -136,7 +138,7 @@ export function richDuration(m) {
   };
   consider(m.momentum, 'minute');
   consider(m.shots, 'minute');
-  consider(m.passes, 'minute');
+  consider(m.passes, 't');
   return Math.ceil(d);
 }
 
@@ -146,11 +148,11 @@ export function prepareMatch(m) {
   const passes = (m.passes || [])
     .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.endX))
     .map(normPass)
-    .sort((a, b) => a.minute - b.minute);
+    .sort((a, b) => a.t - b.t);
   const shots = (m.shots || [])
     .filter((s) => Number.isFinite(s.x))
     .map(normShot)
-    .sort((a, b) => a.minute - b.minute);
+    .sort((a, b) => a.t - b.t);
   const momentum = normMomentum(m.momentum);
   const home = { ...(m.home || {}), rgb: liftColor(hexToRgb(m.home?.colorHex)) };
   const away = { ...(m.away || {}), rgb: liftColor(hexToRgb(m.away?.colorHex)) };
