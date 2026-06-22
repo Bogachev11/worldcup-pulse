@@ -106,6 +106,7 @@ const tune = {
   macroAmp: 1.1,      // amplitude — overall macro wave height (master macro amp → uWave)
   macroSpeed: 1.0,    // speed — temporal roll speed (scales φ/uPhi time term)
   macroSmooth: 0.5,   // smoothness — wavelength: high = long broad waves, low = choppy (inverse ω)
+  macroScale: 1.0,    // scale — base spatial frequency multiplier (→ uMacroScale): high = many small undulations, low = broad folds
   macroDetail: 3,     // detail — summed octaves/overtones (1..6) → uOctaves
 
   // ---- H2 POSSESSION (the flood / tide) ----
@@ -310,6 +311,7 @@ function rebuildMesh() {
         uPhi: { value: HARM_PHI },
         uMacroSpeed: { value: tune.macroSpeed },         // speed: temporal roll multiplier
         uMacroFreq: { value: 1.0 },                      // smoothness: spatial-freq multiplier (inverse smooth)
+        uMacroScale: { value: tune.macroScale },         // scale: base spatial-freq multiplier (fold size)
         // H3 DUELS edge softness (smoothstep window).
         uDuelSmooth: { value: tune.duelSmooth },
         // PRIMARY team colours ONLY (Layer 2 carries colour). Home / away.
@@ -370,6 +372,7 @@ const VERT = /* glsl */`
   uniform float uPhi;       // base temporal speed (rolls as -k*phi*t)
   uniform float uMacroSpeed;// H1 MACRO speed: temporal roll multiplier
   uniform float uMacroFreq; // H1 MACRO smoothness: spatial-freq multiplier (>1 choppier)
+  uniform float uMacroScale;// H1 MACRO scale: base spatial-freq multiplier (fold size; >1 = more, smaller undulations)
   uniform float uHtEnv;     // half-time envelope (1 normal .. 0 at break dip)
   uniform vec2 uWorld;
   uniform float uTime;
@@ -400,8 +403,12 @@ const VERT = /* glsl */`
     float xW = P.x;            // world position along the pitch length
     float zW = P.y;            // world position across the pitch (the "z" term)
     float t = uTime;
-    float om = uOmega * uMacroFreq;   // smoothness modulates spatial freq
-    float ps = uPsi   * uMacroFreq;
+    // uMacroScale multiplies the BASE spatial frequency (fold size). High scale =
+    // MANY SMALL undulations across the pitch; low = broad folds. Combined with
+    // uMacroFreq (smoothness) which also rides the spatial freq inversely.
+    float sc = max(uMacroScale, 0.05);
+    float om = uOmega * uMacroFreq * sc;   // smoothness + scale modulate spatial freq
+    float ps = uPsi   * uMacroFreq * sc;
     float ph = uPhi   * uMacroSpeed;  // speed modulates temporal roll
     int N = int(clamp(uOctaves, 1.0, 6.0));
     float sum = 0.0, norm = 0.0;
@@ -415,6 +422,14 @@ const VERT = /* glsl */`
     }
     sum = (norm > 1e-4) ? sum / norm : sum;                  // keep height stable as N varies
     float wave = sum * uWave * 0.78;
+    // TERRACE the macro: quantise the (smooth-flowing) wave into the same discrete
+    // levels as the possession/duel relief so the macro reads as STEPS, not big
+    // smooth folds. We compute the smooth wave above, then floor it here — so the
+    // shape still flows smoothly but the OUTPUT is stepped. Scaled by uWave so the
+    // step size stays proportional to amplitude.
+    float L = max(uLevels, 1.0);
+    float qScale = max(uWave, 1e-3) * 0.78;                  // quantise in wave-amplitude units
+    wave = floor((wave / qScale) * L + 0.5) / L * qScale;    // terrace the macro height
     // dominance lean: low-frequency tilt across X toward the dominant side
     float lean = uDomBias * (uv.x - 0.5) * 1.1;
     return wave + lean;
@@ -610,6 +625,7 @@ function syncMaterialUniforms() {
   u.uMacroSpeed.value = Math.max(0, tune.macroSpeed);            // H1 speed
   // H1 smoothness 0..1 → freq multiplier ~2.2 (choppy) .. ~0.35 (long broad)
   u.uMacroFreq.value = 2.2 - 1.85 * clamp(tune.macroSmooth, 0, 1);
+  u.uMacroScale.value = Math.max(0.05, tune.macroScale);         // H1 scale (fold size)
   u.uDuelSmooth.value = clamp(tune.duelSmooth, 0, 1);            // H3 smoothness
   u.uHtEnv.value = Number.isFinite(htEnv) ? clamp(htEnv, 0, 1) : 1;
 }
@@ -1194,6 +1210,86 @@ function bindUI() {
   });
 }
 
+// ---- COPY SETTINGS ----------------------------------------------------------
+// Build a single JSON blob with the CURRENT value of EVERY slider/tunable plus
+// the grid resolution and camera, so the user can paste their dialed-in setup
+// back. Round numbers for readability.
+function settingsBlob() {
+  const r2 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
+  return {
+    tune: {
+      // GLOBAL
+      speed: r2(tune.speed), steps: Math.round(tune.steps), dim: r2(tune.dim),
+      htFade: r2(tune.htFade), fade: r2(tune.fade),
+      // H1 MACRO
+      macroAmp: r2(tune.macroAmp), macroSpeed: r2(tune.macroSpeed),
+      macroSmooth: r2(tune.macroSmooth), macroScale: r2(tune.macroScale),
+      macroDetail: Math.round(tune.macroDetail),
+      // H2 POSSESSION
+      height: r2(tune.height), possSpeed: r2(tune.possSpeed),
+      possSmooth: r2(tune.possSmooth), possDetail: r2(tune.possDetail),
+      floodHold: r2(tune.floodHold), floodClear: r2(tune.floodClear),
+      // H3 DUELS
+      duels: r2(tune.duels), duelSpeed: r2(tune.duelSpeed),
+      duelSmooth: r2(tune.duelSmooth), duelDetail: r2(tune.duelDetail),
+    },
+    grid: { gx: GX, gy: GY },
+    camera: {
+      pos: [r2(camera.position.x), r2(camera.position.y), r2(camera.position.z)],
+      target: [r2(controls.target.x), r2(controls.target.y), r2(controls.target.z)],
+    },
+  };
+}
+
+// Append a "COPY SETTINGS" button to the control panel (with a hidden readable
+// fallback element). On click → copy the settings JSON to the clipboard; on
+// failure dump it into the fallback element for hand-copying. Flash "copied ✓".
+function addCopySettingsButton() {
+  const panel = el('panel');
+  if (!panel || el('copyset')) return;
+  const row = document.createElement('div');
+  row.className = 'row';
+  const btn = document.createElement('button');
+  btn.id = 'copyset';
+  btn.type = 'button';
+  btn.textContent = 'COPY SETTINGS';
+  btn.style.cssText = 'flex:1;cursor:pointer';
+  row.appendChild(btn);
+  panel.appendChild(row);
+
+  // readable fallback (hidden until a clipboard write fails)
+  const dump = document.createElement('textarea');
+  dump.id = 'copysetDump';
+  dump.readOnly = true;
+  dump.style.cssText = 'display:none;width:100%;height:120px;margin-top:4px;' +
+    'font:10px/1.3 monospace;background:#0a0e16;color:#9fd;border:1px solid rgba(255,255,255,0.18);' +
+    'border-radius:4px;padding:6px;box-sizing:border-box';
+  panel.appendChild(dump);
+
+  let flashT = 0;
+  btn.addEventListener('click', async () => {
+    const json = JSON.stringify(settingsBlob(), null, 2);
+    const flash = () => {
+      btn.textContent = 'copied ✓';
+      clearTimeout(flashT);
+      flashT = setTimeout(() => { btn.textContent = 'COPY SETTINGS'; }, 1400);
+    };
+    try {
+      await navigator.clipboard.writeText(json);
+      dump.style.display = 'none';
+      flash();
+    } catch {
+      // clipboard blocked → show the JSON so it can be hand-copied + select it.
+      dump.value = json;
+      dump.style.display = 'block';
+      dump.focus(); dump.select();
+      btn.textContent = 'copy below ↓';
+      clearTimeout(flashT);
+      flashT = setTimeout(() => { btn.textContent = 'COPY SETTINGS'; }, 1800);
+    }
+  });
+}
+
 // ---- control-panel builder (all sliders rebuilt in JS) ----------------------
 // We OWN the tuning panel: strip the HTML-authored slider rows (keep title +
 // play/restart + clock) and rebuild the GLOBAL / H1 / H2 / H3 groups so the
@@ -1266,9 +1362,13 @@ function buildControlPanel() {
 
   // ---- H1 MACRO --------------------------------------------------------------
   header('H1 MACRO');
-  addSlider('amplitude', 0, 4, 0.02, tune.macroAmp, (v) => { tune.macroAmp = v; return v.toFixed(2); });
+  // amplitude max raised 4 → 10 so the (now terraced) macro can be clearly taller.
+  addSlider('amplitude', 0, 10, 0.02, tune.macroAmp, (v) => { tune.macroAmp = v; return v.toFixed(2); });
   addSlider('speed', 0, 3, 0.02, tune.macroSpeed, (v) => { tune.macroSpeed = v; return v.toFixed(2); });
   addSlider('smoothness', 0, 1, 0.01, tune.macroSmooth, (v) => { tune.macroSmooth = v; return v.toFixed(2); });
+  // scale: spatial frequency / fold size. High = MORE, SMALLER undulations across
+  // the pitch (crank amplitude without collapsing into a few giant folds); low = broad.
+  addSlider('scale', 0.1, 6, 0.05, tune.macroScale, (v) => { tune.macroScale = v; return v.toFixed(2); });
   addSlider('detail', 1, 6, 1, tune.macroDetail, (v) => { tune.macroDetail = Math.round(v); return String(Math.round(v)); });
 
   // ---- H2 POSSESSION (flood) -------------------------------------------------
@@ -1286,6 +1386,9 @@ function buildControlPanel() {
   addSlider('speed', 0.1, 3, 0.05, tune.duelSpeed, (v) => { tune.duelSpeed = v; return v.toFixed(2); });
   addSlider('smoothness', 0, 1, 0.01, tune.duelSmooth, (v) => { tune.duelSmooth = v; return v.toFixed(2); });
   addSlider('detail', 0, 1, 0.01, tune.duelDetail, (v) => { tune.duelDetail = v; return v.toFixed(2); });
+
+  // ---- COPY SETTINGS (bottom of panel) --------------------------------------
+  addCopySettingsButton();
 }
 
 // ---- dev hook ---------------------------------------------------------------
