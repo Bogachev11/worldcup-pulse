@@ -321,8 +321,11 @@ export class PassGrid {
   macroBlur(rad, passes) {
     const GX = this.GX, GY = this.GY, n = GX * GY;
     const src = this.mBlur, tmp = this._mTmp, mh = this.mHome, ma = this.mAway;
-    // seed mBlur with the raw signed net (away − home)
-    for (let k = 0; k < n; k++) src[k] = ma[k] - mh[k];
+    // seed mBlur with TOTAL presence (home + away) → a positive magnitude field:
+    // swells rise wherever the game concentrated, on BOTH halves (never a signed
+    // up/down that buries one team). Direction is shown by the dominance tilt +
+    // the momentum roll in the shader, not by the sign here.
+    for (let k = 0; k < n; k++) src[k] = ma[k] + mh[k];
     const R = Math.max(0, Math.floor(rad));
     if (R === 0) return;
     const np = Math.max(1, Math.floor(passes));

@@ -32,7 +32,7 @@ const PRIMARY = {
 // ---- grid resolution (sim cells = vertices; texture is GX×GY) ---------------
 // Fine extruded-cell landscape (Variable look). Default 120×72; up to 640×384
 // (coords are precise to 0.1 on a 0–100 frame, so fine detail is meaningful).
-let GX = 120, GY = 72;          // default fine zone relief
+let GX = 444, GY = 266;         // default zone-relief resolution (user-tuned)
 const GX_MIN = 24, GY_MIN = 14;
 const GX_MAX = 640, GY_MAX = 384;   // ~16:9.6 ratio, much finer ceiling
 const MESH_SEG_CAP = 512;       // cap plane segments per axis for perf
@@ -101,30 +101,30 @@ const tune = {
   // ---- GLOBAL ----
   speed: 2.8,         // match (playback) speed (default 2.8×)
   steps: 14,          // terrace levels (height quantisation) — the Variable look
-  dim: 0.08,          // how hard the passive (non-possessing) team fades
-  htFade: 2.5,        // half-time transition length in MATCH-minutes (~2–3)
+  dim: 0.11,          // how hard the passive (non-possessing) team fades
+  htFade: 0.5,        // half-time transition length in MATCH-minutes (~2–3)
   fade: 0.85,         // base zone sink rate (per second decay rate)
 
   // ---- H1 MACRO (REAL territorial-dominance relief — NO procedural waves) ----
   // The macro height is a heavily-BLURRED accumulation of every real pass/event
   // (long half-life), tilted by the cumulative dominance (domBias) and ROLLED by
   // the real per-minute momentum series. No sine sum, no fbm — 100% match data.
-  macroAmp: 1.1,      // amplitude — height of the dominance relief (→ uWave)
-  macroSpeed: 1.0,    // speed — how fast the field decays-and-rebuilds + momentum-roll rate
-  macroSmooth: 0.5,   // smoothness — how heavily the dominance field is blurred (more = broader swells)
-  macroScale: 1.0,    // scale — blur radius / spatial wavelength of the field (fold size)
+  macroAmp: 1.3,      // amplitude — height of the dominance relief (→ uWave)
+  macroSpeed: 0.38,   // speed — how fast the field decays-and-rebuilds + momentum-roll rate
+  macroSmooth: 0.36,  // smoothness — how heavily the dominance field is blurred (more = broader swells)
+  macroScale: 1.05,   // scale — blur radius / spatial wavelength of the field (fold size)
 
   // ---- H2 POSSESSION (the flood / tide) ----
-  height: 1.6,        // amplitude — flood relief height multiplier (→ uHScale)
+  height: 1.82,       // amplitude — flood relief height multiplier (→ uHScale)
   possSpeed: 1.0,     // speed — how fast the tide advances/flows (scales head-advance + flow)
   possSmooth: 0.5,    // smoothness — softness of the flood leading edge (front feather)
-  possDetail: 0.5,    // detail — flood footprint fineness (corridor/cell splat size)
+  possDetail: 0.23,   // detail — flood footprint fineness (corridor/cell splat size)
   floodHold: 0.35,    // hold — possessor-flood persistence (small = lingers)
   floodClear: 2.4,    // clear — non-possessor / stale-flood recede rate (big = vanishes fast)
 
   // ---- H3 DUELS (sharp contact spikes) ----
-  duels: 1.0,         // amplitude — duel spike HEIGHT (→ uDuelAmt)
-  duelSpeed: 1.0,     // speed — spike rise + fade speed (how fast a spark appears/decays)
+  duels: 0.45,        // amplitude — duel spike HEIGHT (→ uDuelAmt)
+  duelSpeed: 2.25,    // speed — spike rise + fade speed (how fast a spark appears/decays)
   duelSmooth: 0.5,    // smoothness — spike edge softness (high = soft bump, low = sharp needle)
   duelDetail: 0.5,    // detail — spike footprint fineness (radius; finer = smaller, sharper)
 };
@@ -205,7 +205,7 @@ function fail(msg) {
 // Default camera — exact pos/target the user dialed in. Stored as pos+target
 // (most robust) and applied directly; we also keep a spherical helper for orbit.
 const DEFAULT_CAM = {
-  pos: { x: -8.45, y: 10.96, z: 12.31 },
+  pos: { x: -18.21, y: 13.19, z: 22.07 },
   target: { x: -1.96, y: -0.92, z: 1.17 },
 };
 
@@ -539,8 +539,8 @@ const FRAG = /* glsl */`
     float d2 = max(dot(N, normalize(uLightDir2)), 0.0) * 0.5;
     col *= (0.60 + d1*0.85 + d2);
 
-    // peaks read brighter, valleys sink (relief AO-ish)
-    col *= 0.86 + clamp(relief*0.6, 0.0, 0.5);
+    // (colour brightness is kept CONSTANT — no height/relief darkening, so a
+    //  team's colour reads the same whether the cell is high or low.)
 
     // gentle emissive on hot possessing zones
     col += team * occupied * possGate * smoothstep(0.35, 1.0, relief) * 0.35;
