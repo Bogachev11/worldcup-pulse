@@ -48,7 +48,25 @@ let passCursor = 0;             // next pass to deposit (passes sorted by t)
 let duelCursor = 0;            // next duel to spawn
 let turnCursor = 0;           // next turnover to credit
 let domHome = 0.5;              // smoothed "who dominates recent passes" for HUD
-let lastDeposited = null;       // last pass deposited (for flow interpolation)
+
+// ---- BALL RECONSTRUCTION (drives the possession FLOOD/TIDE) ------------------
+// We reconstruct an approximate ball position on the SHARED pitch over time:
+//  • between events the ball ≈ the latest pass, interpolated start→end across
+//    that pass's short flight (PASS_FLIGHT match-minutes);
+//  • a turnover (Interception/BallRecovery/Tackle/Dispossessed) hands the ball
+//    to the winning team (we re-anchor the ball at the turnover location).
+// ballTeam = who currently has it; ballX/ballY = its shared-pitch position;
+// ballX0/ballX1 + ball anchor times let us interpolate between deposits.
+let ballTeam = 'home';         // current possessor (from the ball, not smoothed)
+let ballX = 0.5, ballY = 0.5;  // current shared-pitch ball position
+let segT0 = 0, segT1 = 0;      // current pass segment time window
+let segX0 = 0.5, segY0 = 0.5;  // segment start (shared pitch)
+let segX1 = 0.5, segY1 = 0.5;  // segment end (shared pitch)
+const PASS_FLIGHT = 0.03;      // match-minutes a pass takes to travel (~1.8 s)
+// Furthest penetration the possessing team's ball has reached toward the
+// opponent goal, measured as "attacking depth" 0..1 (own side .. opp goal).
+// Recedes slowly when they stop; resets on turnover (new team floods from 0).
+let headDepth = 0;             // current possessing team's furthest reach (0..1)
 
 // LAYER 1 — cumulative DOMINANCE bias. Slowly accumulating territory/possession
 // differential (home minus away), smoothed; raises the half of the pitch the
@@ -69,14 +87,17 @@ const POSS_DECAY = 1 / (POSS_WINDOW / 60); // decay rate per match-minute
 const POSS_TAU_SEC = 5.0;          // smoothing time constant in MATCH-seconds (~4–6)
 const TURNOVER_W = 1.4;            // weight a turnover adds (a bit more than 1 pass)
 
-// tuning (bound to sliders)
+// tuning (bound to sliders). THREE independent per-layer HEIGHT sliders:
+//   wave   → MACRO height   (Layer 1, rolling dominance waves)
+//   height → POSSESSION height (Layer 2, the flood/tide relief)
+//   duels  → DUEL height    (Layer 3, contact-spark amplitude)
 const tune = {
-  speed: 14.8,        // stage2 default 3.7 × 4
-  height: 1.6,        // relief height multiplier
+  speed: 2.8,         // playback speed (default 2.8×)
+  height: 1.6,        // POSSESSION (flood) relief height multiplier
   fade: 0.85,         // zone sink rate (per second decay rate)
-  wave: 1.1,          // macro rolling-wave amplitude
+  wave: 1.1,          // MACRO rolling-wave height (amplitude)
   steps: 14,          // terrace levels (height quantisation) — the Variable look
-  duels: 1.0,         // duel spike amount (Layer 3)
+  duels: 1.0,         // DUEL spike HEIGHT (Layer 3 amplitude)
   dim: 0.08,          // how hard the passive (non-possessing) team fades
 };
 
@@ -329,18 +350,21 @@ const VERT = /* glsl */`
     float lean = uDomBias * (uv.x - 0.5) * 1.1;
     return wave + lean;
   }
-  // LAYER 2 — Relief sampled with NEAREST (flat cell tops), QUANTISED into
-  // discrete terraces → the staged extruded-blocks Variable aesthetic.
+  // LAYER 2 — POSSESSION FLOOD relief sampled with NEAREST (flat cell tops),
+  // QUANTISED into discrete terraces → the staged extruded-blocks aesthetic.
+  // Scaled ONLY by the possession-height slider (uHScale).
   float relief(vec2 uv){
     float r = texture2D(uHeight, uv).r;            // 0..~1.4, flat per cell
     float L = max(uLevels, 1.0);
     r = floor(r * L + 0.5) / L;                    // terrace into L steps
     return r * uHScale;
   }
-  // LAYER 3 — duel spike height (sharp, NOT terraced, capped so no vertical facet)
+  // LAYER 3 — duel spike height (sharp, NOT terraced, capped so no vertical
+  // facet). Scaled ONLY by the duel-height slider (uDuelAmt) — independent of
+  // the possession-height slider so each layer scales on its own.
   float duelH(vec2 uv){
     float d = texture2D(uDuel, uv).r;              // already capped on CPU side
-    return min(d, 1.4) * uHScale * 0.9 * uDuelAmt;
+    return min(d, 1.4) * 0.9 * uDuelAmt;
   }
   float H(vec2 uv){ return waveBase(uv) + relief(uv) + duelH(uv); }
 
@@ -372,9 +396,10 @@ const VERT = /* glsl */`
   }
 `;
 
-// Fragment: colour = team of recent passes in this cell. uCol holds away-share
-// in [0,1]; -1 marks empty (no recent passes) → base wave colour. Relief height
-// drives how strongly the team colour saturates above the calm base.
+// Fragment: colour = the FLOOD owner (the team whose tide has reached this cell).
+// uCol holds the flood away-share in [0,1]; -1 marks dry (no flood) → neutral
+// tide base. Colour is ALWAYS full brightness on owned cells (decoupled from
+// relief height); only lighting + the possession gate shape it.
 const FRAG = /* glsl */`
   precision highp float;
   uniform sampler2D uCol;
@@ -425,10 +450,12 @@ const FRAG = /* glsl */`
     float possGate = mix(uDim, 1.0, possActive);
 
     float relief = max(vH, 0.0);
-    float lift = clamp(relief * 1.4, 0.0, 1.0);
-    // add the possessing team's colour where its relief rises; passive team's
-    // cells barely lift off the neutral base.
-    float teamMix = occupied * (0.30 + 0.70 * lift) * possGate;
+    // ALWAYS BRIGHT: an owned/flooded cell shows its FULL team colour regardless
+    // of how tall the relief is. Colour saturation is DECOUPLED from height —
+    // it depends only on occupancy + the possession gate, NOT on relief/lift.
+    // 3D form still comes from the normal/lighting below; height no longer dims
+    // the colour. Passive (non-possessing) flood is dimmed via possGate.
+    float teamMix = occupied * possGate;
     col = mix(baseNeutral, team, clamp(teamMix, 0.0, 1.0));
 
     // subtle marble so the surface reads as a textured landscape
@@ -504,8 +531,28 @@ function applyTeamColors() {
 // ============================================================================
 // Splat radius in PITCH units (fraction of pitch width). Converted to cells per
 // resolution so pass zones read the same physical size at any grid fineness.
-const SPLAT_PITCH = 0.04;       // ~4% of pitch width
-const END_SPLAT = 0.45;         // lighter splat weight at the pass end
+const SPLAT_PITCH = 0.04;       // ~4% of pitch width (goal-spike footprint)
+
+// Which direction a team attacks on the SHARED pitch at match-time t.
+// 1st half: home attacks x=1 (right), away attacks x=0 (left). They swap at HT.
+// Returns the OPPONENT-goal x (where the team is pushing toward) and the team's
+// OWN-goal x (where its flood corridor starts).
+function attackGeom(team, t) {
+  const secondHalf = t >= 45;
+  const homeAttacksRight = !secondHalf;             // home → x=1 in 1st half
+  const teamAttacksRight = (team === 'home') ? homeAttacksRight : !homeAttacksRight;
+  const oppGoalX = teamAttacksRight ? 1 : 0;        // the goal they push toward
+  const ownGoalX = teamAttacksRight ? 0 : 1;        // where their corridor starts
+  return { oppGoalX, ownGoalX, attacksRight: teamAttacksRight };
+}
+
+// Convert a shared-pitch ball x into "attacking depth" 0..1 for `team` at t:
+// 0 = at the team's own goal, 1 = at the opponent goal. This is how far the
+// tide has rolled toward the other half.
+function attackDepth(team, t, x) {
+  const g = attackGeom(team, t);
+  return g.attacksRight ? clamp(x, 0, 1) : clamp(1 - x, 0, 1);
+}
 
 function resetSim() {
   grid = new PassGrid(GX, GY);
@@ -521,7 +568,9 @@ function resetSim() {
   domAccum = 0; domBias = 0;
   possHomeW = 0; possAwayW = 0;
   uPossTarget = 0.5; uPoss = 0.5;
-  lastDeposited = null;
+  ballTeam = 'home'; ballX = 0.5; ballY = 0.5;
+  segT0 = 0; segT1 = 0; segX0 = 0.5; segY0 = 0.5; segX1 = 0.5; segY1 = 0.5;
+  headDepth = 0;
   heightData.fill(0);
   colData.fill(-1);
   duelData.fill(0);
@@ -530,37 +579,21 @@ function resetSim() {
   duelTex.needsUpdate = true;
 }
 
-// Deposit a chain of light splats along a segment so the lit crest GLIDES across
-// the pitch instead of popping cell-to-cell. n interpolated points, total weight
-// ≈ amp (so flow doesn't inflate height vs. a single splat).
-function splatSeg(x0, y0, x1, y1, team, amp, radius, n) {
-  const steps = Math.max(1, n | 0);
-  const w = amp / steps;
-  for (let i = 0; i < steps; i++) {
-    const u = (i + 0.5) / steps;
-    grid.splat(lerp(x0, x1, u), lerp(y0, y1, u), team, w, radius);
-  }
-}
-
-// Deposit all passes whose t falls in (a, b].
+// Process all passes whose t falls in (a, b]. NO blob splats anymore — instead
+// each pass updates the BALL SEGMENT (start→end on the shared pitch) so the ball
+// position can be interpolated between events. The pass's team becomes the ball
+// owner. Possession-window + dominance bookkeeping unchanged.
 function depositRange(a, b) {
-  // splat radius in CELLS = pitch fraction × grid width (physically constant)
-  const radius = Math.max(1, SPLAT_PITCH * GX);
   while (passCursor < passes.length && passes[passCursor].t <= b) {
     const p = passes[passCursor];
     if (p.t > a) {
       // half-time end-swap placement (per-team normalised → shared pitch)
       const s = placeXY(p.xn, p.yn, p.team, p.t);
       const e = placeXY(p.exn, p.eyn, p.team, p.t);
-      // FLOW: glide the crest along start→end of this pass (interpolated splats)
-      // plus from the previous deposited pass into this one, so the bright zone
-      // streams across the field following where the ball is going.
-      splatSeg(s.x, s.y, e.x, e.y, p.team, 1.0, radius, 4);
-      grid.splat(e.x, e.y, p.team, END_SPLAT, radius);
-      if (lastDeposited && lastDeposited.team === p.team) {
-        splatSeg(lastDeposited.x, lastDeposited.y, s.x, s.y, p.team, 0.6, radius, 4);
-      }
-      lastDeposited = { x: e.x, y: e.y, team: p.team };
+      // BALL SEGMENT: ball flies start→end across PASS_FLIGHT match-minutes.
+      ballTeam = p.team;
+      segT0 = p.t; segT1 = p.t + PASS_FLIGHT;
+      segX0 = s.x; segY0 = s.y; segX1 = e.x; segY1 = e.y;
 
       // feed the possession window (recent-pass weights per team)
       if (p.team === 'away') possAwayW += 1.0; else possHomeW += 1.0;
@@ -577,15 +610,72 @@ function depositRange(a, b) {
   }
 }
 
-// Spawn DUEL spikes (Layer 3) for duels whose t falls in (a,b]. Sharp/narrow.
+// Advance the reconstructed ball to match-time t by interpolating the current
+// pass segment (start→end across its short flight, then held at the end).
+function updateBall(t) {
+  if (segT1 > segT0) {
+    const u = clamp((t - segT0) / (segT1 - segT0), 0, 1);
+    ballX = lerp(segX0, segX1, u);
+    ballY = lerp(segY0, segY1, u);
+  } else {
+    ballX = segX1; ballY = segY1;
+  }
+}
+
+// ---- THE TIDE: advance/recede the flood head and fill the corridor ----------
+// The SMOOTHED possessor (uPoss, same signal as the colour) floods a contiguous
+// swath from its OWN side up to the ball's furthest penetration. Each frame:
+//   • compute the smoothed possessor and the ball's CURRENT attacking depth;
+//   • the flood head ADVANCES toward the ball when they push forward, and
+//     RECEDES slowly when they stop / the ball sits back (rolling leading edge);
+//   • fill the corridor [own side .. head] in a lateral band around the ball y
+//     into the flood field with owner = possessor. This is the wave that rolls
+//     onto the other team. On a turnover the OTHER team floods back the other way
+//     (its head was reset to its own side in creditTurnovers).
+const HEAD_ADV = 5.0;          // how fast the head chases the ball forward (per match-min)
+const HEAD_RECEDE = 0.9;       // how fast it slides back when play sits (per match-min)
+const FLOOD_BAND = 0.16;       // corridor lateral half-width (unit y) around the ball
+function floodTick(t, dtMatchMin) {
+  // smoothed possessor (matches the colour): uPoss 0=home .. 1=away
+  const possTeam = (uPoss < 0.5) ? 'home' : 'away';
+  // ball depth measured FOR the possessing team (0 own side .. 1 opp goal)
+  const ballDepth = attackDepth(possTeam, t, ballX);
+  // ADVANCE toward the ball, RECEDE slowly when the ball sits behind the head.
+  const dt = Math.max(0, dtMatchMin);
+  if (ballDepth > headDepth) {
+    const k = 1 - Math.exp(-HEAD_ADV * dt);
+    headDepth = headDepth + (ballDepth - headDepth) * k;       // roll forward
+  } else {
+    const k = 1 - Math.exp(-HEAD_RECEDE * dt);
+    headDepth = headDepth + (ballDepth - headDepth) * k;       // ease back
+  }
+  headDepth = clamp(headDepth, 0, 1);
+
+  // map attacking depth → shared-pitch x of the head, and the own-goal x.
+  const g = attackGeom(possTeam, t);
+  const headX = g.attacksRight ? headDepth : (1 - headDepth);
+  // deposit amount scales with dt so the tide builds at a consistent wall-rate.
+  const amp = 26.0 * Math.min(dt, 0.2);
+  grid.floodCorridor(g.ownGoalX, headX, ballY, FLOOD_BAND, possTeam, amp);
+}
+
+// Spawn DUEL spikes (Layer 3) for duels whose t falls in (a,b]. FINER + SHARPER
+// than before: ~1 fine cell footprint so they read as tiny contact sparks,
+// distinct from the broad possession flood. Display HEIGHT is the duels slider
+// (uDuelAmt in the shader); CPU amplitude is constant here.
 function spawnDuels(a, b) {
-  const radius = Math.max(0.7, SPLAT_PITCH * GX * 0.45);   // ~1 cell core, very small
+  // ~1 fine cell core (independent of grid res), crisp.
+  const radius = Math.max(0.6, GX * 0.006);
   while (duelCursor < duels.length && duels[duelCursor].t <= b) {
     const d = duels[duelCursor];
     if (d.t > a) {
       const pl = placeXY(d.xn, d.yn, d.team, d.t);
-      // tall+narrow but CAPPED amplitude so no near-vertical facet
-      grid.duelSplat(pl.x, pl.y, d.team, 1.4 * tune.duels, radius);
+      // tall+narrow but CAPPED amplitude so no near-vertical facet.
+      let height = 1.4;
+      // YELLOW-CARD hook: a carded duel spikes twice as tall. THIS match's data
+      // has no cards so d.bigCard is never set — this never triggers here.
+      if (d.bigCard) height *= 2;
+      grid.duelSplat(pl.x, pl.y, d.team, height, radius);
     }
     duelCursor++;
   }
@@ -598,6 +688,15 @@ function creditTurnovers(a, b) {
     const to = turnovers[turnCursor];
     if (to.t > a) {
       if (to.team === 'away') possAwayW += TURNOVER_W; else possHomeW += TURNOVER_W;
+      // HAND THE BALL to the winning team and re-anchor the flood: the new owner
+      // starts flooding from THEIR side. The ball is physically where it was, but
+      // for the gainer that maps to a (usually shallow) attacking depth, so their
+      // tide begins low and rolls the OTHER way as they push forward.
+      ballTeam = to.team;
+      headDepth = attackDepth(to.team, to.t, ballX);
+      // hold the ball at its current spot until the next pass moves it
+      segT0 = to.t; segT1 = to.t;
+      segX0 = segX1 = ballX; segY0 = segY1 = ballY;
     }
     turnCursor++;
   }
@@ -665,20 +764,31 @@ function stepSim(t, dt) {
     return;
   }
 
+  const dtMatchMin = Math.max(0, t - prevClock);
   depositRange(prevClock, t);
   creditTurnovers(prevClock, t);
   spawnDuels(prevClock, t);
   syncEvents(t);
   applyEventSpikes(t);
-  updatePossession(Math.max(0, t - prevClock));
+  updatePossession(dtMatchMin);
+  updateBall(t);
+
+  // advance the smoothed possession (uPoss) toward its target by the match-time
+  // elapsed so the FLOOD owner is current before we roll the tide this frame.
+  const kP = 1 - Math.exp(-(dtMatchMin * 60) / POSS_TAU_SEC);  // dtMatchMin in min → sec
+  uPoss = lerp(uPoss, uPossTarget, clamp(kP, 0, 1));
+  floodTick(t, dtMatchMin);
 
   // decay everything: rate scaled by fade slider; dt is REAL seconds (so the
   // visible sink speed is tied to wall time, feels consistent across speeds).
   // DUELS decay much faster (~3×) so sparks are brief (≈0.6–1.2 match-min).
+  // FLOOD recedes SLOWLY (the tide lingers) — a gentle decay so the coloured
+  // swath persists where the ball reached, then eases back when play moves on.
   const rate = tune.fade * 1.1;
   const keep = Math.exp(-rate * Math.max(dt, 1e-4));
   const duelKeep = Math.exp(-rate * 3.0 * Math.max(dt, 1e-4));
   grid.decay(keep, duelKeep);
+  grid.floodDecay(Math.exp(-rate * 0.35 * Math.max(dt, 1e-4)));
 
   prevClock = t;
   writeTextures();
@@ -700,8 +810,15 @@ function fastForward(t) {
     syncEvents(b);
     applyEventSpikes(b);
     updatePossession(b - a);
+    updateBall(b);
+    // advance smoothed possession by the match-time of this chunk, then roll the
+    // tide so a fast-forwarded grid matches a played-through one.
+    const kP = 1 - Math.exp(-((b - a) * 60) / POSS_TAU_SEC);
+    uPoss = lerp(uPoss, uPossTarget, clamp(kP, 0, 1));
+    floodTick(b, b - a);
     const dtSec = (b - a) * secPerMin;
     grid.decay(Math.exp(-rate * dtSec), Math.exp(-rate * 3.0 * dtSec));
+    grid.floodDecay(Math.exp(-rate * 0.35 * dtSec));
     a = b;
   }
 }
@@ -711,10 +828,13 @@ function fastForward(t) {
 // (black-spot fix) and heights are capped so no near-vertical facet appears.
 function writeTextures() {
   const n = GX * GY;
-  // find frame max (possession + duel) to feed the running-max normalizers
+  // POSSESSION relief now comes from the contiguous FLOOD field (the tide), PLUS
+  // the brief goal-spike accumulators (hHome/hAway). find the frame max (flood +
+  // goal spikes + duel) to feed the running-max normalizers.
   let frameMax = 0, duelMax = 0;
   for (let k = 0; k < n; k++) {
-    const v = grid.total(k); if (Number.isFinite(v) && v > frameMax) frameMax = v;
+    const v = grid.fInt[k] + grid.total(k);
+    if (Number.isFinite(v) && v > frameMax) frameMax = v;
     const dv = grid.dInt[k]; if (Number.isFinite(dv) && dv > duelMax) duelMax = dv;
   }
   hMaxTrack.observe(frameMax);
@@ -724,13 +844,19 @@ function writeTextures() {
 
   let hSum = 0, aSum = 0;
   for (let k = 0; k < n; k++) {
+    // possession height = flood intensity + goal-spike density (both per-team).
+    const fi = grid.fInt[k];
     const hh = grid.hHome[k], ha = grid.hAway[k];
-    const tot = hh + ha;
+    const tot = fi + hh + ha;
     let nh = tot * inv;
     if (!Number.isFinite(nh)) nh = 0;
     heightData[k] = nh > 0 ? Math.min(nh, 1.4) : 0;
-    // colour: away-share where occupied, else -1 (empty → neutral base)
-    let cs = tot > 1e-4 ? (ha / tot) : -1;
+    // colour: FLOOD owner where the tide has reached; else goal-spike owner;
+    // else -1 (dry → neutral tide base). Flood dominates the signal.
+    let cs;
+    if (fi > 1e-4) cs = grid.floodShare(k);
+    else if (hh + ha > 1e-4) cs = ha / (hh + ha);
+    else cs = -1;
     if (!Number.isFinite(cs)) cs = -1;
     colData[k] = cs;
     // DUEL channel: R = normalized+capped spike height, G = winner away-share
@@ -741,7 +867,8 @@ function writeTextures() {
     if (!Number.isFinite(ds)) ds = 0.5;
     duelData[k * 2] = dh;
     duelData[k * 2 + 1] = clamp(ds, 0, 1);
-    hSum += hh; aSum += ha;
+    // HUD possession % follows the FLOOD ownership (the tide) plus goal spikes.
+    hSum += grid.fHome[k] + hh; aSum += grid.fAway[k] + ha;
   }
   // smoothed "who dominates recent passes" for the HUD
   const tot = hSum + aSum;
@@ -785,14 +912,9 @@ function loop(now) {
     if (clock >= model.duration) { clock = model.duration; playing = false; el('play').textContent = '▶ play'; }
   }
 
+  // uPoss is smoothed INSIDE stepSim (with the match-time elapsed) so the FLOOD
+  // owner is current when the tide rolls; we just read it here for the uniform.
   if (model && grid) stepSim(clock, dt);
-
-  // smooth possession toward its target with a MATCH-seconds time constant
-  // (~POSS_TAU_SEC). dtMatch = real dt × speed, so a brief interception only
-  // nudges uPoss; a sustained counter-attack flips the colour.
-  const dtMatchSec = dt * Math.max(0.2, tune.speed);
-  const kPoss = 1 - Math.exp(-dtMatchSec / POSS_TAU_SEC);
-  uPoss = lerp(uPoss, uPossTarget, kPoss);
 
   if (material) {
     material.uniforms.uHScale.value = tune.height;
@@ -867,6 +989,17 @@ function bindUI() {
     // stepSim handles backward scrub; forward scrub just deposits the gap.
   });
 
+  // PER-LAYER HEIGHT sliders (HTML untouched): force defaults + clear labels in
+  // JS so each of the 3 activity layers gets its OWN amplitude control.
+  //   wave   → "macro"      (Layer 1 rolling dominance waves)
+  //   height → "possession" (Layer 2 flood/tide relief)
+  //   duels  → "duels"      (Layer 3 contact-spark HEIGHT)
+  setSlider('speed', tune.speed);          // default 2.8× (overrides HTML value)
+  setSlider('height', tune.height);
+  setSlider('wave', tune.wave);
+  relabel('wave', 'macro');                 // Layer 1 height
+  relabel('height', 'possession');          // Layer 2 height
+
   // inject the new DUELS + DIM slider rows (HTML untouched: build them in JS).
   injectSlider('duels', 'duelsV', 'duels', 0, 3, 0.05, tune.duels, 'wave');
   injectSlider('dim', 'dimV', 'dim', 0, 0.4, 0.01, tune.dim, 'duels');
@@ -899,6 +1032,19 @@ function bindUI() {
     try { await navigator.clipboard.writeText(s); el('camread').textContent = 'copied'; }
     catch { el('camread').textContent = s; }
   });
+}
+
+// Force a slider's DOM value (used to override HTML defaults from `tune`).
+function setSlider(id, value) {
+  const s = el(id);
+  if (s) s.value = String(value);
+}
+// Relabel a slider row's <label> text (HTML untouched: done in JS).
+function relabel(id, text) {
+  const s = el(id);
+  const row = s && s.closest ? s.closest('.row') : null;
+  const lab = row ? row.querySelector('label') : null;
+  if (lab) lab.textContent = text;
 }
 
 function bindSlider(id, valId, fn) {

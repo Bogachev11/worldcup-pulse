@@ -120,6 +120,12 @@ export class PassGrid {
     const n = GX * GY;
     this.hHome = new Float32Array(n);
     this.hAway = new Float32Array(n);
+    // POSSESSION FLOOD (the tide) — a CONTIGUOUS field, not scattered splats.
+    // fInt = flood intensity (relief height); fOwner accumulates per-team weight
+    // so a cell can be re-owned as the tide washes back the other way.
+    this.fInt = new Float32Array(n);     // flood intensity (height)
+    this.fHome = new Float32Array(n);    // home flood weight
+    this.fAway = new Float32Array(n);    // away flood weight
     // DUEL channel — sharp transient spikes, kept separate from possession swells.
     // dInt = spike intensity; dWin accumulates winner-weighted share (0=home..1=away)
     this.dInt = new Float32Array(n);     // intensity (height)
@@ -130,6 +136,9 @@ export class PassGrid {
   clear() {
     this.hHome.fill(0);
     this.hAway.fill(0);
+    this.fInt.fill(0);
+    this.fHome.fill(0);
+    this.fAway.fill(0);
     this.dInt.fill(0);
     this.dHome.fill(0);
     this.dAway.fill(0);
@@ -155,6 +164,60 @@ export class PassGrid {
       }
     }
   }
+
+  // ---- POSSESSION FLOOD / TIDE ---------------------------------------------
+  // Fill a CONTIGUOUS corridor for `team` from its OWN side up to the ball's
+  // current penetration `headX` (unit x, the furthest point the ball reached
+  // toward the opponent goal), in a lateral band of half-width `halfW` (unit y)
+  // around `ballY`. ownGoalX is the team's own goal x (0 or 1): the corridor is
+  // the swath from ownGoalX to headX. `amp` is added per frame; the leading edge
+  // is softened so the tide has a rolling front, not a hard wall.
+  //   This is the connected swath "the space the ball has reached" — NOT blobs.
+  floodCorridor(ownGoalX, headX, ballY, halfW, team, amp) {
+    const GX = this.GX, GY = this.GY;
+    if (!Number.isFinite(headX) || !Number.isFinite(ballY)) return;
+    const lo = Math.min(ownGoalX, headX);
+    const hi = Math.max(ownGoalX, headX);
+    const i0 = Math.max(0, Math.floor(lo * (GX - 1)));
+    const i1 = Math.min(GX - 1, Math.ceil(hi * (GX - 1)));
+    const cy = ballY * (GY - 1);
+    const hwCells = Math.max(0.8, halfW * (GY - 1));
+    const j0 = Math.max(0, Math.floor(cy - hwCells));
+    const j1 = Math.min(GY - 1, Math.ceil(cy + hwCells));
+    // leading-edge feather (in cells) so the front rolls in instead of snapping
+    const edge = Math.max(1.0, 0.06 * (GX - 1));
+    const headCell = headX * (GX - 1);
+    const ownCell = ownGoalX * (GX - 1);
+    const dirToHead = (headCell >= ownCell) ? 1 : -1;
+    const fArr = team === 'away' ? this.fAway : this.fHome;
+    for (let j = j0; j <= j1; j++) {
+      const dy = (j - cy) / hwCells;
+      // smooth lateral falloff (cosine-ish) → soft band edges, still contiguous
+      const latLater = Math.max(0, 1 - dy * dy);
+      const lat = latLater * latLater;
+      if (lat <= 0) continue;
+      for (let i = i0; i <= i1; i++) {
+        // leading-edge softness: 1 well behind the front, ramps to ~0 at the head
+        const ahead = dirToHead * (headCell - i);   // cells before reaching head
+        const front = clamp(ahead / edge, 0, 1);     // 0 at/over head, 1 behind
+        const w = amp * lat * (0.35 + 0.65 * front);
+        if (!(w > 0)) continue;
+        const k = j * GX + i;
+        this.fInt[k] += w;
+        fArr[k] += w;
+      }
+    }
+  }
+
+  // Decay the flood field (the tide recedes slowly when play stops / is lost).
+  floodDecay(keep) {
+    const fi = this.fInt, fh = this.fHome, fa = this.fAway, n = fi.length;
+    for (let k = 0; k < n; k++) { fi[k] *= keep; fh[k] *= keep; fa[k] *= keep; }
+  }
+
+  // Flood total + away-share for a cell (drives possession relief + colour).
+  floodTotal(k) { return this.fInt[k]; }
+  floodShare(k) { const t = this.fHome[k] + this.fAway[k]; return t > 1e-6 ? this.fAway[k] / t : 0.5; }
 
   // Sharp, NARROW duel spike — much tighter falloff than splat() (≈1 cell core)
   // so it reads as a crisp spark, not a swell. amp = intensity; winner team
