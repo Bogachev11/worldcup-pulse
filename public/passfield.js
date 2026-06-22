@@ -8,22 +8,24 @@
 //
 // IMPORTANT (verified): WhoScored pass coords are PER-TEAM NORMALISED — each
 // team's (x,y) is in its OWN "attack toward x=100" frame and the data does NOT
-// flip at half-time. So we place teams on a SHARED pitch and mirror the 2nd
-// half ourselves: 1st half home attacks right / away left; at half-time they
-// swap ends (like real football). See placeXY below.
+// flip at half-time. So we place teams on a SHARED pitch on OPPOSITE sides and
+// KEEP those sides for the WHOLE match (no mid-match swap): home always uses its
+// raw frame (attacks one way), away is always mirrored to the other side. The
+// half-time break is rendered as a fade/rebuild in stage4, not a side swap.
 
-export const HALFTIME = 45;            // match-minutes (end swap happens here)
+export const HALFTIME = 45;            // match-minutes (rendered as a fade in stage4)
 
 export function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 export function lerp(a, b, t) { return a + (b - a) * t; }
 
-// Place a raw per-team coord (xn,yn in [0,1]) onto the shared pitch for a team
-// at match-minute t, applying the half-time 180° end swap. Returns {x,y}.
+// Place a raw per-team coord (xn,yn in [0,1]) onto the shared pitch for a team.
+// Base opposite-sides orientation, KEPT for the whole match (no half-time swap):
+// home uses its raw frame, away is always mirrored to the other side. The `t`
+// argument is retained for call-site compatibility but no longer used. {x,y}.
 export function placeXY(xn, yn, team, t) {
-  const secondHalf = t >= HALFTIME;
   let X = xn, Y = yn;
-  const flip = (team === 'home') ? secondHalf : !secondHalf;
-  if (flip) { X = 1 - X; Y = 1 - Y; }   // 180° end swap
+  const flip = (team === 'away');       // away always mirrored; no half dependence
+  if (flip) { X = 1 - X; Y = 1 - Y; }   // 180° to the opposite side
   return { x: clamp(X, 0, 1), y: clamp(Y, 0, 1) };
 }
 
@@ -209,11 +211,24 @@ export class PassGrid {
     }
   }
 
-  // Decay the flood field (the tide recedes slowly when play stops / is lost).
-  floodDecay(keep) {
+  // Decay the flood field with ASYMMETRIC per-team rates so the POSSESSOR's tide
+  // lingers while the OTHER (stale counter-attack) flood recedes fast. keepHome /
+  // keepAway are the per-team keep factors; fInt is rebuilt from the surviving
+  // per-team weights so a cell's height follows whichever flood remains. When the
+  // two keeps are equal this is identical to a uniform decay.
+  floodDecay(keepHome, keepAway) {
+    if (keepAway === undefined) keepAway = keepHome;     // back-compat: uniform
     const fi = this.fInt, fh = this.fHome, fa = this.fAway, n = fi.length;
-    for (let k = 0; k < n; k++) { fi[k] *= keep; fh[k] *= keep; fa[k] *= keep; }
+    for (let k = 0; k < n; k++) {
+      fh[k] *= keepHome;
+      fa[k] *= keepAway;
+      fi[k] = fh[k] + fa[k];     // rebuild intensity from surviving team weights
+    }
   }
+
+  // Clear ONLY the flood (tide) fields — used at the half-time break to wipe the
+  // possession relief so the 2nd half rebuilds from a clean, even pitch.
+  clearFlood() { this.fInt.fill(0); this.fHome.fill(0); this.fAway.fill(0); }
 
   // Flood total + away-share for a cell (drives possession relief + colour).
   floodTotal(k) { return this.fInt[k]; }

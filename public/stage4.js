@@ -28,11 +28,12 @@ const PRIMARY = {
 };
 
 // ---- grid resolution (sim cells = vertices; texture is GX×GY) ---------------
-// Fine extruded-cell landscape (Variable look). Default 120×72; up to 360×216.
+// Fine extruded-cell landscape (Variable look). Default 120×72; up to 640×384
+// (coords are precise to 0.1 on a 0–100 frame, so fine detail is meaningful).
 let GX = 120, GY = 72;          // default fine zone relief
 const GX_MIN = 24, GY_MIN = 14;
-const GX_MAX = 360, GY_MAX = 216;
-const MESH_SEG_CAP = 256;       // cap plane segments per axis for perf
+const GX_MAX = 640, GY_MAX = 384;   // ~16:9.6 ratio, much finer ceiling
+const MESH_SEG_CAP = 512;       // cap plane segments per axis for perf
 
 // ---- scene state ------------------------------------------------------------
 let renderer, scene, camera, controls;
@@ -95,11 +96,33 @@ const tune = {
   speed: 2.8,         // playback speed (default 2.8×)
   height: 1.6,        // POSSESSION (flood) relief height multiplier
   fade: 0.85,         // zone sink rate (per second decay rate)
-  wave: 1.1,          // MACRO rolling-wave height (amplitude)
+  wave: 1.1,          // MACRO MASTER amplitude (multiplies the WHOLE harmonic sum)
   steps: 14,          // terrace levels (height quantisation) — the Variable look
   duels: 1.0,         // DUEL spike HEIGHT (Layer 3 amplitude)
   dim: 0.08,          // how hard the passive (non-possessing) team fades
+  // HARMONIC SERIES (synth-like) — 8 overtone amplitudes A1..A8 in [0,1].
+  // Macro height = MASTER(wave) · Σ_k A_k·sin(k·ω·xWorld + k·ψ·zWorld·0.15 − k·φ·t)
+  // Defaults: a natural decay (fundamental loud, overtones quieter / off).
+  harm: [1.0, 0.5, 0.35, 0.0, 0.0, 0.0, 0.0, 0.0],
+  // FLOOD asymmetric decay: possessor flood persists, non-possessor recedes fast.
+  floodHold: 0.35,    // possessor-flood decay rate factor (small = lingers)
+  floodClear: 2.4,    // non-possessor / stale-flood decay rate factor (big = vanishes fast)
+  htFade: 2.5,        // half-time transition length in MATCH-minutes (~2–3)
 };
+
+// HARMONIC base frequencies (constants; amplitudes are the sliders).
+const HARM_OMEGA = 0.62;   // ω — base spatial frequency along the pitch length (x)
+const HARM_PSI   = 0.62;   // ψ — base spatial frequency across the pitch (z), scaled ×0.15
+const HARM_PHI   = 0.85;   // φ — base temporal speed (rolls as −k·φ·t)
+
+// ---- HALF-TIME BREAK envelope ----------------------------------------------
+// htEnv ∈ [0,1]: 1 normally; dips toward ~0 around HALFTIME (45') over ~htFade
+// match-minutes, then eases back up. Multiplies flood + duel amplitude and
+// drives a colour desaturate at the dip. At the crossing of 45' we clear the
+// flood fields and reset possession to a clean 50-50 so it rebuilds even.
+let htEnv = 1.0;            // current half-time envelope
+let htCleared = false;      // whether we've performed the 45' clear this pass
+const HALFTIME_MIN = 45;    // match-minutes (kept local; passfield no longer swaps)
 
 // transient event spikes (goals) that rise fast then settle.
 let activeEvents = [];
@@ -264,9 +287,14 @@ function rebuildMesh() {
         uDuel: { value: duelTex },
         uTexel: { value: new THREE.Vector2(1 / GX, 1 / GY) },
         uHScale: { value: tune.height },
-        uWave: { value: tune.wave },
+        uWave: { value: tune.wave },          // MASTER macro amplitude
         uLevels: { value: tune.steps },
         uDuelAmt: { value: tune.duels },
+        // HARMONIC SERIES amplitudes A1..A8 (synth overtones) + base freqs.
+        uHarm: { value: tune.harm.slice() },  // float[8]
+        uOmega: { value: HARM_OMEGA },
+        uPsi: { value: HARM_PSI },
+        uPhi: { value: HARM_PHI },
         // PRIMARY team colours ONLY (Layer 2 carries colour). Home / away.
         uHome: { value: new THREE.Color(0x1a37c8) },
         uAway: { value: new THREE.Color(0x00b85a) },
@@ -277,6 +305,7 @@ function rebuildMesh() {
         uPoss: { value: 0.5 },           // 0 home has ball .. 1 away has ball
         uDim: { value: tune.dim },       // brightness floor for non-possessing team
         uDomBias: { value: 0.0 },        // Layer 1 dominance lean (-1 home .. +1 away)
+        uHtEnv: { value: 1.0 },          // half-time envelope (1 normal .. 0 at break dip)
       },
       vertexShader: VERT,
       fragmentShader: FRAG,
@@ -314,10 +343,15 @@ const VERT = /* glsl */`
   uniform sampler2D uDuel;
   uniform vec2 uTexel;
   uniform float uHScale;
-  uniform float uWave;
+  uniform float uWave;      // MASTER macro amplitude (multiplies harmonic sum)
   uniform float uLevels;    // terrace count (height quantisation)
   uniform float uDuelAmt;   // duel spike amount (Layer 3)
   uniform float uDomBias;   // Layer 1 dominance lean (-1 home .. +1 away)
+  uniform float uHarm[8];   // HARMONIC amplitudes A1..A8 (synth overtones)
+  uniform float uOmega;     // base spatial frequency along pitch length
+  uniform float uPsi;       // base spatial frequency across pitch
+  uniform float uPhi;       // base temporal speed (rolls as -k*phi*t)
+  uniform float uHtEnv;     // half-time envelope (1 normal .. 0 at break dip)
   uniform vec2 uWorld;
   uniform float uTime;
   varying float vH;         // pass-relief only (for colour intensity)
@@ -333,19 +367,25 @@ const VERT = /* glsl */`
     float a=h21(i), b=h21(i+vec2(1,0)), c=h21(i+vec2(0,1)), d=h21(i+vec2(1,1));
     return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
   }
-  // LAYER 1 — MACRO ROLLING WAVES (NEUTRAL): two+ wave trains travelling in
-  // DIFFERENT directions so the whole surface visibly rolls. PLUS a low-frequency
-  // DOMINANCE lean: raise the half of the pitch the dominant team controlled more
-  // (height += domBias * (x-0.5)). uDomBias is a slow cumulative signal.
+  // LAYER 1 — MACRO ROLLING WAVES as a tunable HARMONIC SERIES (synth-style):
+  //   height(x,z,t) = MASTER · Σ_{k=1..8} A_k · sin(k·ω·xWorld + k·ψ·zWorld·0.15 − k·φ·t)
+  // A_k are the 8 harmonic amplitude sliders (uHarm[k-1]); ω/ψ/φ are base
+  // spatial/temporal frequencies. The small z term keeps it alive in 2D; the
+  // −k·φ·t term makes the wave ROLL along the pitch length. uWave is the MASTER
+  // amplitude. PLUS a low-frequency DOMINANCE lean toward the dominant side.
   float waveBase(vec2 uv){
     // P is a VEC2 (world-ish coords) — use only .x / .y, never .z.
     vec2 P = (uv - 0.5) * vec2(uWorld.x, uWorld.y);
+    float xW = P.x;            // world position along the pitch length
+    float zW = P.y;            // world position across the pitch (the "z" term)
     float t = uTime;
-    float w  = 0.55 * sin(P.x * 0.95 + t * 0.85) * cos(P.y * 0.70 - t * 0.45);
-    float w2 = 0.38 * sin((P.x + P.y) * 0.62 - t * 0.65);
-    float w3 = 0.22 * sin(P.y * 0.40 + t * 0.30);
-    float wn = (vn(uv * 3.0 + vec2(t * 0.05, t * 0.03)) - 0.5) * 0.35;
-    float wave = (w + w2 + w3 + wn) * uWave * 0.78;
+    float sum = 0.0;
+    for (int k = 1; k <= 8; k++) {
+      float fk = float(k);
+      float phase = fk * uOmega * xW + fk * uPsi * zW * 0.15 - fk * uPhi * t;
+      sum += uHarm[k - 1] * sin(phase);
+    }
+    float wave = sum * uWave * 0.78;
     // dominance lean: low-frequency tilt across X toward the dominant side
     float lean = uDomBias * (uv.x - 0.5) * 1.1;
     return wave + lean;
@@ -357,14 +397,14 @@ const VERT = /* glsl */`
     float r = texture2D(uHeight, uv).r;            // 0..~1.4, flat per cell
     float L = max(uLevels, 1.0);
     r = floor(r * L + 0.5) / L;                    // terrace into L steps
-    return r * uHScale;
+    return r * uHScale * uHtEnv;                    // sink at the half-time break
   }
   // LAYER 3 — duel spike height (sharp, NOT terraced, capped so no vertical
   // facet). Scaled ONLY by the duel-height slider (uDuelAmt) — independent of
   // the possession-height slider so each layer scales on its own.
   float duelH(vec2 uv){
     float d = texture2D(uDuel, uv).r;              // already capped on CPU side
-    return min(d, 1.4) * 0.9 * uDuelAmt;
+    return min(d, 1.4) * 0.9 * uDuelAmt * uHtEnv;  // sink at the half-time break
   }
   float H(vec2 uv){ return waveBase(uv) + relief(uv) + duelH(uv); }
 
@@ -411,6 +451,7 @@ const FRAG = /* glsl */`
   uniform float uTime;
   uniform float uPoss;     // 0 home has ball .. 1 away has ball
   uniform float uDim;      // brightness floor for the team NOT in possession
+  uniform float uHtEnv;    // half-time envelope (1 normal .. 0 at break dip)
   varying float vH;
   varying float vDuel;
   varying vec2 vUvN;
@@ -489,6 +530,12 @@ const FRAG = /* glsl */`
     float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
     col += fres * 0.07 * mix(baseNeutral, team, occupied * possGate);
 
+    // HALF-TIME WASH-OUT: as uHtEnv dips toward 0 around 45', desaturate the
+    // colour toward grey luminance so the pitch visibly "breathes" (sink → blank
+    // → rebuild even). At uHtEnv=1 (normal play) this is a no-op.
+    float lum = dot(col, vec3(0.299, 0.587, 0.114));
+    col = mix(vec3(lum), col, clamp(uHtEnv, 0.0, 1.0));
+
     // BRIGHTNESS FLOOR: never darker than the lit neutral base (kills black spots).
     // Empty / quiet cells therefore render as the neutral tide, never pure black.
     col = max(col, baseNeutral * 0.85);
@@ -510,6 +557,16 @@ function primaryCss(side) {
   const abbr = model[side].abbr;
   const c = (abbr && PRIMARY[abbr]) ? hexToRgb(PRIMARY[abbr]) : (model[side].rgb || { r: 200, g: 200, b: 200 });
   return `rgb(${c.r | 0},${c.g | 0},${c.b | 0})`;
+}
+// Push the 8 harmonic amplitude sliders (tune.harm) into the uHarm[8] uniform.
+// Copies in place into the existing array so three.js uploads the float[8].
+function syncHarmUniform() {
+  if (!material) return;
+  const dst = material.uniforms.uHarm.value;
+  for (let i = 0; i < 8; i++) {
+    const v = tune.harm[i];
+    dst[i] = Number.isFinite(v) ? v : 0;
+  }
 }
 function applyTeamColors() {
   if (!material || !model) return;
@@ -533,14 +590,13 @@ function applyTeamColors() {
 // resolution so pass zones read the same physical size at any grid fineness.
 const SPLAT_PITCH = 0.04;       // ~4% of pitch width (goal-spike footprint)
 
-// Which direction a team attacks on the SHARED pitch at match-time t.
-// 1st half: home attacks x=1 (right), away attacks x=0 (left). They swap at HT.
+// Which direction a team attacks on the SHARED pitch. Teams KEEP their sides for
+// the whole match (no half-time swap — placeXY puts home/away on opposite sides
+// permanently): home attacks x=1 (right), away attacks x=0 (left) throughout.
 // Returns the OPPONENT-goal x (where the team is pushing toward) and the team's
-// OWN-goal x (where its flood corridor starts).
+// OWN-goal x (where its flood corridor starts). `t` retained for compatibility.
 function attackGeom(team, t) {
-  const secondHalf = t >= 45;
-  const homeAttacksRight = !secondHalf;             // home → x=1 in 1st half
-  const teamAttacksRight = (team === 'home') ? homeAttacksRight : !homeAttacksRight;
+  const teamAttacksRight = (team === 'home');       // fixed sides all match
   const oppGoalX = teamAttacksRight ? 1 : 0;        // the goal they push toward
   const ownGoalX = teamAttacksRight ? 0 : 1;        // where their corridor starts
   return { oppGoalX, ownGoalX, attacksRight: teamAttacksRight };
@@ -571,6 +627,8 @@ function resetSim() {
   ballTeam = 'home'; ballX = 0.5; ballY = 0.5;
   segT0 = 0; segT1 = 0; segX0 = 0.5; segY0 = 0.5; segX1 = 0.5; segY1 = 0.5;
   headDepth = 0;
+  htEnv = 1.0; htCleared = false;
+  simAccum = 0;
   heightData.fill(0);
   colData.fill(-1);
   duelData.fill(0);
@@ -655,8 +713,55 @@ function floodTick(t, dtMatchMin) {
   const g = attackGeom(possTeam, t);
   const headX = g.attacksRight ? headDepth : (1 - headDepth);
   // deposit amount scales with dt so the tide builds at a consistent wall-rate.
-  const amp = 26.0 * Math.min(dt, 0.2);
+  // Scaled by the half-time envelope so the tide sinks toward 0 during the break.
+  const amp = 26.0 * Math.min(dt, 0.2) * htEnv;
   grid.floodCorridor(g.ownGoalX, headX, ballY, FLOOD_BAND, possTeam, amp);
+}
+
+// ---- HALF-TIME BREAK ---------------------------------------------------------
+// Drive the htEnv envelope from match-time t and perform the one-shot 45' clear.
+// htEnv is a V-shaped dip: 1 outside the break window, easing down to ~0 AT 45'
+// over htFade match-minutes total, then easing back to 1. The instant we cross
+// 45' forward we wipe the flood fields and reset possession to a clean 50-50 so
+// the 2nd half rebuilds even. On backward scrub the clear flag is reset so it can
+// fire again. uPoss/htEnv are also recomputed for scrubbed (single-frame) frames.
+function updateHalftime(t) {
+  const half = HALFTIME_MIN;
+  const w = Math.max(0.2, tune.htFade) * 0.5;   // half-width of the dip window
+  const d = Math.abs(t - half);
+  // smoothstep up from the dip: 0 at 45', → 1 at the window edges (and beyond).
+  if (d >= w) {
+    htEnv = 1.0;
+  } else {
+    const u = d / w;                 // 0 at 45' .. 1 at edge
+    htEnv = u * u * (3.0 - 2.0 * u); // smoothstep → smooth sink/rebuild
+  }
+  htEnv = clamp(htEnv, 0, 1);
+
+  // one-shot clear at the forward crossing of 45'.
+  if (t >= half) {
+    if (!htCleared) {
+      grid.clearFlood();
+      possHomeW = 0; possAwayW = 0;
+      uPossTarget = 0.5; uPoss = 0.5;
+      headDepth = 0;
+      htCleared = true;
+    }
+  } else {
+    htCleared = false;   // before the break again (scrub back) → allow re-fire
+  }
+}
+
+// Apply ASYMMETRIC flood decay over REAL seconds dt: the possessing team's tide
+// uses the slow `floodHold` rate; the non-possessing team's stale tide uses the
+// fast `floodClear` rate. base rate = fade slider × 1.1 (matches grid.decay).
+function applyFloodDecay(dt) {
+  const base = tune.fade * 1.1;
+  const sdt = Math.max(dt, 1e-4);
+  const keepHold = Math.exp(-base * tune.floodHold * sdt);     // possessor: lingers
+  const keepClear = Math.exp(-base * tune.floodClear * sdt);   // other: vanishes fast
+  if (uPoss < 0.5) grid.floodDecay(keepHold, keepClear);       // home possesses
+  else             grid.floodDecay(keepClear, keepHold);       // away possesses
 }
 
 // Spawn DUEL spikes (Layer 3) for duels whose t falls in (a,b]. FINER + SHARPER
@@ -723,12 +828,10 @@ function syncEvents(t) {
   while (eventCursor < model.shots.length && model.shots[eventCursor].t <= t) {
     const s = model.shots[eventCursor++];
     if (s.isGoal) {
-      // place the goal on the shared pitch with the half-time end-swap, then
-      // bias toward whichever goal this team is ATTACKING at that moment.
+      // place the goal on the shared pitch (fixed sides all match), then bias
+      // toward whichever goal this team is ATTACKING (home → right, away → left).
       const pl = placeXY(s.x, s.y, s.team, s.t);
-      const secondHalf = s.t >= 45;
-      // home attacks x=1 in 1st half, x=0 in 2nd (and vice-versa for away)
-      const attacksRight = (s.team === 'home') ? !secondHalf : secondHalf;
+      const attacksRight = (s.team === 'home');     // fixed sides all match
       const ex = attacksRight ? Math.max(pl.x, 0.72) : Math.min(pl.x, 0.28);
       activeEvents.push({ x: ex, y: pl.y, team: s.team, tStart: s.t, life: 5 });
       // >>> EVENT GLYPH HOOK: place a raised triangle / marker mesh here later.
@@ -773,6 +876,9 @@ function stepSim(t, dt) {
   updatePossession(dtMatchMin);
   updateBall(t);
 
+  // HALF-TIME: update the dip envelope and (once) clear flood + reset to 50-50.
+  updateHalftime(t);
+
   // advance the smoothed possession (uPoss) toward its target by the match-time
   // elapsed so the FLOOD owner is current before we roll the tide this frame.
   const kP = 1 - Math.exp(-(dtMatchMin * 60) / POSS_TAU_SEC);  // dtMatchMin in min → sec
@@ -788,7 +894,10 @@ function stepSim(t, dt) {
   const keep = Math.exp(-rate * Math.max(dt, 1e-4));
   const duelKeep = Math.exp(-rate * 3.0 * Math.max(dt, 1e-4));
   grid.decay(keep, duelKeep);
-  grid.floodDecay(Math.exp(-rate * 0.35 * Math.max(dt, 1e-4)));
+  // ASYMMETRIC FLOOD DECAY: the team currently in possession persists (floodHold,
+  // slow); the OTHER team's stale flood recedes fast (floodClear). So an old
+  // counter-attack tide vanishes quickly once possession flips.
+  applyFloodDecay(dt);
 
   prevClock = t;
   writeTextures();
@@ -818,7 +927,14 @@ function fastForward(t) {
     floodTick(b, b - a);
     const dtSec = (b - a) * secPerMin;
     grid.decay(Math.exp(-rate * dtSec), Math.exp(-rate * 3.0 * dtSec));
-    grid.floodDecay(Math.exp(-rate * 0.35 * dtSec));
+    // asymmetric flood decay (same possessor-vs-stale split as live play)
+    const keepHold = Math.exp(-rate * tune.floodHold * dtSec);
+    const keepClear = Math.exp(-rate * tune.floodClear * dtSec);
+    if (uPoss < 0.5) grid.floodDecay(keepHold, keepClear);
+    else             grid.floodDecay(keepClear, keepHold);
+    // half-time envelope + clear must also run during fast-forward so a scrubbed
+    // frame past 45' matches a played-through one.
+    updateHalftime(b);
     a = b;
   }
 }
@@ -903,6 +1019,12 @@ function onResize() {
 
 // ---- main loop --------------------------------------------------------------
 let lastNow = performance.now();
+// SIM-RATE THROTTLE: at fine grids the typed-array decay/flood loops over up to
+// ~246k cells are the cost; cap the SIM (not the render) at ≤30 Hz so rendering
+// + camera stay smooth. Small grids step every frame (threshold by cell count).
+const SIM_MIN_INTERVAL = 1 / 30;   // ≤30 Hz when throttling
+const SIM_THROTTLE_CELLS = 60000;  // throttle once the grid is this large
+let simAccum = 0;
 function loop(now) {
   const dt = Math.min(0.1, Math.max(0, (now - lastNow) / 1000));
   lastNow = now;
@@ -914,16 +1036,31 @@ function loop(now) {
 
   // uPoss is smoothed INSIDE stepSim (with the match-time elapsed) so the FLOOD
   // owner is current when the tide rolls; we just read it here for the uniform.
-  if (model && grid) stepSim(clock, dt);
+  if (model && grid) {
+    const throttle = (GX * GY) >= SIM_THROTTLE_CELLS;
+    if (!throttle) {
+      stepSim(clock, dt);
+    } else {
+      // accumulate real-seconds; run one sim step per ≤30 Hz tick with the
+      // accumulated dt so decay/flood stay rate-correct at coarse step cadence.
+      simAccum += dt;
+      if (simAccum >= SIM_MIN_INTERVAL) {
+        stepSim(clock, simAccum);
+        simAccum = 0;
+      }
+    }
+  }
 
   if (material) {
     material.uniforms.uHScale.value = tune.height;
-    material.uniforms.uWave.value = tune.wave;
+    material.uniforms.uWave.value = tune.wave;        // MASTER macro amplitude
     material.uniforms.uLevels.value = tune.steps;
     material.uniforms.uDuelAmt.value = tune.duels;
     material.uniforms.uDim.value = tune.dim;
     material.uniforms.uDomBias.value = Number.isFinite(domBias) ? domBias : 0;
     material.uniforms.uPoss.value = uPoss;
+    syncHarmUniform();                                 // A1..A8 harmonic sliders
+    material.uniforms.uHtEnv.value = Number.isFinite(htEnv) ? clamp(htEnv, 0, 1) : 1;
     hMaxTrack.ease(dt);
     dMaxTrack.ease(dt);
     material.uniforms.uTime.value = now / 1000;
@@ -997,12 +1134,25 @@ function bindUI() {
   setSlider('speed', tune.speed);          // default 2.8× (overrides HTML value)
   setSlider('height', tune.height);
   setSlider('wave', tune.wave);
-  relabel('wave', 'macro');                 // Layer 1 height
+  relabel('wave', 'macro (master)');        // MASTER macro amplitude (× harmonics)
   relabel('height', 'possession');          // Layer 2 height
 
   // inject the new DUELS + DIM slider rows (HTML untouched: build them in JS).
   injectSlider('duels', 'duelsV', 'duels', 0, 3, 0.05, tune.duels, 'wave');
   injectSlider('dim', 'dimV', 'dim', 0, 0.4, 0.01, tune.dim, 'duels');
+
+  // HARMONIC SERIES sliders H1..H8 (synth overtones) — inject after the DUELS/DIM
+  // rows so they sit with the macro controls. Each drives tune.harm[k].
+  let after = 'dim';
+  for (let k = 0; k < 8; k++) {
+    const id = 'harm' + (k + 1);
+    injectSlider(id, id + 'V', 'H' + (k + 1), 0, 1, 0.01, tune.harm[k], after);
+    after = id;
+  }
+  // FLOOD hold / clear + half-time fade rows (the asymmetric-decay + break tuning).
+  injectSlider('floodHold', 'floodHoldV', 'flood hold', 0, 2, 0.05, tune.floodHold, after);
+  injectSlider('floodClear', 'floodClearV', 'flood clear', 0, 8, 0.1, tune.floodClear, 'floodHold');
+  injectSlider('htFade', 'htFadeV', 'half-time fade', 0.5, 8, 0.1, tune.htFade, 'floodClear');
 
   bindSlider('speed', 'speedV', (v) => { tune.speed = v; return v.toFixed(1) + '×'; });
   bindSlider('height', 'heightV', (v) => { tune.height = v; return v.toFixed(2); });
@@ -1011,9 +1161,19 @@ function bindUI() {
   bindSlider('steps', 'stepsV', (v) => { tune.steps = Math.round(v); return String(Math.round(v)); });
   if (el('duels')) bindSlider('duels', 'duelsV', (v) => { tune.duels = v; return v.toFixed(2); });
   if (el('dim')) bindSlider('dim', 'dimV', (v) => { tune.dim = v; return v.toFixed(2); });
+  // bind the 8 harmonic sliders → tune.harm[k]
+  for (let k = 0; k < 8; k++) {
+    const id = 'harm' + (k + 1);
+    if (el(id)) bindSlider(id, id + 'V', ((idx) => (v) => { tune.harm[idx] = v; return v.toFixed(2); })(k));
+  }
+  if (el('floodHold')) bindSlider('floodHold', 'floodHoldV', (v) => { tune.floodHold = v; return v.toFixed(2); });
+  if (el('floodClear')) bindSlider('floodClear', 'floodClearV', (v) => { tune.floodClear = v; return v.toFixed(2); });
+  if (el('htFade')) bindSlider('htFade', 'htFadeV', (v) => { tune.htFade = v; return v.toFixed(2); });
 
-  // grid resolution: one slider drives both axes (keeps ~5:3 aspect)
+  // grid resolution: one slider drives both axes (keeps ~16:9.6 ≈ 0.6 aspect).
+  // Raise the slider ceiling to the new GX_MAX so the user can push to fine grids.
   const gridS = el('grid'), gridV = el('gridV');
+  if (gridS) { gridS.min = String(GX_MIN); gridS.max = String(GX_MAX); gridS.value = String(GX); }
   const applyGrid = () => {
     const gx = clamp(+gridS.value, GX_MIN, GX_MAX);
     const gy = clamp(Math.round(gx * 0.6), GY_MIN, GY_MAX);
@@ -1090,6 +1250,8 @@ window.__setClock = (min) => {
     material.uniforms.uDim.value = tune.dim;
     material.uniforms.uDomBias.value = Number.isFinite(domBias) ? domBias : 0;
     material.uniforms.uPoss.value = uPoss;
+    syncHarmUniform();                                 // A1..A8 harmonic sliders
+    material.uniforms.uHtEnv.value = Number.isFinite(htEnv) ? clamp(htEnv, 0, 1) : 1;
   }
   controls.update();
   renderer.render(scene, camera);
