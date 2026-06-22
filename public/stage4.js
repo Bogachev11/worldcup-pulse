@@ -121,6 +121,7 @@ const tune = {
   possDetail: 0.23,   // detail — flood footprint fineness (corridor/cell splat size)
   floodHold: 0.35,    // hold — possessor-flood persistence (small = lingers)
   floodClear: 2.4,    // clear — non-possessor / stale-flood recede rate (big = vanishes fast)
+  possColorSmooth: 0.12, // colour smooth — blue↔green transition softness (bigger = gentler)
 
   // ---- H3 DUELS (sharp contact spikes) ----
   duels: 0.45,        // amplitude — duel spike HEIGHT (→ uDuelAmt)
@@ -344,6 +345,7 @@ function rebuildMesh() {
         uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
         uTime: { value: 0 },
         uPoss: { value: 0.5 },           // 0 home has ball .. 1 away has ball
+        uColSmooth: { value: tune.possColorSmooth }, // H2 colour-transition softness
         uDim: { value: tune.dim },       // brightness floor for non-possessing team
         uDomBias: { value: 0.0 },        // Layer 1 dominance lean (-1 home .. +1 away)
         uHtEnv: { value: 1.0 },          // half-time envelope (1 normal .. 0 at break dip)
@@ -489,6 +491,7 @@ const FRAG = /* glsl */`
   uniform float uTime;
   uniform float uPoss;     // 0 home has ball .. 1 away has ball
   uniform float uDim;      // brightness floor for the team NOT in possession
+  uniform float uColSmooth; // H2 possession colour-transition softness (blue↔green blend width)
   uniform float uDuelSmooth; // H3 DUELS smoothness: spark edge softness (0 sharp .. 1 soft)
   uniform float uHtEnv;    // half-time envelope (1 normal .. 0 at break dip)
   varying float vH;
@@ -513,8 +516,10 @@ const FRAG = /* glsl */`
     if (!(share == share)) share = -1.0;          // NaN guard
     float occupied = step(0.0, share);
     float shareC = clamp(share, 0.0, 1.0);
-    // SOLID PRIMARY colour per occupied cell (no flag tri-band).
-    vec3 team = mix(uHome, uAway, step(0.5, shareC));
+    // Team colour per cell. SMOOTH blue↔green transition (uColSmooth widens the
+    // blend band) so possession colour changes glide instead of hard-switching.
+    float cw = max(uColSmooth, 0.02);
+    vec3 team = mix(uHome, uAway, smoothstep(0.5 - cw, 0.5 + cw, shareC));
 
     // possession gate: how much THIS cell's team currently has the ball.
     // possActive ≈1 if cell-team == possessing team, ≈0 otherwise.
@@ -556,8 +561,8 @@ const FRAG = /* glsl */`
     float sm = clamp(uDuelSmooth, 0.0, 1.0);
     float sEdge = mix(0.55, 0.06, sm);            // low smooth → narrow window (sharp)
     float spark = smoothstep(0.04, 0.04 + sEdge, dInt);
-    col += duelTeam * spark * 1.15;               // additive accent so they pop
-    col += vec3(1.0) * spark * 0.18;              // tiny white-hot core
+    col += duelTeam * spark * 1.45;               // additive accent in the WINNER's colour
+    col += vec3(1.0) * spark * 0.06;              // faint core (kept low so the winner colour stays readable)
 
     // cinematic fresnel rim
     vec3 V = normalize(cameraPosition - vWorldPos);
@@ -606,6 +611,7 @@ function syncMaterialUniforms() {
   u.uLevels.value = tune.steps;                                    // GLOBAL steps
   u.uDuelAmt.value = tune.duels;                                   // H3 amplitude
   u.uDim.value = tune.dim;                                         // GLOBAL dim
+  u.uColSmooth.value = Math.max(0.02, tune.possColorSmooth);       // H2 colour smooth
   u.uDomBias.value = Number.isFinite(domBias) ? domBias : 0;
   u.uPoss.value = uPoss;
   // H1 MACRO real-momentum roll: smoothed momentum (−home .. +away) scaled into a
@@ -1268,6 +1274,7 @@ function settingsBlob() {
       height: r2(tune.height), possSpeed: r2(tune.possSpeed),
       possSmooth: r2(tune.possSmooth), possDetail: r2(tune.possDetail),
       floodHold: r2(tune.floodHold), floodClear: r2(tune.floodClear),
+      possColorSmooth: r2(tune.possColorSmooth),
       // H3 DUELS
       duels: r2(tune.duels), duelSpeed: r2(tune.duelSpeed),
       duelSmooth: r2(tune.duelSmooth), duelDetail: r2(tune.duelDetail),
@@ -1419,6 +1426,7 @@ function buildControlPanel() {
   addSlider('detail', 0, 1, 0.01, tune.possDetail, (v) => { tune.possDetail = v; return v.toFixed(2); });
   addSlider('hold', 0, 2, 0.05, tune.floodHold, (v) => { tune.floodHold = v; return v.toFixed(2); });
   addSlider('clear', 0, 8, 0.1, tune.floodClear, (v) => { tune.floodClear = v; return v.toFixed(2); });
+  addSlider('color smooth', 0.02, 0.5, 0.01, tune.possColorSmooth, (v) => { tune.possColorSmooth = v; return v.toFixed(2); });
 
   // ---- H3 DUELS --------------------------------------------------------------
   header('H3 DUELS');
