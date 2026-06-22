@@ -175,7 +175,7 @@ export class PassGrid {
   // the swath from ownGoalX to headX. `amp` is added per frame; the leading edge
   // is softened so the tide has a rolling front, not a hard wall.
   //   This is the connected swath "the space the ball has reached" — NOT blobs.
-  floodCorridor(ownGoalX, headX, ballY, halfW, team, amp) {
+  floodCorridor(ownGoalX, headX, ballY, halfW, team, amp, edgeSoft) {
     const GX = this.GX, GY = this.GY;
     if (!Number.isFinite(headX) || !Number.isFinite(ballY)) return;
     const lo = Math.min(ownGoalX, headX);
@@ -186,8 +186,11 @@ export class PassGrid {
     const hwCells = Math.max(0.8, halfW * (GY - 1));
     const j0 = Math.max(0, Math.floor(cy - hwCells));
     const j1 = Math.min(GY - 1, Math.ceil(cy + hwCells));
-    // leading-edge feather (in cells) so the front rolls in instead of snapping
-    const edge = Math.max(1.0, 0.06 * (GX - 1));
+    // leading-edge feather (in cells) so the front rolls in instead of snapping.
+    // H2 SMOOTHNESS (edgeSoft 0..1) widens the feather: high = soft gradient
+    // tide front, low = crisp wall. Defaults to 0.5-equivalent when omitted.
+    const soft = Number.isFinite(edgeSoft) ? Math.max(0, edgeSoft) : 0.5;
+    const edge = Math.max(1.0, (0.015 + 0.10 * soft) * (GX - 1));
     const headCell = headX * (GX - 1);
     const ownCell = ownGoalX * (GX - 1);
     const dirToHead = (headCell >= ownCell) ? 1 : -1;

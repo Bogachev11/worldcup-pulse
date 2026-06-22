@@ -88,29 +88,42 @@ const POSS_DECAY = 1 / (POSS_WINDOW / 60); // decay rate per match-minute
 const POSS_TAU_SEC = 5.0;          // smoothing time constant in MATCH-seconds (~4–6)
 const TURNOVER_W = 1.4;            // weight a turnover adds (a bit more than 1 pass)
 
-// tuning (bound to sliders). THREE independent per-layer HEIGHT sliders:
-//   wave   → MACRO height   (Layer 1, rolling dominance waves)
-//   height → POSSESSION height (Layer 2, the flood/tide relief)
-//   duels  → DUEL height    (Layer 3, contact-spark amplitude)
+// tuning (bound to sliders). The panel is organised into THREE activity LAYERS,
+// each with its OWN amplitude / speed / smoothness / detail controls, plus a
+// GLOBAL group. NOT 8 harmonics of one wave — three independent layers:
+//   H1 MACRO      — global dominance: the rolling base waves
+//   H2 POSSESSION — ball movement / passes: the contiguous flood-tide
+//   H3 DUELS      — единоборства: the sharp contact spikes
 const tune = {
-  speed: 2.8,         // playback speed (default 2.8×)
-  height: 1.6,        // POSSESSION (flood) relief height multiplier
-  fade: 0.85,         // zone sink rate (per second decay rate)
-  wave: 1.1,          // MACRO MASTER amplitude (multiplies the WHOLE harmonic sum)
+  // ---- GLOBAL ----
+  speed: 2.8,         // match (playback) speed (default 2.8×)
   steps: 14,          // terrace levels (height quantisation) — the Variable look
-  duels: 1.0,         // DUEL spike HEIGHT (Layer 3 amplitude)
   dim: 0.08,          // how hard the passive (non-possessing) team fades
-  // HARMONIC SERIES (synth-like) — 8 overtone amplitudes A1..A8 in [0,1].
-  // Macro height = MASTER(wave) · Σ_k A_k·sin(k·ω·xWorld + k·ψ·zWorld·0.15 − k·φ·t)
-  // Defaults: a natural decay (fundamental loud, overtones quieter / off).
-  harm: [1.0, 0.5, 0.35, 0.0, 0.0, 0.0, 0.0, 0.0],
-  // FLOOD asymmetric decay: possessor flood persists, non-possessor recedes fast.
-  floodHold: 0.35,    // possessor-flood decay rate factor (small = lingers)
-  floodClear: 2.4,    // non-possessor / stale-flood decay rate factor (big = vanishes fast)
   htFade: 2.5,        // half-time transition length in MATCH-minutes (~2–3)
+  fade: 0.85,         // base zone sink rate (per second decay rate)
+
+  // ---- H1 MACRO (rolling dominance base waves) ----
+  macroAmp: 1.1,      // amplitude — overall macro wave height (master macro amp → uWave)
+  macroSpeed: 1.0,    // speed — temporal roll speed (scales φ/uPhi time term)
+  macroSmooth: 0.5,   // smoothness — wavelength: high = long broad waves, low = choppy (inverse ω)
+  macroDetail: 3,     // detail — summed octaves/overtones (1..6) → uOctaves
+
+  // ---- H2 POSSESSION (the flood / tide) ----
+  height: 1.6,        // amplitude — flood relief height multiplier (→ uHScale)
+  possSpeed: 1.0,     // speed — how fast the tide advances/flows (scales head-advance + flow)
+  possSmooth: 0.5,    // smoothness — softness of the flood leading edge (front feather)
+  possDetail: 0.5,    // detail — flood footprint fineness (corridor/cell splat size)
+  floodHold: 0.35,    // hold — possessor-flood persistence (small = lingers)
+  floodClear: 2.4,    // clear — non-possessor / stale-flood recede rate (big = vanishes fast)
+
+  // ---- H3 DUELS (sharp contact spikes) ----
+  duels: 1.0,         // amplitude — duel spike HEIGHT (→ uDuelAmt)
+  duelSpeed: 1.0,     // speed — spike rise + fade speed (how fast a spark appears/decays)
+  duelSmooth: 0.5,    // smoothness — spike edge softness (high = soft bump, low = sharp needle)
+  duelDetail: 0.5,    // detail — spike footprint fineness (radius; finer = smaller, sharper)
 };
 
-// HARMONIC base frequencies (constants; amplitudes are the sliders).
+// MACRO base frequencies (constants; the macro sliders modulate them).
 const HARM_OMEGA = 0.62;   // ω — base spatial frequency along the pitch length (x)
 const HARM_PSI   = 0.62;   // ψ — base spatial frequency across the pitch (z), scaled ×0.15
 const HARM_PHI   = 0.85;   // φ — base temporal speed (rolls as −k·φ·t)
@@ -287,14 +300,18 @@ function rebuildMesh() {
         uDuel: { value: duelTex },
         uTexel: { value: new THREE.Vector2(1 / GX, 1 / GY) },
         uHScale: { value: tune.height },
-        uWave: { value: tune.wave },          // MASTER macro amplitude
+        uWave: { value: tune.macroAmp },      // H1 MACRO amplitude
         uLevels: { value: tune.steps },
         uDuelAmt: { value: tune.duels },
-        // HARMONIC SERIES amplitudes A1..A8 (synth overtones) + base freqs.
-        uHarm: { value: tune.harm.slice() },  // float[8]
+        // H1 MACRO base freqs + per-layer knobs (octaves/speed/smoothness).
+        uOctaves: { value: tune.macroDetail },           // detail: summed octaves 1..6
         uOmega: { value: HARM_OMEGA },
         uPsi: { value: HARM_PSI },
         uPhi: { value: HARM_PHI },
+        uMacroSpeed: { value: tune.macroSpeed },         // speed: temporal roll multiplier
+        uMacroFreq: { value: 1.0 },                      // smoothness: spatial-freq multiplier (inverse smooth)
+        // H3 DUELS edge softness (smoothstep window).
+        uDuelSmooth: { value: tune.duelSmooth },
         // PRIMARY team colours ONLY (Layer 2 carries colour). Home / away.
         uHome: { value: new THREE.Color(0x1a37c8) },
         uAway: { value: new THREE.Color(0x00b85a) },
@@ -347,10 +364,12 @@ const VERT = /* glsl */`
   uniform float uLevels;    // terrace count (height quantisation)
   uniform float uDuelAmt;   // duel spike amount (Layer 3)
   uniform float uDomBias;   // Layer 1 dominance lean (-1 home .. +1 away)
-  uniform float uHarm[8];   // HARMONIC amplitudes A1..A8 (synth overtones)
+  uniform float uOctaves;   // H1 MACRO detail: number of summed octaves (1..6)
   uniform float uOmega;     // base spatial frequency along pitch length
   uniform float uPsi;       // base spatial frequency across pitch
   uniform float uPhi;       // base temporal speed (rolls as -k*phi*t)
+  uniform float uMacroSpeed;// H1 MACRO speed: temporal roll multiplier
+  uniform float uMacroFreq; // H1 MACRO smoothness: spatial-freq multiplier (>1 choppier)
   uniform float uHtEnv;     // half-time envelope (1 normal .. 0 at break dip)
   uniform vec2 uWorld;
   uniform float uTime;
@@ -367,24 +386,34 @@ const VERT = /* glsl */`
     float a=h21(i), b=h21(i+vec2(1,0)), c=h21(i+vec2(0,1)), d=h21(i+vec2(1,1));
     return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
   }
-  // LAYER 1 — MACRO ROLLING WAVES as a tunable HARMONIC SERIES (synth-style):
-  //   height(x,z,t) = MASTER · Σ_{k=1..8} A_k · sin(k·ω·xWorld + k·ψ·zWorld·0.15 − k·φ·t)
-  // A_k are the 8 harmonic amplitude sliders (uHarm[k-1]); ω/ψ/φ are base
-  // spatial/temporal frequencies. The small z term keeps it alive in 2D; the
-  // −k·φ·t term makes the wave ROLL along the pitch length. uWave is the MASTER
-  // amplitude. PLUS a low-frequency DOMINANCE lean toward the dominant side.
+  // LAYER 1 (H1 MACRO) — ROLLING BASE WAVES as a summed OCTAVE stack:
+  //   height(x,z,t) = MASTER · Σ_{k=1..N} A_k · sin(k·ω·xWorld + k·ψ·zWorld·0.15 − k·φ·t)
+  // where N = uOctaves (detail), A_k = 1/k (natural decay: fundamental loud,
+  // overtones quieter), ω/ψ scaled by uMacroFreq (smoothness: low smoothness =
+  // higher freq = shorter choppier waves), and φ scaled by uMacroSpeed (roll
+  // speed). The small z term keeps it alive in 2D; the −k·φ·t term makes the
+  // wave ROLL along the pitch length. uWave is the MASTER amplitude. PLUS a
+  // low-frequency DOMINANCE lean toward the dominant side.
   float waveBase(vec2 uv){
     // P is a VEC2 (world-ish coords) — use only .x / .y, never .z.
     vec2 P = (uv - 0.5) * vec2(uWorld.x, uWorld.y);
     float xW = P.x;            // world position along the pitch length
     float zW = P.y;            // world position across the pitch (the "z" term)
     float t = uTime;
-    float sum = 0.0;
-    for (int k = 1; k <= 8; k++) {
+    float om = uOmega * uMacroFreq;   // smoothness modulates spatial freq
+    float ps = uPsi   * uMacroFreq;
+    float ph = uPhi   * uMacroSpeed;  // speed modulates temporal roll
+    int N = int(clamp(uOctaves, 1.0, 6.0));
+    float sum = 0.0, norm = 0.0;
+    for (int k = 1; k <= 6; k++) {
+      if (k > N) break;
       float fk = float(k);
-      float phase = fk * uOmega * xW + fk * uPsi * zW * 0.15 - fk * uPhi * t;
-      sum += uHarm[k - 1] * sin(phase);
+      float amp = 1.0 / fk;                                  // natural overtone decay
+      float phase = fk * om * xW + fk * ps * zW * 0.15 - fk * ph * t;
+      sum += amp * sin(phase);
+      norm += amp;
     }
+    sum = (norm > 1e-4) ? sum / norm : sum;                  // keep height stable as N varies
     float wave = sum * uWave * 0.78;
     // dominance lean: low-frequency tilt across X toward the dominant side
     float lean = uDomBias * (uv.x - 0.5) * 1.1;
@@ -451,6 +480,7 @@ const FRAG = /* glsl */`
   uniform float uTime;
   uniform float uPoss;     // 0 home has ball .. 1 away has ball
   uniform float uDim;      // brightness floor for the team NOT in possession
+  uniform float uDuelSmooth; // H3 DUELS smoothness: spark edge softness (0 sharp .. 1 soft)
   uniform float uHtEnv;    // half-time envelope (1 normal .. 0 at break dip)
   varying float vH;
   varying float vDuel;
@@ -521,7 +551,10 @@ const FRAG = /* glsl */`
     if (!(dInt == dInt)) dInt = 0.0;              // NaN guard
     vec3 duelTeam = mix(uHome, uAway, step(0.5, dShareC));
     // crisp spark: sharp response to intensity, ACCENT brighter than the base.
-    float spark = smoothstep(0.04, 0.7, dInt);
+    // H3 smoothness widens the smoothstep window: low = sharp needle, high = soft bump.
+    float sm = clamp(uDuelSmooth, 0.0, 1.0);
+    float sEdge = mix(0.55, 0.06, sm);            // low smooth → narrow window (sharp)
+    float spark = smoothstep(0.04, 0.04 + sEdge, dInt);
     col += duelTeam * spark * 1.15;               // additive accent so they pop
     col += vec3(1.0) * spark * 0.18;              // tiny white-hot core
 
@@ -558,15 +591,27 @@ function primaryCss(side) {
   const c = (abbr && PRIMARY[abbr]) ? hexToRgb(PRIMARY[abbr]) : (model[side].rgb || { r: 200, g: 200, b: 200 });
   return `rgb(${c.r | 0},${c.g | 0},${c.b | 0})`;
 }
-// Push the 8 harmonic amplitude sliders (tune.harm) into the uHarm[8] uniform.
-// Copies in place into the existing array so three.js uploads the float[8].
-function syncHarmUniform() {
+// Push all live `tune` values into the material uniforms. The H2-DETAIL /
+// H2-SMOOTH / H2-SPEED / H3-DETAIL / H3-SPEED knobs act on the CPU sim and are
+// read directly in floodTick / spawnDuels / stepSim, so they are NOT uniforms.
+// uMacroFreq encodes H1 SMOOTHNESS inversely: high smoothness → long broad
+// waves → LOW spatial frequency.
+function syncMaterialUniforms() {
   if (!material) return;
-  const dst = material.uniforms.uHarm.value;
-  for (let i = 0; i < 8; i++) {
-    const v = tune.harm[i];
-    dst[i] = Number.isFinite(v) ? v : 0;
-  }
+  const u = material.uniforms;
+  u.uHScale.value = tune.height;                                   // H2 amplitude
+  u.uWave.value = tune.macroAmp;                                   // H1 amplitude
+  u.uLevels.value = tune.steps;                                    // GLOBAL steps
+  u.uDuelAmt.value = tune.duels;                                   // H3 amplitude
+  u.uDim.value = tune.dim;                                         // GLOBAL dim
+  u.uDomBias.value = Number.isFinite(domBias) ? domBias : 0;
+  u.uPoss.value = uPoss;
+  u.uOctaves.value = clamp(tune.macroDetail, 1, 6);               // H1 detail (octaves)
+  u.uMacroSpeed.value = Math.max(0, tune.macroSpeed);            // H1 speed
+  // H1 smoothness 0..1 → freq multiplier ~2.2 (choppy) .. ~0.35 (long broad)
+  u.uMacroFreq.value = 2.2 - 1.85 * clamp(tune.macroSmooth, 0, 1);
+  u.uDuelSmooth.value = clamp(tune.duelSmooth, 0, 1);            // H3 smoothness
+  u.uHtEnv.value = Number.isFinite(htEnv) ? clamp(htEnv, 0, 1) : 1;
 }
 function applyTeamColors() {
   if (!material || !model) return;
@@ -699,12 +744,14 @@ function floodTick(t, dtMatchMin) {
   // ball depth measured FOR the possessing team (0 own side .. 1 opp goal)
   const ballDepth = attackDepth(possTeam, t, ballX);
   // ADVANCE toward the ball, RECEDE slowly when the ball sits behind the head.
+  // H2 SPEED scales how fast the head chases the ball / slides back (the flow rate).
+  const flow = Math.max(0.1, tune.possSpeed);
   const dt = Math.max(0, dtMatchMin);
   if (ballDepth > headDepth) {
-    const k = 1 - Math.exp(-HEAD_ADV * dt);
+    const k = 1 - Math.exp(-HEAD_ADV * flow * dt);
     headDepth = headDepth + (ballDepth - headDepth) * k;       // roll forward
   } else {
-    const k = 1 - Math.exp(-HEAD_RECEDE * dt);
+    const k = 1 - Math.exp(-HEAD_RECEDE * flow * dt);
     headDepth = headDepth + (ballDepth - headDepth) * k;       // ease back
   }
   headDepth = clamp(headDepth, 0, 1);
@@ -715,7 +762,11 @@ function floodTick(t, dtMatchMin) {
   // deposit amount scales with dt so the tide builds at a consistent wall-rate.
   // Scaled by the half-time envelope so the tide sinks toward 0 during the break.
   const amp = 26.0 * Math.min(dt, 0.2) * htEnv;
-  grid.floodCorridor(g.ownGoalX, headX, ballY, FLOOD_BAND, possTeam, amp);
+  // H2 SMOOTHNESS → leading-edge feather softness; H2 DETAIL → corridor band
+  // fineness (finer detail = narrower band = crisper coverage).
+  const edgeSoft = clamp(tune.possSmooth, 0, 1);
+  const band = FLOOD_BAND * (1.6 - clamp(tune.possDetail, 0, 1));   // finer detail → tighter band
+  grid.floodCorridor(g.ownGoalX, headX, ballY, band, possTeam, amp, edgeSoft);
 }
 
 // ---- HALF-TIME BREAK ---------------------------------------------------------
@@ -769,8 +820,10 @@ function applyFloodDecay(dt) {
 // distinct from the broad possession flood. Display HEIGHT is the duels slider
 // (uDuelAmt in the shader); CPU amplitude is constant here.
 function spawnDuels(a, b) {
-  // ~1 fine cell core (independent of grid res), crisp.
-  const radius = Math.max(0.6, GX * 0.006);
+  // ~1 fine cell core (independent of grid res), crisp. H3 DETAIL controls the
+  // footprint fineness: finer detail → smaller, sharper spark radius.
+  const detail = clamp(tune.duelDetail, 0, 1);
+  const radius = Math.max(0.6, GX * (0.012 - 0.010 * detail));
   while (duelCursor < duels.length && duels[duelCursor].t <= b) {
     const d = duels[duelCursor];
     if (d.t > a) {
@@ -892,7 +945,9 @@ function stepSim(t, dt) {
   // swath persists where the ball reached, then eases back when play moves on.
   const rate = tune.fade * 1.1;
   const keep = Math.exp(-rate * Math.max(dt, 1e-4));
-  const duelKeep = Math.exp(-rate * 3.0 * Math.max(dt, 1e-4));
+  // H3 SPEED scales the duel decay: faster speed → sparks rise & fade quicker.
+  const duelRate = rate * 3.0 * Math.max(0.1, tune.duelSpeed);
+  const duelKeep = Math.exp(-duelRate * Math.max(dt, 1e-4));
   grid.decay(keep, duelKeep);
   // ASYMMETRIC FLOOD DECAY: the team currently in possession persists (floodHold,
   // slow); the OTHER team's stale flood recedes fast (floodClear). So an old
@@ -926,7 +981,8 @@ function fastForward(t) {
     uPoss = lerp(uPoss, uPossTarget, clamp(kP, 0, 1));
     floodTick(b, b - a);
     const dtSec = (b - a) * secPerMin;
-    grid.decay(Math.exp(-rate * dtSec), Math.exp(-rate * 3.0 * dtSec));
+    const ffDuelRate = rate * 3.0 * Math.max(0.1, tune.duelSpeed);
+    grid.decay(Math.exp(-rate * dtSec), Math.exp(-ffDuelRate * dtSec));
     // asymmetric flood decay (same possessor-vs-stale split as live play)
     const keepHold = Math.exp(-rate * tune.floodHold * dtSec);
     const keepClear = Math.exp(-rate * tune.floodClear * dtSec);
@@ -1052,15 +1108,7 @@ function loop(now) {
   }
 
   if (material) {
-    material.uniforms.uHScale.value = tune.height;
-    material.uniforms.uWave.value = tune.wave;        // MASTER macro amplitude
-    material.uniforms.uLevels.value = tune.steps;
-    material.uniforms.uDuelAmt.value = tune.duels;
-    material.uniforms.uDim.value = tune.dim;
-    material.uniforms.uDomBias.value = Number.isFinite(domBias) ? domBias : 0;
-    material.uniforms.uPoss.value = uPoss;
-    syncHarmUniform();                                 // A1..A8 harmonic sliders
-    material.uniforms.uHtEnv.value = Number.isFinite(htEnv) ? clamp(htEnv, 0, 1) : 1;
+    syncMaterialUniforms();
     hMaxTrack.ease(dt);
     dMaxTrack.ease(dt);
     material.uniforms.uTime.value = now / 1000;
@@ -1126,62 +1174,14 @@ function bindUI() {
     // stepSim handles backward scrub; forward scrub just deposits the gap.
   });
 
-  // PER-LAYER HEIGHT sliders (HTML untouched): force defaults + clear labels in
-  // JS so each of the 3 activity layers gets its OWN amplitude control.
-  //   wave   → "macro"      (Layer 1 rolling dominance waves)
-  //   height → "possession" (Layer 2 flood/tide relief)
-  //   duels  → "duels"      (Layer 3 contact-spark HEIGHT)
-  setSlider('speed', tune.speed);          // default 2.8× (overrides HTML value)
-  setSlider('height', tune.height);
-  setSlider('wave', tune.wave);
-  relabel('wave', 'macro (master)');        // MASTER macro amplitude (× harmonics)
-  relabel('height', 'possession');          // Layer 2 height
-
-  // inject the new DUELS + DIM slider rows (HTML untouched: build them in JS).
-  injectSlider('duels', 'duelsV', 'duels', 0, 3, 0.05, tune.duels, 'wave');
-  injectSlider('dim', 'dimV', 'dim', 0, 0.4, 0.01, tune.dim, 'duels');
-
-  // HARMONIC SERIES sliders H1..H8 (synth overtones) — inject after the DUELS/DIM
-  // rows so they sit with the macro controls. Each drives tune.harm[k].
-  let after = 'dim';
-  for (let k = 0; k < 8; k++) {
-    const id = 'harm' + (k + 1);
-    injectSlider(id, id + 'V', 'H' + (k + 1), 0, 1, 0.01, tune.harm[k], after);
-    after = id;
-  }
-  // FLOOD hold / clear + half-time fade rows (the asymmetric-decay + break tuning).
-  injectSlider('floodHold', 'floodHoldV', 'flood hold', 0, 2, 0.05, tune.floodHold, after);
-  injectSlider('floodClear', 'floodClearV', 'flood clear', 0, 8, 0.1, tune.floodClear, 'floodHold');
-  injectSlider('htFade', 'htFadeV', 'half-time fade', 0.5, 8, 0.1, tune.htFade, 'floodClear');
-
-  bindSlider('speed', 'speedV', (v) => { tune.speed = v; return v.toFixed(1) + '×'; });
-  bindSlider('height', 'heightV', (v) => { tune.height = v; return v.toFixed(2); });
-  bindSlider('fade', 'fadeV', (v) => { tune.fade = v; return v.toFixed(2); });
-  bindSlider('wave', 'waveV', (v) => { tune.wave = v; return v.toFixed(2); });
-  bindSlider('steps', 'stepsV', (v) => { tune.steps = Math.round(v); return String(Math.round(v)); });
-  if (el('duels')) bindSlider('duels', 'duelsV', (v) => { tune.duels = v; return v.toFixed(2); });
-  if (el('dim')) bindSlider('dim', 'dimV', (v) => { tune.dim = v; return v.toFixed(2); });
-  // bind the 8 harmonic sliders → tune.harm[k]
-  for (let k = 0; k < 8; k++) {
-    const id = 'harm' + (k + 1);
-    if (el(id)) bindSlider(id, id + 'V', ((idx) => (v) => { tune.harm[idx] = v; return v.toFixed(2); })(k));
-  }
-  if (el('floodHold')) bindSlider('floodHold', 'floodHoldV', (v) => { tune.floodHold = v; return v.toFixed(2); });
-  if (el('floodClear')) bindSlider('floodClear', 'floodClearV', (v) => { tune.floodClear = v; return v.toFixed(2); });
-  if (el('htFade')) bindSlider('htFade', 'htFadeV', (v) => { tune.htFade = v; return v.toFixed(2); });
-
-  // grid resolution: one slider drives both axes (keeps ~16:9.6 ≈ 0.6 aspect).
-  // Raise the slider ceiling to the new GX_MAX so the user can push to fine grids.
-  const gridS = el('grid'), gridV = el('gridV');
-  if (gridS) { gridS.min = String(GX_MIN); gridS.max = String(GX_MAX); gridS.value = String(GX); }
-  const applyGrid = () => {
-    const gx = clamp(+gridS.value, GX_MIN, GX_MAX);
-    const gy = clamp(Math.round(gx * 0.6), GY_MIN, GY_MAX);
-    gridV.textContent = `${gx}×${gy}`;
-    setResolution(gx, gy);
-  };
-  gridS.addEventListener('change', applyGrid);     // rebuild on release (cheaper)
-  gridV.textContent = `${GX}×${GY}`;
+  // ============================================================================
+  // CONTROL PANEL — rebuilt entirely in JS (HTML can't be relied on). The pre-
+  // existing tuning slider rows are removed and replaced with FOUR clearly
+  // labelled groups: GLOBAL · H1 MACRO · H2 POSSESSION · H3 DUELS. Each of the
+  // three LAYERS gets its own amplitude / speed / smoothness / detail set (H2
+  // also gets hold + clear). play / restart / clock + the title are kept.
+  // ============================================================================
+  buildControlPanel();
 
   el('resetcam').addEventListener('click', () => {
     applyDefaultCamera();
@@ -1194,43 +1194,98 @@ function bindUI() {
   });
 }
 
-// Force a slider's DOM value (used to override HTML defaults from `tune`).
-function setSlider(id, value) {
-  const s = el(id);
-  if (s) s.value = String(value);
-}
-// Relabel a slider row's <label> text (HTML untouched: done in JS).
-function relabel(id, text) {
-  const s = el(id);
-  const row = s && s.closest ? s.closest('.row') : null;
-  const lab = row ? row.querySelector('label') : null;
-  if (lab) lab.textContent = text;
-}
-
-function bindSlider(id, valId, fn) {
-  const s = el(id), v = el(valId);
-  if (!s || !v) return;
-  const apply = () => { v.textContent = fn(+s.value); };
-  s.addEventListener('input', apply);
-  apply();
-}
-
-// Build a new slider row in the control panel (HTML is not edited). Inserts the
-// row after the row containing `afterId` so ordering stays sensible. Idempotent.
-function injectSlider(id, valId, label, min, max, step, value, afterId) {
-  if (el(id)) return;                              // already present
-  const anchor = el(afterId);
-  const row = anchor && anchor.closest ? anchor.closest('.row') : null;
-  const panel = row ? row.parentNode : (document.querySelector('.pnl') || document.body);
+// ---- control-panel builder (all sliders rebuilt in JS) ----------------------
+// We OWN the tuning panel: strip the HTML-authored slider rows (keep title +
+// play/restart + clock) and rebuild the GLOBAL / H1 / H2 / H3 groups so the
+// three layers read clearly. Each addSlider() wires a live `tune` field.
+function buildControlPanel() {
+  const panel = el('panel');
   if (!panel) return;
-  const div = document.createElement('div');
-  div.className = 'row';
-  div.innerHTML =
-    `<label>${label}</label>` +
-    `<input id="${id}" type="range" min="${min}" max="${max}" step="${step}" value="${value}">` +
-    `<span class="val" id="${valId}">${(+value).toFixed(2)}</span>`;
-  if (row && row.nextSibling) panel.insertBefore(div, row.nextSibling);
-  else panel.appendChild(div);
+  // section-header + tighter-panel styling (HTML untouched → inject once).
+  if (!document.getElementById('grpStyle')) {
+    const st = document.createElement('style');
+    st.id = 'grpStyle';
+    st.textContent =
+      '#panel{max-height:94vh;overflow-y:auto;gap:6px}' +
+      '#panel .grp{margin-top:7px;color:#9fd;font-size:10px;font-weight:600;' +
+      'letter-spacing:0.18em;text-transform:uppercase;border-top:1px solid rgba(255,255,255,0.12);padding-top:6px}' +
+      '#panel .grp:first-of-type{border-top:none;margin-top:2px}';
+    document.head.appendChild(st);
+  }
+  // Remove every .row except the play/restart row and the clock row (keep core
+  // playback controls); the title (#title4) is not a .row so it stays.
+  const keep = new Set();
+  const playRow = el('play') && el('play').closest('.row');
+  const clockRow = el('clock') && el('clock').closest('.row');
+  if (playRow) keep.add(playRow);
+  if (clockRow) keep.add(clockRow);
+  Array.from(panel.querySelectorAll('.row')).forEach((r) => { if (!keep.has(r)) r.remove(); });
+
+  // small section header
+  const header = (text) => {
+    const d = document.createElement('div');
+    d.className = 'grp';
+    d.textContent = text;
+    panel.appendChild(d);
+  };
+  // one slider row → fmt(v) returns the readout string and applies the value.
+  const addSlider = (label, min, max, step, value, fmt) => {
+    const div = document.createElement('div');
+    div.className = 'row';
+    const lab = document.createElement('label'); lab.textContent = label;
+    const inp = document.createElement('input');
+    inp.type = 'range'; inp.min = String(min); inp.max = String(max);
+    inp.step = String(step); inp.value = String(value);
+    const val = document.createElement('span'); val.className = 'val';
+    const apply = () => { val.textContent = fmt(+inp.value); };
+    inp.addEventListener('input', apply);
+    div.appendChild(lab); div.appendChild(inp); div.appendChild(val);
+    panel.appendChild(div);
+    apply();
+    return inp;
+  };
+
+  // ---- GLOBAL ----------------------------------------------------------------
+  header('GLOBAL');
+  addSlider('match spd', 1, 40, 0.2, tune.speed, (v) => { tune.speed = v; return v.toFixed(1) + '×'; });
+  // grid res: one slider drives both axes (~16:9.6 ≈ 0.6 aspect). Rebuild on
+  // release (change) since it re-allocates the mesh + textures.
+  const gridS = addSlider('grid res', GX_MIN, GX_MAX, 2, GX, (v) => {
+    const gx = clamp(v | 0, GX_MIN, GX_MAX);
+    const gy = clamp(Math.round(gx * 0.6), GY_MIN, GY_MAX);
+    return `${gx}×${gy}`;
+  });
+  gridS.addEventListener('change', () => {
+    const gx = clamp(+gridS.value, GX_MIN, GX_MAX);
+    const gy = clamp(Math.round(gx * 0.6), GY_MIN, GY_MAX);
+    setResolution(gx, gy);
+  });
+  addSlider('steps', 4, 40, 1, tune.steps, (v) => { tune.steps = Math.round(v); return String(Math.round(v)); });
+  addSlider('dim', 0, 0.4, 0.01, tune.dim, (v) => { tune.dim = v; return v.toFixed(2); });
+  addSlider('half-time', 0.5, 8, 0.1, tune.htFade, (v) => { tune.htFade = v; return v.toFixed(1); });
+
+  // ---- H1 MACRO --------------------------------------------------------------
+  header('H1 MACRO');
+  addSlider('amplitude', 0, 4, 0.02, tune.macroAmp, (v) => { tune.macroAmp = v; return v.toFixed(2); });
+  addSlider('speed', 0, 3, 0.02, tune.macroSpeed, (v) => { tune.macroSpeed = v; return v.toFixed(2); });
+  addSlider('smoothness', 0, 1, 0.01, tune.macroSmooth, (v) => { tune.macroSmooth = v; return v.toFixed(2); });
+  addSlider('detail', 1, 6, 1, tune.macroDetail, (v) => { tune.macroDetail = Math.round(v); return String(Math.round(v)); });
+
+  // ---- H2 POSSESSION (flood) -------------------------------------------------
+  header('H2 POSSESSION');
+  addSlider('amplitude', 0.2, 4, 0.02, tune.height, (v) => { tune.height = v; return v.toFixed(2); });
+  addSlider('speed', 0.1, 3, 0.05, tune.possSpeed, (v) => { tune.possSpeed = v; return v.toFixed(2); });
+  addSlider('smoothness', 0, 1, 0.01, tune.possSmooth, (v) => { tune.possSmooth = v; return v.toFixed(2); });
+  addSlider('detail', 0, 1, 0.01, tune.possDetail, (v) => { tune.possDetail = v; return v.toFixed(2); });
+  addSlider('hold', 0, 2, 0.05, tune.floodHold, (v) => { tune.floodHold = v; return v.toFixed(2); });
+  addSlider('clear', 0, 8, 0.1, tune.floodClear, (v) => { tune.floodClear = v; return v.toFixed(2); });
+
+  // ---- H3 DUELS --------------------------------------------------------------
+  header('H3 DUELS');
+  addSlider('amplitude', 0, 3, 0.05, tune.duels, (v) => { tune.duels = v; return v.toFixed(2); });
+  addSlider('speed', 0.1, 3, 0.05, tune.duelSpeed, (v) => { tune.duelSpeed = v; return v.toFixed(2); });
+  addSlider('smoothness', 0, 1, 0.01, tune.duelSmooth, (v) => { tune.duelSmooth = v; return v.toFixed(2); });
+  addSlider('detail', 0, 1, 0.01, tune.duelDetail, (v) => { tune.duelDetail = v; return v.toFixed(2); });
 }
 
 // ---- dev hook ---------------------------------------------------------------
@@ -1242,17 +1297,7 @@ window.__setClock = (min) => {
   const playBtn = el('play'); if (playBtn) playBtn.textContent = '▶ play';
   if (grid) stepSim(clock, 1 / 60);
   uPoss = uPossTarget;   // snap (no animation in single-frame mode)
-  if (material) {
-    material.uniforms.uHScale.value = tune.height;
-    material.uniforms.uWave.value = tune.wave;
-    material.uniforms.uLevels.value = tune.steps;
-    material.uniforms.uDuelAmt.value = tune.duels;
-    material.uniforms.uDim.value = tune.dim;
-    material.uniforms.uDomBias.value = Number.isFinite(domBias) ? domBias : 0;
-    material.uniforms.uPoss.value = uPoss;
-    syncHarmUniform();                                 // A1..A8 harmonic sliders
-    material.uniforms.uHtEnv.value = Number.isFinite(htEnv) ? clamp(htEnv, 0, 1) : 1;
-  }
+  if (material) syncMaterialUniforms();
   controls.update();
   renderer.render(scene, camera);
   updateHud();
