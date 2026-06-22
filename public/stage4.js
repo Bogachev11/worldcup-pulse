@@ -275,10 +275,12 @@ function rebuildMesh() {
   if (!slab) {
     slab = new THREE.Mesh(
       new THREE.PlaneGeometry(WORLD_X * 1.02, WORLD_Z * 1.02),
-      new THREE.MeshStandardMaterial({ color: 0x06080f, roughness: 1, metalness: 0 })
+      // slate (matches the neutral base) + slight emissive so troughs that dip
+      // below it read as a floor, NOT as black "floods" of empty background.
+      new THREE.MeshStandardMaterial({ color: 0x222a3e, emissive: 0x141a28, roughness: 1, metalness: 0 })
     );
     slab.rotation.x = -Math.PI / 2;
-    slab.position.y = -0.02;
+    slab.position.y = -0.35;
     scene.add(slab);
   }
 }
@@ -347,7 +349,7 @@ const VERT = /* glsl */`
     vUvN = fuv;
     float h = H(fuv);
     if (!(h == h)) h = 0.0;          // NaN guard → no degenerate (see-through) triangles
-    h = clamp(h, -4.0, 7.0);         // clamp so extreme spikes can't tear the mesh
+    h = clamp(h, -0.3, 7.0);         // keep terrain above the slab (no dark show-through) + spike clamp
     vH = relief(fuv);
     vDuel = duelH(fuv);
 
