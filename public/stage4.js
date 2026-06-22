@@ -1,5 +1,7 @@
 // stage4.js — "PASS LANDSCAPE" — a living Variable.io-style wave terrain whose
-// relief shows WHERE THE PLAY IS, by PASSES. A gently undulating wave base PLUS
+// relief shows WHERE THE PLAY IS, by PASSES. A REAL macro dominance swell (a
+// heavily-blurred, slow-decaying accumulation of every pass/event, tilted by the
+// cumulative dominance and rolled by the live momentum series) PLUS
 // a team-coloured pass-zone relief: cells where passes happen RISE; cells that
 // go quiet sink back. Colour = the team currently in possession in that zone.
 // When possession flips, the relief shifts toward the other team's colour.
@@ -41,6 +43,7 @@ let mesh, material, slab;
 let heightTex, heightData;      // R32F, GX×GY normalized cell height
 let colTex, colData;            // R32F, GX×GY away-share (0=home .. 1=away), -1=empty
 let duelTex, duelData;          // RG32F, GX×GY: R=spike height, G=winner share
+let macroTex, macroData;        // R32F, GX×GY signed blurred dominance swell (−1..1)
 let model = null, passes = [];
 let duels = [], turnovers = [];
 let grid, hMaxTrack, dMaxTrack;
@@ -91,7 +94,7 @@ const TURNOVER_W = 1.4;            // weight a turnover adds (a bit more than 1 
 // tuning (bound to sliders). The panel is organised into THREE activity LAYERS,
 // each with its OWN amplitude / speed / smoothness / detail controls, plus a
 // GLOBAL group. NOT 8 harmonics of one wave — three independent layers:
-//   H1 MACRO      — global dominance: the rolling base waves
+//   H1 MACRO      — global dominance: REAL blurred territorial swell (no sine)
 //   H2 POSSESSION — ball movement / passes: the contiguous flood-tide
 //   H3 DUELS      — единоборства: the sharp contact spikes
 const tune = {
@@ -102,12 +105,14 @@ const tune = {
   htFade: 2.5,        // half-time transition length in MATCH-minutes (~2–3)
   fade: 0.85,         // base zone sink rate (per second decay rate)
 
-  // ---- H1 MACRO (rolling dominance base waves) ----
-  macroAmp: 1.1,      // amplitude — overall macro wave height (master macro amp → uWave)
-  macroSpeed: 1.0,    // speed — temporal roll speed (scales φ/uPhi time term)
-  macroSmooth: 0.5,   // smoothness — wavelength: high = long broad waves, low = choppy (inverse ω)
-  macroScale: 1.0,    // scale — base spatial frequency multiplier (→ uMacroScale): high = many small undulations, low = broad folds
-  macroDetail: 3,     // detail — summed octaves/overtones (1..6) → uOctaves
+  // ---- H1 MACRO (REAL territorial-dominance relief — NO procedural waves) ----
+  // The macro height is a heavily-BLURRED accumulation of every real pass/event
+  // (long half-life), tilted by the cumulative dominance (domBias) and ROLLED by
+  // the real per-minute momentum series. No sine sum, no fbm — 100% match data.
+  macroAmp: 1.1,      // amplitude — height of the dominance relief (→ uWave)
+  macroSpeed: 1.0,    // speed — how fast the field decays-and-rebuilds + momentum-roll rate
+  macroSmooth: 0.5,   // smoothness — how heavily the dominance field is blurred (more = broader swells)
+  macroScale: 1.0,    // scale — blur radius / spatial wavelength of the field (fold size)
 
   // ---- H2 POSSESSION (the flood / tide) ----
   height: 1.6,        // amplitude — flood relief height multiplier (→ uHScale)
@@ -124,10 +129,20 @@ const tune = {
   duelDetail: 0.5,    // detail — spike footprint fineness (radius; finer = smaller, sharper)
 };
 
-// MACRO base frequencies (constants; the macro sliders modulate them).
-const HARM_OMEGA = 0.62;   // ω — base spatial frequency along the pitch length (x)
-const HARM_PSI   = 0.62;   // ψ — base spatial frequency across the pitch (z), scaled ×0.15
-const HARM_PHI   = 0.85;   // φ — base temporal speed (rolls as −k·φ·t)
+// ---- H1 MACRO (real dominance field) tuning constants -----------------------
+// MACRO_DEPOSIT — how much each real pass/event adds to its macro cell.
+// MACRO_HALFLIFE_MIN — half-life (MATCH-minutes) of the macro accumulator: LONG
+//   so the relief is the whole-match territorial story, not the instant.
+// MACRO_RADIUS_PITCH — deposit footprint as a fraction of pitch width (broad).
+// MACRO_BLUR_PASSES — box-blur repetitions (≈ gaussian) for broad swells.
+// macroRoll is the SMOOTHED real momentum (−1 home pressing .. +1 away pressing),
+// eased toward the live momentum sample so the swell rolls toward whoever presses.
+const MACRO_DEPOSIT = 1.0;
+const MACRO_HALFLIFE_MIN = 18;                 // long memory (whole-match story)
+const MACRO_DECAY_PER_MIN = Math.LN2 / MACRO_HALFLIFE_MIN;
+const MACRO_RADIUS_PITCH = 0.06;               // broad footprint per deposit
+const MACRO_BLUR_PASSES = 3;                   // box passes → ~gaussian swells
+let macroRoll = 0;                             // smoothed momentum (−1 home .. +1 away)
 
 // ---- HALF-TIME BREAK envelope ----------------------------------------------
 // htEnv ∈ [0,1]: 1 normally; dips toward ~0 around HALFTIME (45') over ~htFade
@@ -268,6 +283,7 @@ function rebuildMesh() {
   if (heightTex) heightTex.dispose();
   if (colTex) colTex.dispose();
   if (duelTex) duelTex.dispose();
+  if (macroTex) macroTex.dispose();
 
   // Mesh segments ≥ grid resolution (≈2× grid dim) so flat cell tops + near-
   // vertical step walls are crisp, but capped for perf at fine grids.
@@ -280,9 +296,19 @@ function rebuildMesh() {
   colData = new Float32Array(GX * GY).fill(-1);
   // DUEL texture: RG → R = spike height (0..~1.4), G = winner share (0=home..1=away)
   duelData = new Float32Array(GX * GY * 2);
+  // MACRO texture: R = signed, blurred dominance swell (−1..1) — the REAL H1 relief.
+  macroData = new Float32Array(GX * GY);
   heightTex = new THREE.DataTexture(heightData, GX, GY, THREE.RedFormat, THREE.FloatType);
   colTex = new THREE.DataTexture(colData, GX, GY, THREE.RedFormat, THREE.FloatType);
   duelTex = new THREE.DataTexture(duelData, GX, GY, THREE.RGFormat, THREE.FloatType);
+  // MACRO uses LINEAR filtering: the blurred field is meant to read as a smooth
+  // broad swell (the macro relief), unlike the NEAREST stepped possession cells.
+  macroTex = new THREE.DataTexture(macroData, GX, GY, THREE.RedFormat, THREE.FloatType);
+  macroTex.magFilter = THREE.LinearFilter;
+  macroTex.minFilter = THREE.LinearFilter;
+  macroTex.wrapS = THREE.ClampToEdgeWrapping;
+  macroTex.wrapT = THREE.ClampToEdgeWrapping;
+  macroTex.needsUpdate = true;
   for (const tx of [heightTex, colTex, duelTex]) {
     // NEAREST → each grid cell becomes a FLAT-TOPPED plateau with hard edges
     // (extruded-cell look), not a smooth interpolated surface.
@@ -299,19 +325,15 @@ function rebuildMesh() {
         uHeight: { value: heightTex },
         uCol: { value: colTex },
         uDuel: { value: duelTex },
+        uMacro: { value: macroTex },     // H1 MACRO: REAL blurred dominance swell (−1..1)
         uTexel: { value: new THREE.Vector2(1 / GX, 1 / GY) },
         uHScale: { value: tune.height },
-        uWave: { value: tune.macroAmp },      // H1 MACRO amplitude
+        uWave: { value: tune.macroAmp },      // H1 MACRO amplitude (relief height)
         uLevels: { value: tune.steps },
         uDuelAmt: { value: tune.duels },
-        // H1 MACRO base freqs + per-layer knobs (octaves/speed/smoothness).
-        uOctaves: { value: tune.macroDetail },           // detail: summed octaves 1..6
-        uOmega: { value: HARM_OMEGA },
-        uPsi: { value: HARM_PSI },
-        uPhi: { value: HARM_PHI },
-        uMacroSpeed: { value: tune.macroSpeed },         // speed: temporal roll multiplier
-        uMacroFreq: { value: 1.0 },                      // smoothness: spatial-freq multiplier (inverse smooth)
-        uMacroScale: { value: tune.macroScale },         // scale: base spatial-freq multiplier (fold size)
+        // H1 MACRO: momentum-roll offset (real momentum shifts the swell sideways
+        // toward whoever is pressing NOW). −ve = roll toward home, +ve = toward away.
+        uMacroRoll: { value: 0.0 },
         // H3 DUELS edge softness (smoothstep window).
         uDuelSmooth: { value: tune.duelSmooth },
         // PRIMARY team colours ONLY (Layer 2 carries colour). Home / away.
@@ -335,6 +357,7 @@ function rebuildMesh() {
     material.uniforms.uHeight.value = heightTex;
     material.uniforms.uCol.value = colTex;
     material.uniforms.uDuel.value = duelTex;
+    material.uniforms.uMacro.value = macroTex;
     material.uniforms.uTexel.value.set(1 / GX, 1 / GY);
   }
 
@@ -355,24 +378,20 @@ function rebuildMesh() {
 }
 
 // ---- shaders ----------------------------------------------------------------
-// Vertex: H = wave base (animated noise) + pass relief (height texture). Normal
-// via finite differences of the SAME H so lighting reads the relief.
+// Vertex: H = REAL macro dominance relief (uMacro, blurred accumulation + momentum
+// roll) + pass relief (height texture) + duel spikes. No procedural waves/noise.
+// Normal via finite differences of the SAME H so lighting reads the relief.
 const VERT = /* glsl */`
   uniform sampler2D uHeight;
   uniform sampler2D uDuel;
+  uniform sampler2D uMacro;  // H1 MACRO: REAL blurred dominance swell, signed −1..1
   uniform vec2 uTexel;
   uniform float uHScale;
-  uniform float uWave;      // MASTER macro amplitude (multiplies harmonic sum)
+  uniform float uWave;      // H1 MACRO amplitude (height of the dominance relief)
   uniform float uLevels;    // terrace count (height quantisation)
   uniform float uDuelAmt;   // duel spike amount (Layer 3)
   uniform float uDomBias;   // Layer 1 dominance lean (-1 home .. +1 away)
-  uniform float uOctaves;   // H1 MACRO detail: number of summed octaves (1..6)
-  uniform float uOmega;     // base spatial frequency along pitch length
-  uniform float uPsi;       // base spatial frequency across pitch
-  uniform float uPhi;       // base temporal speed (rolls as -k*phi*t)
-  uniform float uMacroSpeed;// H1 MACRO speed: temporal roll multiplier
-  uniform float uMacroFreq; // H1 MACRO smoothness: spatial-freq multiplier (>1 choppier)
-  uniform float uMacroScale;// H1 MACRO scale: base spatial-freq multiplier (fold size; >1 = more, smaller undulations)
+  uniform float uMacroRoll; // H1 MACRO real-momentum roll offset (−home .. +away)
   uniform float uHtEnv;     // half-time envelope (1 normal .. 0 at break dip)
   uniform vec2 uWorld;
   uniform float uTime;
@@ -382,55 +401,30 @@ const VERT = /* glsl */`
   varying vec3 vNormalW;
   varying vec3 vWorldPos;
 
-  // value noise for the living wave base
-  float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
-  float vn(vec2 p){
-    vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
-    float a=h21(i), b=h21(i+vec2(1,0)), c=h21(i+vec2(0,1)), d=h21(i+vec2(1,1));
-    return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
-  }
-  // LAYER 1 (H1 MACRO) — ROLLING BASE WAVES as a summed OCTAVE stack:
-  //   height(x,z,t) = MASTER · Σ_{k=1..N} A_k · sin(k·ω·xWorld + k·ψ·zWorld·0.15 − k·φ·t)
-  // where N = uOctaves (detail), A_k = 1/k (natural decay: fundamental loud,
-  // overtones quieter), ω/ψ scaled by uMacroFreq (smoothness: low smoothness =
-  // higher freq = shorter choppier waves), and φ scaled by uMacroSpeed (roll
-  // speed). The small z term keeps it alive in 2D; the −k·φ·t term makes the
-  // wave ROLL along the pitch length. uWave is the MASTER amplitude. PLUS a
-  // low-frequency DOMINANCE lean toward the dominant side.
+  // LAYER 1 (H1 MACRO) — REAL TERRITORIAL DOMINANCE relief. NO sine sum, NO noise.
+  //   height = uWave · macroField  + dominance lean (uDomBias)
+  // macroField is a heavily-BLURRED accumulation of every real pass/event over the
+  // whole match (long half-life), uploaded in uMacro as a SIGNED net swell
+  // (−1 home-leaning .. +1 away-leaning). The real per-minute MOMENTUM rolls the
+  // swell sideways via uMacroRoll: we sample uMacro at an x offset proportional to
+  // momentum so as the game's pressure swings the broad swells visibly SHIFT
+  // toward whoever is pressing now — the real ebb and flow, not a procedural wave.
+  // The swell is terraced into the same discrete steps as the rest of the terrain.
   float waveBase(vec2 uv){
-    // P is a VEC2 (world-ish coords) — use only .x / .y, never .z.
-    vec2 P = (uv - 0.5) * vec2(uWorld.x, uWorld.y);
-    float xW = P.x;            // world position along the pitch length
-    float zW = P.y;            // world position across the pitch (the "z" term)
-    float t = uTime;
-    // uMacroScale multiplies the BASE spatial frequency (fold size). High scale =
-    // MANY SMALL undulations across the pitch; low = broad folds. Combined with
-    // uMacroFreq (smoothness) which also rides the spatial freq inversely.
-    float sc = max(uMacroScale, 0.05);
-    float om = uOmega * uMacroFreq * sc;   // smoothness + scale modulate spatial freq
-    float ps = uPsi   * uMacroFreq * sc;
-    float ph = uPhi   * uMacroSpeed;  // speed modulates temporal roll
-    int N = int(clamp(uOctaves, 1.0, 6.0));
-    float sum = 0.0, norm = 0.0;
-    for (int k = 1; k <= 6; k++) {
-      if (k > N) break;
-      float fk = float(k);
-      float amp = 1.0 / fk;                                  // natural overtone decay
-      float phase = fk * om * xW + fk * ps * zW * 0.15 - fk * ph * t;
-      sum += amp * sin(phase);
-      norm += amp;
-    }
-    sum = (norm > 1e-4) ? sum / norm : sum;                  // keep height stable as N varies
-    float wave = sum * uWave * 0.78;
-    // TERRACE the macro: quantise the (smooth-flowing) wave into the same discrete
-    // levels as the possession/duel relief so the macro reads as STEPS, not big
-    // smooth folds. We compute the smooth wave above, then floor it here — so the
-    // shape still flows smoothly but the OUTPUT is stepped. Scaled by uWave so the
-    // step size stays proportional to amplitude.
+    // momentum roll: shift the sample point along the pitch length (x). Positive
+    // uMacroRoll (away pressing) rolls the swell toward the away side and back.
+    float ux = clamp(uv.x - uMacroRoll, 0.0, 1.0);
+    float field = texture2D(uMacro, vec2(ux, uv.y)).r;       // signed −1..1, REAL data
+    if (!(field == field)) field = 0.0;                       // NaN guard
+    field = clamp(field, -1.5, 1.5);
+    float wave = field * uWave;                               // height of the relief
+    // TERRACE the macro into the same discrete levels as the possession/duel relief
+    // so it reads as STEPS, not one smooth fold. Quantise in amplitude units.
     float L = max(uLevels, 1.0);
-    float qScale = max(uWave, 1e-3) * 0.78;                  // quantise in wave-amplitude units
-    wave = floor((wave / qScale) * L + 0.5) / L * qScale;    // terrace the macro height
-    // dominance lean: low-frequency tilt across X toward the dominant side
+    float qScale = max(uWave, 1e-3);
+    wave = floor((wave / qScale) * L + 0.5) / L * qScale;
+    // dominance lean: low-frequency standing tilt across X toward the dominant side
+    // (the cumulative possession/territory differential). Real signal (uDomBias).
     float lean = uDomBias * (uv.x - 0.5) * 1.1;
     return wave + lean;
   }
@@ -503,13 +497,6 @@ const FRAG = /* glsl */`
   varying vec3 vNormalW;
   varying vec3 vWorldPos;
 
-  float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
-  float vn(vec2 p){
-    vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
-    float a=h21(i), b=h21(i+vec2(1,0)), c=h21(i+vec2(0,1)), d=h21(i+vec2(1,1));
-    return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
-  }
-
   void main(){
     // NORMAL GUARD: collapsed finite-difference normal → fall back to straight up
     // so dot(N,L) never zeroes (no black facets on flat plateaus).
@@ -544,9 +531,8 @@ const FRAG = /* glsl */`
     float teamMix = occupied * possGate;
     col = mix(baseNeutral, team, clamp(teamMix, 0.0, 1.0));
 
-    // subtle marble so the surface reads as a textured landscape
-    float marble = vn(vUvN*26.0 + vec2(0.0, uTime*0.03))*0.5 + vn(vUvN*70.0)*0.25;
-    col *= 0.80 + 0.30*marble;
+    // (No procedural marble/noise — surface variation comes only from the REAL
+    // relief + lighting below. Plain shading keeps H1 100% data-driven.)
 
     // lighting: two directional + raised ambient floor (so nothing goes black)
     float d1 = max(dot(N, normalize(uLightDir)), 0.0);
@@ -606,11 +592,12 @@ function primaryCss(side) {
   const c = (abbr && PRIMARY[abbr]) ? hexToRgb(PRIMARY[abbr]) : (model[side].rgb || { r: 200, g: 200, b: 200 });
   return `rgb(${c.r | 0},${c.g | 0},${c.b | 0})`;
 }
-// Push all live `tune` values into the material uniforms. The H2-DETAIL /
-// H2-SMOOTH / H2-SPEED / H3-DETAIL / H3-SPEED knobs act on the CPU sim and are
-// read directly in floodTick / spawnDuels / stepSim, so they are NOT uniforms.
-// uMacroFreq encodes H1 SMOOTHNESS inversely: high smoothness → long broad
-// waves → LOW spatial frequency.
+// Push all live `tune` values into the material uniforms. Most H1/H2/H3 knobs
+// (macro smoothness/scale/speed, flood detail/smooth/speed, duel detail/speed)
+// act on the CPU sim (blur radius / decay / deposit) and are read directly in
+// writeTextures / floodTick / spawnDuels / updateMacro, so they are NOT uniforms.
+// The macro relief itself arrives via the uMacro texture (real blurred field);
+// only its amplitude (uWave) and momentum roll (uMacroRoll) are uniforms here.
 function syncMaterialUniforms() {
   if (!material) return;
   const u = material.uniforms;
@@ -621,11 +608,9 @@ function syncMaterialUniforms() {
   u.uDim.value = tune.dim;                                         // GLOBAL dim
   u.uDomBias.value = Number.isFinite(domBias) ? domBias : 0;
   u.uPoss.value = uPoss;
-  u.uOctaves.value = clamp(tune.macroDetail, 1, 6);               // H1 detail (octaves)
-  u.uMacroSpeed.value = Math.max(0, tune.macroSpeed);            // H1 speed
-  // H1 smoothness 0..1 → freq multiplier ~2.2 (choppy) .. ~0.35 (long broad)
-  u.uMacroFreq.value = 2.2 - 1.85 * clamp(tune.macroSmooth, 0, 1);
-  u.uMacroScale.value = Math.max(0.05, tune.macroScale);         // H1 scale (fold size)
+  // H1 MACRO real-momentum roll: smoothed momentum (−home .. +away) scaled into a
+  // small UV x-offset so the real swell shifts toward whoever is pressing now.
+  u.uMacroRoll.value = Number.isFinite(macroRoll) ? clamp(macroRoll, -1, 1) * 0.18 : 0;
   u.uDuelSmooth.value = clamp(tune.duelSmooth, 0, 1);            // H3 smoothness
   u.uHtEnv.value = Number.isFinite(htEnv) ? clamp(htEnv, 0, 1) : 1;
 }
@@ -689,13 +674,16 @@ function resetSim() {
   segT0 = 0; segT1 = 0; segX0 = 0.5; segY0 = 0.5; segX1 = 0.5; segY1 = 0.5;
   headDepth = 0;
   htEnv = 1.0; htCleared = false;
+  macroRoll = 0;
   simAccum = 0;
   heightData.fill(0);
   colData.fill(-1);
   duelData.fill(0);
+  macroData.fill(0);
   heightTex.needsUpdate = true;
   colTex.needsUpdate = true;
   duelTex.needsUpdate = true;
+  macroTex.needsUpdate = true;
 }
 
 // Process all passes whose t falls in (a, b]. NO blob splats anymore — instead
@@ -716,6 +704,14 @@ function depositRange(a, b) {
 
       // feed the possession window (recent-pass weights per team)
       if (p.team === 'away') possAwayW += 1.0; else possHomeW += 1.0;
+
+      // H1 MACRO — accumulate this REAL pass into the coarse dominance field for
+      // its team (broad footprint, long half-life). This is the whole-match
+      // territorial story that becomes the macro relief after blurring. We deposit
+      // at BOTH the pass start and end so the corridor of play builds the swell.
+      const macroR = Math.max(1, MACRO_RADIUS_PITCH * GX);
+      grid.macroDeposit(s.x, s.y, p.team, MACRO_DEPOSIT, macroR);
+      grid.macroDeposit(e.x, e.y, p.team, MACRO_DEPOSIT * 0.5, macroR);
 
       // LAYER 1 — cumulative DOMINANCE: count this pass's TERRITORY toward the
       // attacking team. Pass placed on the shared pitch; how far into the
@@ -783,6 +779,27 @@ function floodTick(t, dtMatchMin) {
   const edgeSoft = clamp(tune.possSmooth, 0, 1);
   const band = FLOOD_BAND * (1.6 - clamp(tune.possDetail, 0, 1));   // finer detail → tighter band
   grid.floodCorridor(g.ownGoalX, headX, ballY, band, possTeam, amp, edgeSoft);
+}
+
+// ---- H1 MACRO — real dominance field update ---------------------------------
+// Decay the macro accumulator (long half-life, sped up by macroSpeed so the field
+// decays-and-rebuilds faster at higher speed), then ease the smoothed momentum
+// roll toward the REAL per-minute momentum sample (model.series.mom, −1..1,
+// +=home; we flip to +=away so it matches the macro net sign). dtMatchMin is the
+// match-minutes elapsed for this step. Real data only — no synthetic signal.
+function updateMacro(t, dtMatchMin) {
+  const spd = Math.max(0.05, tune.macroSpeed);
+  // slow decay (long memory); macroSpeed scales how fast it decays-and-rebuilds.
+  const keep = Math.exp(-MACRO_DECAY_PER_MIN * spd * Math.max(0, dtMatchMin));
+  grid.macroDecay(keep);
+  // REAL momentum sample at match-time t: +1 = home pressing .. −1 = away pressing.
+  // Macro net is (away − home), so the swell leans +away; flip momentum sign to
+  // match (away pressing → +) before rolling.
+  const momHome = (model && model.series) ? at(model.series.mom, t, model.STEP) : 0;
+  const rollTarget = -clamp(Number.isFinite(momHome) ? momHome : 0, -1, 1); // +away pressing
+  // ease toward the live momentum; macroSpeed sets the roll rate (per match-min).
+  const kRoll = 1 - Math.exp(-0.6 * spd * Math.max(0, dtMatchMin));
+  macroRoll = macroRoll + (rollTarget - macroRoll) * clamp(kRoll, 0, 1);
 }
 
 // ---- HALF-TIME BREAK ---------------------------------------------------------
@@ -954,6 +971,9 @@ function stepSim(t, dt) {
   uPoss = lerp(uPoss, uPossTarget, clamp(kP, 0, 1));
   floodTick(t, dtMatchMin);
 
+  // H1 MACRO: decay the real dominance accumulator + roll toward live momentum.
+  updateMacro(t, dtMatchMin);
+
   // decay everything: rate scaled by fade slider; dt is REAL seconds (so the
   // visible sink speed is tied to wall time, feels consistent across speeds).
   // DUELS decay much faster (~3×) so sparks are brief (≈0.6–1.2 match-min).
@@ -996,6 +1016,7 @@ function fastForward(t) {
     const kP = 1 - Math.exp(-((b - a) * 60) / POSS_TAU_SEC);
     uPoss = lerp(uPoss, uPossTarget, clamp(kP, 0, 1));
     floodTick(b, b - a);
+    updateMacro(b, b - a);            // H1 MACRO: decay + roll during fast-forward too
     const dtSec = (b - a) * secPerMin;
     const ffDuelRate = rate * 3.0 * Math.max(0.1, tune.duelSpeed);
     grid.decay(Math.exp(-rate * dtSec), Math.exp(-ffDuelRate * dtSec));
@@ -1062,6 +1083,25 @@ function writeTextures() {
   const tot = hSum + aSum;
   const targetHome = tot > 1e-4 ? hSum / tot : 0.5;
   domHome = lerp(domHome, targetHome, 0.12);
+
+  // ---- H1 MACRO: blur the real accumulator → signed swell, then normalise -----
+  // Blur radius (cells) = scale × smoothness. SCALE sets the spatial wavelength /
+  // fold size; SMOOTHNESS sets how heavily it's blurred (broader swells). Both
+  // scale with grid resolution so the swell reads the same size at any fineness.
+  const baseR = 0.05 * GX;                                   // ~5% of pitch width base
+  const rad = Math.max(1, Math.round(baseR * Math.max(0.1, tune.macroScale)
+                                     * (0.4 + 1.6 * clamp(tune.macroSmooth, 0, 1))));
+  const blurPasses = MACRO_BLUR_PASSES;
+  grid.macroBlur(rad, blurPasses);
+  const mAbs = grid.macroAbsMax();
+  const minv = (Number.isFinite(mAbs) && mAbs > 1e-6) ? 1 / mAbs : 0;
+  const mb = grid.mBlur;
+  for (let k = 0; k < n; k++) {
+    let mv = mb[k] * minv;                                   // signed −1..1 (real, blurred)
+    if (!Number.isFinite(mv)) mv = 0;
+    macroData[k] = clamp(mv, -1.5, 1.5);
+  }
+  macroTex.needsUpdate = true;
 
   heightTex.needsUpdate = true;
   colTex.needsUpdate = true;
@@ -1221,10 +1261,9 @@ function settingsBlob() {
       // GLOBAL
       speed: r2(tune.speed), steps: Math.round(tune.steps), dim: r2(tune.dim),
       htFade: r2(tune.htFade), fade: r2(tune.fade),
-      // H1 MACRO
+      // H1 MACRO (real dominance relief — amplitude / speed / smoothness / scale)
       macroAmp: r2(tune.macroAmp), macroSpeed: r2(tune.macroSpeed),
       macroSmooth: r2(tune.macroSmooth), macroScale: r2(tune.macroScale),
-      macroDetail: Math.round(tune.macroDetail),
       // H2 POSSESSION
       height: r2(tune.height), possSpeed: r2(tune.possSpeed),
       possSmooth: r2(tune.possSmooth), possDetail: r2(tune.possDetail),
@@ -1360,16 +1399,17 @@ function buildControlPanel() {
   addSlider('dim', 0, 0.4, 0.01, tune.dim, (v) => { tune.dim = v; return v.toFixed(2); });
   addSlider('half-time', 0.5, 8, 0.1, tune.htFade, (v) => { tune.htFade = v; return v.toFixed(1); });
 
-  // ---- H1 MACRO --------------------------------------------------------------
+  // ---- H1 MACRO (REAL territorial dominance — no procedural waves) ------------
   header('H1 MACRO');
-  // amplitude max raised 4 → 10 so the (now terraced) macro can be clearly taller.
+  // amplitude: height of the real dominance relief.
   addSlider('amplitude', 0, 10, 0.02, tune.macroAmp, (v) => { tune.macroAmp = v; return v.toFixed(2); });
+  // speed: how fast the field reacts to momentum / decays-and-rebuilds (roll rate).
   addSlider('speed', 0, 3, 0.02, tune.macroSpeed, (v) => { tune.macroSpeed = v; return v.toFixed(2); });
+  // smoothness: how heavily the dominance field is blurred (more = broader swells).
   addSlider('smoothness', 0, 1, 0.01, tune.macroSmooth, (v) => { tune.macroSmooth = v; return v.toFixed(2); });
-  // scale: spatial frequency / fold size. High = MORE, SMALLER undulations across
-  // the pitch (crank amplitude without collapsing into a few giant folds); low = broad.
+  // scale: blur radius / spatial wavelength of the REAL field (fold size).
   addSlider('scale', 0.1, 6, 0.05, tune.macroScale, (v) => { tune.macroScale = v; return v.toFixed(2); });
-  addSlider('detail', 1, 6, 1, tune.macroDetail, (v) => { tune.macroDetail = Math.round(v); return String(Math.round(v)); });
+  // (detail/octaves removed — it was harmonic decoration, no real data.)
 
   // ---- H2 POSSESSION (flood) -------------------------------------------------
   header('H2 POSSESSION');

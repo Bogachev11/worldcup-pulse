@@ -133,6 +133,15 @@ export class PassGrid {
     this.dInt = new Float32Array(n);     // intensity (height)
     this.dHome = new Float32Array(n);    // winner weight home
     this.dAway = new Float32Array(n);    // winner weight away
+    // H1 MACRO — accumulated DOMINANCE field (real, slowly decaying). Every pass
+    // adds to its cell for the acting team; LONG half-life → the WHOLE-match
+    // territorial story (not the instant). mHome/mAway are the raw per-team
+    // accumulators; mBlur is the heavily-smoothed signed net (away−home) swell
+    // that the vertex shader displaces. NO procedural noise — only real deposits.
+    this.mHome = new Float32Array(n);    // macro home presence (slow decay)
+    this.mAway = new Float32Array(n);    // macro away presence (slow decay)
+    this.mBlur = new Float32Array(n);    // blurred signed net swell (real macro relief)
+    this._mTmp = new Float32Array(n);    // scratch for the separable blur
   }
 
   clear() {
@@ -144,6 +153,10 @@ export class PassGrid {
     this.dInt.fill(0);
     this.dHome.fill(0);
     this.dAway.fill(0);
+    this.mHome.fill(0);
+    this.mAway.fill(0);
+    this.mBlur.fill(0);
+    this._mTmp.fill(0);
   }
 
   // Deposit a soft gaussian splat of `amp` for `team` centered at unit (x,y).
@@ -262,6 +275,90 @@ export class PassGrid {
         wArr[k] += add;
       }
     }
+  }
+
+  // ---- H1 MACRO — accumulated dominance field (REAL data only) -------------
+  // Deposit one real event/pass for `team` at unit (x,y) into the COARSE macro
+  // accumulator. Broad gaussian footprint (radius in CELLS) so the whole-match
+  // territorial story builds as soft swells, not pin-points. amp is added per
+  // event; the long-half-life decay (macroDecay) keeps the relief slow-moving.
+  macroDeposit(x, y, team, amp, radiusCells) {
+    const GX = this.GX, GY = this.GY;
+    const cx = x * (GX - 1);
+    const cy = y * (GY - 1);
+    const r = Math.max(1, radiusCells);
+    const i0 = Math.max(0, Math.floor(cx - r)), i1 = Math.min(GX - 1, Math.ceil(cx + r));
+    const j0 = Math.max(0, Math.floor(cy - r)), j1 = Math.min(GY - 1, Math.ceil(cy + r));
+    const inv2s2 = 1 / (2 * (r * 0.6) * (r * 0.6) + 1e-6);
+    const arr = team === 'away' ? this.mAway : this.mHome;
+    for (let j = j0; j <= j1; j++) {
+      const dy = j - cy;
+      for (let i = i0; i <= i1; i++) {
+        const dx = i - cx;
+        const g = Math.exp(-(dx * dx + dy * dy) * inv2s2);
+        const add = amp * g;
+        if (Number.isFinite(add)) arr[j * GX + i] += add;
+      }
+    }
+  }
+
+  // Decay the macro accumulators with a SLOW per-second keep (long half-life) so
+  // the field represents the whole-match territory, not the instant.
+  macroDecay(keep) {
+    const mh = this.mHome, ma = this.mAway, n = mh.length;
+    for (let k = 0; k < n; k++) { mh[k] *= keep; ma[k] *= keep; }
+  }
+
+  // Clear ONLY the macro accumulators (kept separate from flood; macro spans the
+  // whole match and is NOT wiped at half-time, so this is only used on reset).
+  clearMacro() { this.mHome.fill(0); this.mAway.fill(0); this.mBlur.fill(0); }
+
+  // Build the heavily-BLURRED signed macro swell (away−home net) into mBlur.
+  // Separable box blur of integer radius `rad` (in cells), `passes` repetitions
+  // (a few box passes ≈ a wide gaussian → broad swells). Larger rad/passes =
+  // smoother, broader relief. The result is the REAL macro relief the shader
+  // displaces; +ve = away-leaning swell, −ve = home-leaning. No procedural noise.
+  macroBlur(rad, passes) {
+    const GX = this.GX, GY = this.GY, n = GX * GY;
+    const src = this.mBlur, tmp = this._mTmp, mh = this.mHome, ma = this.mAway;
+    // seed mBlur with the raw signed net (away − home)
+    for (let k = 0; k < n; k++) src[k] = ma[k] - mh[k];
+    const R = Math.max(0, Math.floor(rad));
+    if (R === 0) return;
+    const np = Math.max(1, Math.floor(passes));
+    const win = 2 * R + 1;
+    for (let p = 0; p < np; p++) {
+      // horizontal box blur (rows) src → tmp
+      for (let j = 0; j < GY; j++) {
+        const row = j * GX;
+        let acc = 0;
+        for (let i = -R; i <= R; i++) acc += src[row + Math.min(GX - 1, Math.max(0, i))];
+        for (let i = 0; i < GX; i++) {
+          tmp[row + i] = acc / win;
+          const iAdd = Math.min(GX - 1, i + R + 1);
+          const iSub = Math.max(0, i - R);
+          acc += src[row + iAdd] - src[row + iSub];
+        }
+      }
+      // vertical box blur (cols) tmp → src
+      for (let i = 0; i < GX; i++) {
+        let acc = 0;
+        for (let j = -R; j <= R; j++) acc += tmp[Math.min(GY - 1, Math.max(0, j)) * GX + i];
+        for (let j = 0; j < GY; j++) {
+          src[j * GX + i] = acc / win;
+          const jAdd = Math.min(GY - 1, j + R + 1);
+          const jSub = Math.max(0, j - R);
+          acc += tmp[jAdd * GX + i] - tmp[jSub * GX + i];
+        }
+      }
+    }
+  }
+
+  // Largest absolute macro-swell value (for normalising the shader displacement).
+  macroAbsMax() {
+    const b = this.mBlur, n = b.length; let m = 0;
+    for (let k = 0; k < n; k++) { const v = Math.abs(b[k]); if (v > m) m = v; }
+    return m;
   }
 
   // Exponentially decay all cells toward 0. factor in (0,1], applied for this
