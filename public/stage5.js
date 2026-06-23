@@ -148,6 +148,7 @@ const tune = {
   // ---- H4 SHOTS (3D stepped voxel arcs to goal) ----
   shotThick: 0.42,    // voxel cube SIZE (arc thickness, world units) — THICK chunky steps
   shotArc: 0.85,      // apex lift multiplier (parabola height over the chord)
+  shotHeight: 0.5,    // STRIKE height — scales how high the ball ends at the goal (real goalZ reach), independent of the arc apex
   rippleSize: 1.0,    // impact drop-ripple radius multiplier
   shotFade: 0.5,      // how fast settled (non-goal) arcs dim (per real second)
   goalBoost: 1.8,     // extra cube size + brightness for GOAL arcs
@@ -1131,8 +1132,8 @@ function applyEventSpikes(t) {
 // arc persists and slowly fades (goals brighter/longer). Scrub-safe.
 
 const SHOT = {
-  N: 26,               // voxels per arc (more = longer stair-step trail)
-  VOX: 320,            // instance pool capacity (≈12 cubes-ish × ~25 shots is plenty)
+  MAX_PER: 150,        // max voxels in one arc (adaptive count is capped here)
+  VOX: 6000,           // instance pool capacity (adaptive voxel counts × ~40 live arcs)
   GOALZ_SCALE: 1.05,   // metres → world Y for goalZ (crossbar 2.44 m → ~2.56 above block)
   GOAL_BASE_Y: 2.4,    // world Y of the goal line (lifted so the goal end + arc ride above the relief, but stay framed)
   RIPPLE_LIFE: 0.75,   // ripple lifetime in REAL seconds
@@ -1355,7 +1356,9 @@ function drawShots(t) {
     // possession peaks don't rocket off-screen as near-vertical columns.
     const y0 = Math.min(sampleTerrainY(arc.u0, arc.v0), 2.6) + baseSize * 0.5;
     const P0 = _tmpA.set(arc.x0, y0, arc.z0);
-    const y1 = SHOT.GOAL_BASE_Y + Math.max(0, arc.goalZ) * SHOT.GOALZ_SCALE + baseSize * 0.5;
+    // STRIKE height: goal-end elevation = (base + real goalZ reach) scaled by the
+    // shot-height slider — controls how high the ball ends, separate from the apex.
+    const y1 = (SHOT.GOAL_BASE_Y + Math.max(0, arc.goalZ) * SHOT.GOALZ_SCALE) * tune.shotHeight + baseSize * 0.5;
     const P1 = _tmpB.set(arc.x1, y1, arc.z1);
     // apex lift keyed to the HORIZONTAL span only (not vertical), so steep
     // near-goal shots stay shallow arcs instead of tall spikes.
@@ -1383,11 +1386,16 @@ function drawShots(t) {
     let cube = baseSize * (arc.isGoal ? (1.0 + 0.6 * (tune.goalBoost - 1)) : 1.0);
     if (!arc.onTarget && !arc.isGoal) cube *= 0.82;
 
+    // VOXEL COUNT adaptive to arc length & cube size so the trail stays a
+    // CONTINUOUS line at ANY thickness: consecutive cubes overlap by ~half a
+    // cube. Thin arcs get MORE steps instead of breaking into fragments.
+    const arcLen = 0.5 * (P0.distanceTo(P1) + P0.distanceTo(C) + C.distanceTo(P1));
+    const nVox = Math.max(8, Math.min(SHOT.MAX_PER, Math.ceil(arcLen / (cube * 0.5))));
     // how many voxels to show given the draw-on progress.
-    const shown = Math.max(1, Math.round(SHOT.N * drawn));
+    const shown = Math.max(1, Math.round(nVox * drawn));
     for (let s = 0; s < shown; s++) {
       if (inst >= cap) break;
-      const p = SHOT.N <= 1 ? 0 : s / (SHOT.N - 1);
+      const p = nVox <= 1 ? 0 : s / (nVox - 1);
       qbez(P0, C, P1, p, _v3);
       // QUANTISE to a voxel grid → stair-stepped blocky look.
       const q = cube;                       // snap step = cube size (chunky stairs)
@@ -1770,6 +1778,7 @@ function settingsBlob() {
       duelSmooth: r2(tune.duelSmooth), duelDetail: r2(tune.duelDetail),
       // H4 SHOTS (3D stepped voxel arcs)
       shotThick: r2(tune.shotThick), shotArc: r2(tune.shotArc),
+      shotHeight: r2(tune.shotHeight),
       rippleSize: r2(tune.rippleSize), shotFade: r2(tune.shotFade),
       goalBoost: r2(tune.goalBoost),
     },
@@ -1936,6 +1945,8 @@ function buildControlPanel() {
   addSlider('thickness', 0.04, 0.5, 0.01, tune.shotThick, (v) => { tune.shotThick = v; return v.toFixed(2); });
   // arc height = apex-lift multiplier of the parabola.
   addSlider('arc height', 0.2, 3, 0.05, tune.shotArc, (v) => { tune.shotArc = v; return v.toFixed(2); });
+  // strike height = how high the ball ends at the goal (real goalZ reach), independent of the apex.
+  addSlider('strike height', 0, 2, 0.02, tune.shotHeight, (v) => { tune.shotHeight = v; return v.toFixed(2); });
   // ripple size = impact drop-ripple radius multiplier.
   addSlider('ripple', 0.2, 3, 0.05, tune.rippleSize, (v) => { tune.rippleSize = v; return v.toFixed(2); });
   // fade = how fast settled (non-goal) arcs dim.
