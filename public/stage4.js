@@ -32,7 +32,7 @@ const PRIMARY = {
 // ---- grid resolution (sim cells = vertices; texture is GX×GY) ---------------
 // Fine extruded-cell landscape (Variable look). Default 120×72; up to 640×384
 // (coords are precise to 0.1 on a 0–100 frame, so fine detail is meaningful).
-let GX = 120, GY = 72;          // default fine zone relief
+let GX = 190, GY = 114;         // default zone-relief resolution (user-tuned)
 const GX_MIN = 24, GY_MIN = 14;
 const GX_MAX = 640, GY_MAX = 384;   // ~16:9.6 ratio, much finer ceiling
 const MESH_SEG_CAP = 512;       // cap plane segments per axis for perf
@@ -100,7 +100,7 @@ const TURNOVER_W = 1.4;            // weight a turnover adds (a bit more than 1 
 const tune = {
   // ---- GLOBAL ----
   speed: 2.8,         // match (playback) speed (default 2.8×)
-  steps: 14,          // terrace levels (height quantisation) — the Variable look
+  steps: 32,          // terrace levels (height quantisation) — the Variable look
   dim: 0.08,          // how hard the passive (non-possessing) team fades
   htFade: 2.5,        // half-time transition length in MATCH-minutes (~2–3)
   fade: 0.85,         // base zone sink rate (per second decay rate)
@@ -109,16 +109,16 @@ const tune = {
   // The macro height is a heavily-BLURRED accumulation of every real pass/event
   // (long half-life), tilted by the cumulative dominance (domBias) and ROLLED by
   // the real per-minute momentum series. No sine sum, no fbm — 100% match data.
-  macroAmp: 2.5,      // amplitude — height of the dominance relief (→ uWave)
+  macroAmp: 1.94,     // amplitude — height of the dominance relief (→ uWave)
   macroSpeed: 1.0,    // speed — how fast the field decays-and-rebuilds + momentum-roll rate
   macroSmooth: 0.84,  // smoothness — how heavily the dominance field is blurred (more = broader swells)
   macroScale: 1.55,   // scale — blur radius / spatial wavelength of the field (fold size)
 
   // ---- H2 POSSESSION (the flood / tide) ----
-  height: 1.6,        // amplitude — flood relief height multiplier (→ uHScale)
-  possSpeed: 1.0,     // speed — how fast the tide advances/flows (scales head-advance + flow)
-  possSmooth: 0.5,    // smoothness — softness of the flood leading edge (front feather)
-  possDetail: 0.5,    // detail — flood footprint fineness (corridor/cell splat size)
+  height: 1.44,       // amplitude — flood relief height multiplier (→ uHScale)
+  possSpeed: 0.35,    // speed — how fast the tide advances/flows (scales head-advance + flow)
+  possSmooth: 0.14,   // smoothness — softness of the flood leading edge (front feather)
+  possDetail: 0.88,   // detail — flood footprint fineness (corridor/cell splat size)
   floodHold: 0.35,    // hold — possessor-flood persistence (small = lingers)
   floodClear: 2.4,    // clear — non-possessor / stale-flood recede rate (big = vanishes fast)
 
@@ -205,7 +205,7 @@ function fail(msg) {
 // Default camera — exact pos/target the user dialed in. Stored as pos+target
 // (most robust) and applied directly; we also keep a spherical helper for orbit.
 const DEFAULT_CAM = {
-  pos: { x: -8.45, y: 10.96, z: 12.31 },
+  pos: { x: -16.78, y: 18.18, z: 18.93 },
   target: { x: -1.96, y: -0.92, z: 1.17 },
 };
 
