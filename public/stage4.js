@@ -39,7 +39,7 @@ const MESH_SEG_CAP = 512;       // cap plane segments per axis for perf
 
 // ---- scene state ------------------------------------------------------------
 let renderer, scene, camera, controls;
-let mesh, material, slab;
+let mesh, skirt, material, slab;
 let heightTex, heightData;      // R32F, GX×GY normalized cell height
 let colTex, colData;            // R32F, GX×GY away-share (0=home .. 1=away), -1=empty
 let duelTex, duelData;          // RG32F, GX×GY: R=spike height, G=winner share
@@ -104,6 +104,7 @@ const tune = {
   dim: 0.08,          // how hard the passive (non-possessing) team fades
   htFade: 2.5,        // half-time transition length in MATCH-minutes (~2–3)
   fade: 0.85,         // base zone sink rate (per second decay rate)
+  thickness: 2.5,     // SOLID BLOCK depth: side walls drop to y=-thickness (→ uThickness)
 
   // ---- H1 MACRO (REAL territorial-dominance relief — NO procedural waves) ----
   // The macro height is a heavily-BLURRED accumulation of every real pass/event
@@ -280,6 +281,7 @@ function buildHeightfield() {
 
 function rebuildMesh() {
   if (mesh) { scene.remove(mesh); mesh.geometry.dispose(); }
+  if (skirt) { scene.remove(skirt); skirt.geometry.dispose(); }
   if (heightTex) heightTex.dispose();
   if (colTex) colTex.dispose();
   if (duelTex) duelTex.dispose();
@@ -291,6 +293,15 @@ function rebuildMesh() {
   const segY = Math.min(MESH_SEG_CAP, Math.max(GY, Math.min(GY * 2, MESH_SEG_CAP)));
   const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, segX, segY);
   geo.rotateX(-Math.PI / 2);                 // flat in XZ, +Y up
+  // The plane is the TOP surface only → every plane vertex is a displaced-top
+  // vertex (aBase=0). We still supply the attribute explicitly so the SHARED
+  // ShaderMaterial (which declares `attribute float aBase;`) compiles & binds for
+  // the plane too — never rely on a missing attribute defaulting to 0.
+  {
+    const nPlane = geo.attributes.position.count;
+    const planeBase = new Float32Array(nPlane);   // all zeros = top/displaced
+    geo.setAttribute('aBase', new THREE.BufferAttribute(planeBase, 1));
+  }
 
   heightData = new Float32Array(GX * GY);
   colData = new Float32Array(GX * GY).fill(-1);
@@ -347,6 +358,7 @@ function rebuildMesh() {
         uDim: { value: tune.dim },       // brightness floor for non-possessing team
         uDomBias: { value: 0.0 },        // Layer 1 dominance lean (-1 home .. +1 away)
         uHtEnv: { value: 1.0 },          // half-time envelope (1 normal .. 0 at break dip)
+        uThickness: { value: tune.thickness }, // SOLID BLOCK depth: base sits at y=-uThickness
       },
       vertexShader: VERT,
       fragmentShader: FRAG,
@@ -364,6 +376,15 @@ function rebuildMesh() {
   mesh = new THREE.Mesh(geo, material);
   scene.add(mesh);
 
+  // SKIRT (side walls + bottom cap) sharing the SAME material so colour/lighting
+  // match. Its top ring of verts carry the plane-edge uv (aBase=0) → displaced by
+  // H(uv) IDENTICALLY to the plane edge (no gaps); its bottom ring is flagged
+  // aBase=1 → pinned to y=-uThickness. Rebuilt with the plane on every resolution
+  // change because the perimeter segment count tracks segX/segY.
+  const skirtGeo = buildSkirtGeometry(segX, segY);
+  skirt = new THREE.Mesh(skirtGeo, material);
+  scene.add(skirt);
+
   if (!slab) {
     slab = new THREE.Mesh(
       new THREE.PlaneGeometry(WORLD_X * 1.02, WORLD_Z * 1.02),
@@ -372,9 +393,80 @@ function rebuildMesh() {
       new THREE.MeshStandardMaterial({ color: 0x222a3e, emissive: 0x141a28, roughness: 1, metalness: 0 })
     );
     slab.rotation.x = -Math.PI / 2;
-    slab.position.y = -0.35;
     scene.add(slab);
   }
+  // Park the slab just BELOW the solid block's base (y=-uThickness) so there is
+  // still a floor under the bottom cap without z-fighting it. Kept in sync with
+  // the thickness slider in syncMaterialUniforms().
+  slab.position.y = -tune.thickness - 0.12;
+}
+
+// Build the SKIRT geometry: a ring of vertical quads around the 4 perimeter edges
+// of the displaced plane, plus a bottom cap, as a single BufferGeometry. Shares
+// the plane's vertex shader, so each TOP vertex carries the EXACT same uv as the
+// plane edge at that point → it is displaced by H(uv) identically (walls follow
+// the relief edge, no gaps). Each BOTTOM vertex sits at the same x,z but is
+// flagged aBase=1 so the shader pins it to y=-uThickness (the flat base).
+//
+// UV↔position mapping mirrors PlaneGeometry+rotateX(-90°):
+//   localX = (u-0.5)*WORLD_X ;  localZ = (0.5-v)*WORLD_Z ;  localY=0 (displaced in VS)
+function buildSkirtGeometry(segX, segY) {
+  const nx = segX + 1, ny = segY + 1;     // verts per axis along the plane edges
+  const pos = [];      // xyz (localY=0 — shader displaces via aBase + H(uv))
+  const uvs = [];      // uv (top verts use plane-edge uv; bottom reuse same uv)
+  const base = [];     // aBase: 0 = top/displaced-edge, 1 = bottom/base
+  const idx = [];
+
+  const X = (u) => (u - 0.5) * WORLD_X;
+  const Z = (v) => (0.5 - v) * WORLD_Z;
+
+  // Add one vertical quad for a perimeter EDGE between two consecutive uv points
+  // (u0,v0)→(u1,v1). Emits 4 verts: top0, top1, bot0, bot1, then two triangles.
+  // `flip` chooses winding so the wall's front face points OUTWARD.
+  const addWall = (u0, v0, u1, v1, flip) => {
+    const o = pos.length / 3;
+    const x0 = X(u0), z0 = Z(v0), x1 = X(u1), z1 = Z(v1);
+    // top0, top1 (displaced), bot0, bot1 (base)
+    pos.push(x0, 0, z0,  x1, 0, z1,  x0, 0, z0,  x1, 0, z1);
+    uvs.push(u0, v0,  u1, v1,  u0, v0,  u1, v1);
+    base.push(0, 0, 1, 1);                  // top, top, bottom, bottom
+    const t0 = o, t1 = o + 1, b0 = o + 2, b1 = o + 3;
+    if (!flip) {
+      idx.push(t0, b0, t1,  t1, b0, b1);
+    } else {
+      idx.push(t0, t1, b0,  t1, b1, b0);
+    }
+  };
+
+  // Perimeter, walking each of the 4 edges segment-by-segment. uv ranges: the
+  // plane covers u∈[0,1] (X) and v∈[0,1] (Z). We use the SAME sample points the
+  // plane uses on each edge so top verts coincide with plane edge verts exactly.
+  // Edge A: v=0 (one Z extreme), u: 0→1
+  for (let i = 0; i < segX; i++) addWall(i / segX, 0, (i + 1) / segX, 0, false);
+  // Edge B: u=1, v: 0→1
+  for (let i = 0; i < segY; i++) addWall(1, i / segY, 1, (i + 1) / segY, false);
+  // Edge C: v=1 (other Z extreme), u: 1→0
+  for (let i = 0; i < segX; i++) addWall((segX - i) / segX, 1, (segX - i - 1) / segX, 1, false);
+  // Edge D: u=0, v: 1→0
+  for (let i = 0; i < segY; i++) addWall(0, (segY - i) / segY, 0, (segY - i - 1) / segY, false);
+
+  // BOTTOM CAP — a single quad across the base rectangle at y=-uThickness so the
+  // solid is closed when seen from below. All 4 verts are aBase=1 (pinned base).
+  {
+    const o = pos.length / 3;
+    pos.push(X(0), 0, Z(0),  X(1), 0, Z(0),  X(1), 0, Z(1),  X(0), 0, Z(1));
+    uvs.push(0, 0,  1, 0,  1, 1,  0, 1);
+    base.push(1, 1, 1, 1);
+    idx.push(o, o + 1, o + 2,  o, o + 2, o + 3);
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setAttribute('aBase', new THREE.Float32BufferAttribute(base, 1));
+  g.setIndex(idx);
+  g.computeVertexNormals();   // overwritten by the shader's relief normal anyway
+  return g;
 }
 
 // ---- shaders ----------------------------------------------------------------
@@ -393,13 +485,16 @@ const VERT = /* glsl */`
   uniform float uDomBias;   // Layer 1 dominance lean (-1 home .. +1 away)
   uniform float uMacroRoll; // H1 MACRO real-momentum roll offset (−home .. +away)
   uniform float uHtEnv;     // half-time envelope (1 normal .. 0 at break dip)
+  uniform float uThickness; // SOLID BLOCK depth: base verts (aBase=1) pin to y=-uThickness
   uniform vec2 uWorld;
   uniform float uTime;
+  attribute float aBase;    // 1.0 = bottom/base vertex (skirt), 0.0 = top/displaced
   varying float vH;         // pass-relief only (for colour intensity)
   varying float vDuel;      // duel spike intensity (for colour)
   varying vec2 vUvN;
   varying vec3 vNormalW;
   varying vec3 vWorldPos;
+  varying float vBaseMix;   // 0 at the displaced top .. 1 at the base (side-wall shading)
 
   // LAYER 1 (H1 MACRO) — REAL TERRITORIAL DOMINANCE relief. NO sine sum, NO noise.
   //   height = uWave · macroField  + dominance lean (uDomBias)
@@ -466,8 +561,15 @@ const VERT = /* glsl */`
     n = (length(n) > 1e-4) ? normalize(n) : vec3(0.0, 1.0, 0.0);
     vNormalW = n;
 
+    // SOLID BLOCK: base verts (skirt bottoms + bottom cap) pin to the flat base
+    // at y=-uThickness; top verts (plane + skirt top ring) follow the relief H().
+    // The skirt's top ring shares the plane-edge uv so its H(uv) matches the plane
+    // edge EXACTLY (walls follow the relief edge, no gaps).
+    float worldY = (aBase > 0.5) ? (-uThickness) : h;
+    vBaseMix = aBase;   // 0 top .. 1 base → drives the darker side-wall body colour
+
     vec3 pos = position;
-    pos.y += h;
+    pos.y += worldY;
     vec4 wp = modelMatrix * vec4(pos, 1.0);
     vWorldPos = wp.xyz;
     gl_Position = projectionMatrix * viewMatrix * wp;
@@ -496,6 +598,7 @@ const FRAG = /* glsl */`
   varying vec2 vUvN;
   varying vec3 vNormalW;
   varying vec3 vWorldPos;
+  varying float vBaseMix;  // 0 at the displaced top .. 1 at the base (side-wall body)
 
   void main(){
     // NORMAL GUARD: collapsed finite-difference normal → fall back to straight up
@@ -573,6 +676,16 @@ const FRAG = /* glsl */`
     // BRIGHTNESS FLOOR: never darker than the lit neutral base (kills black spots).
     // Empty / quiet cells therefore render as the neutral tide, never pure black.
     col = max(col, baseNeutral * 0.85);
+
+    // ---- SOLID-BLOCK SIDE WALLS --------------------------------------------
+    // The skirt verts ramp vBaseMix 0→1 as they go DOWN the wall (top edge → base).
+    // Mix the surface colour toward a dark slate body so the walls read as the
+    // block's MASS, not a coloured continuation of the top. Top surface (vBaseMix=0)
+    // is untouched. Quadratic so the very top edge stays close to the top colour.
+    float wall = clamp(vBaseMix, 0.0, 1.0);
+    vec3 wallBody = vec3(0.045, 0.055, 0.085);   // dark neutral slate (block mass)
+    col = mix(col, wallBody, wall * wall * 0.92);
+
     // final NaN guard
     if (!(col.r == col.r) || !(col.g == col.g) || !(col.b == col.b)) col = baseNeutral * 0.5;
 
@@ -613,6 +726,11 @@ function syncMaterialUniforms() {
   u.uMacroRoll.value = Number.isFinite(macroRoll) ? clamp(macroRoll, -1, 1) * 0.18 : 0;
   u.uDuelSmooth.value = clamp(tune.duelSmooth, 0, 1);            // H3 smoothness
   u.uHtEnv.value = Number.isFinite(htEnv) ? clamp(htEnv, 0, 1) : 1;
+  // SOLID BLOCK depth → side walls drop to y=-uThickness; keep the floor slab
+  // parked just below the base so there's no z-fight and no black show-through.
+  const th = Number.isFinite(tune.thickness) ? clamp(tune.thickness, 0, 8) : 2.5;
+  u.uThickness.value = th;
+  if (slab) slab.position.y = -th - 0.12;
 }
 function applyTeamColors() {
   if (!material || !model) return;
@@ -1260,7 +1378,7 @@ function settingsBlob() {
     tune: {
       // GLOBAL
       speed: r2(tune.speed), steps: Math.round(tune.steps), dim: r2(tune.dim),
-      htFade: r2(tune.htFade), fade: r2(tune.fade),
+      htFade: r2(tune.htFade), fade: r2(tune.fade), thickness: r2(tune.thickness),
       // H1 MACRO (real dominance relief — amplitude / speed / smoothness / scale)
       macroAmp: r2(tune.macroAmp), macroSpeed: r2(tune.macroSpeed),
       macroSmooth: r2(tune.macroSmooth), macroScale: r2(tune.macroScale),
@@ -1398,6 +1516,8 @@ function buildControlPanel() {
   addSlider('steps', 4, 40, 1, tune.steps, (v) => { tune.steps = Math.round(v); return String(Math.round(v)); });
   addSlider('dim', 0, 0.4, 0.01, tune.dim, (v) => { tune.dim = v; return v.toFixed(2); });
   addSlider('half-time', 0.5, 8, 0.1, tune.htFade, (v) => { tune.htFade = v; return v.toFixed(1); });
+  // SOLID BLOCK depth: how far the side walls drop below the relief to the base.
+  addSlider('thickness', 0, 8, 0.1, tune.thickness, (v) => { tune.thickness = v; return v.toFixed(1); });
 
   // ---- H1 MACRO (REAL territorial dominance — no procedural waves) ------------
   header('H1 MACRO');
