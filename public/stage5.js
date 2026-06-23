@@ -1134,8 +1134,7 @@ function applyEventSpikes(t) {
 const SHOT = {
   MAX_PER: 150,        // max voxels in one arc (adaptive count is capped here)
   VOX: 6000,           // instance pool capacity (adaptive voxel counts × ~40 live arcs)
-  GOALZ_SCALE: 1.05,   // metres → world Y for goalZ (crossbar 2.44 m → ~2.56 above block)
-  GOAL_BASE_Y: 2.4,    // world Y of the goal line (lifted so the goal end + arc ride above the relief, but stay framed)
+  GOALZ_SCALE: 1.05,   // metres → world Y for goalZ (crossbar 2.44 m → ~2.56 above the relief edge)
   RIPPLE_LIFE: 0.75,   // ripple lifetime in REAL seconds
   DRAW_TIME: 0.5,      // arc draw-on time in REAL seconds (launch → goal)
   RIPPLE_MAX: 360,     // max simultaneous ripple rings (pooled)
@@ -1279,7 +1278,7 @@ function buildShotArcs() {
     shotArcs.push({
       ref: s,
       u0, v0, x0, z0,                 // launch (worldY sampled live on the relief)
-      x1, z1,                          // goal-line landing (XZ; worldY from goalZ)
+      u1, v1, x1, z1,                  // goal-line landing (worldY sampled live on the relief edge + goalZ)
       goalZ: s.goalZ,
       isGoal: s.isGoal,
       onTarget: s.onTarget,
@@ -1356,9 +1355,11 @@ function drawShots(t) {
     // possession peaks don't rocket off-screen as near-vertical columns.
     const y0 = Math.min(sampleTerrainY(arc.u0, arc.v0), 2.6) + baseSize * 0.5;
     const P0 = _tmpA.set(arc.x0, y0, arc.z0);
-    // STRIKE height: goal-end elevation = (base + real goalZ reach) scaled by the
-    // shot-height slider — controls how high the ball ends, separate from the apex.
-    const y1 = (SHOT.GOAL_BASE_Y + Math.max(0, arc.goalZ) * SHOT.GOALZ_SCALE) * tune.shotHeight + baseSize * 0.5;
+    // STRIKE height: the goal end rides on the CURRENT relief height at the goal
+    // edge (dynamic — rises/falls with the live terrain there), plus the real
+    // shot height (goalZ) above that ground, scaled by the shot-height slider.
+    const goalGround = sampleTerrainY(arc.u1, arc.v1);
+    const y1 = goalGround + Math.max(0, arc.goalZ) * SHOT.GOALZ_SCALE * tune.shotHeight + baseSize * 0.5;
     const P1 = _tmpB.set(arc.x1, y1, arc.z1);
     // apex lift keyed to the HORIZONTAL span only (not vertical), so steep
     // near-goal shots stay shallow arcs instead of tall spikes.
@@ -1790,6 +1791,40 @@ function settingsBlob() {
   };
 }
 
+// Per-section field lists (keyed by the EXACT header text) so each block can be
+// copied on its own. GLOBAL also carries the grid resolution.
+const SECTION_FIELDS = {
+  'GLOBAL': ['speed', 'steps', 'dim', 'htFade', 'fade', 'thickness'],
+  'H1 MACRO': ['macroAmp', 'macroSpeed', 'macroSmooth', 'macroScale'],
+  'H2 POSSESSION': ['height', 'possSpeed', 'possSmooth', 'possDetail', 'floodHold', 'floodClear'],
+  'H3 DUELS': ['duels', 'duelSpeed', 'duelSmooth', 'duelDetail'],
+  'H4 SHOTS': ['shotThick', 'shotArc', 'shotHeight', 'rippleSize', 'shotFade', 'goalBoost'],
+};
+// Build the settings object for ONE section (just its tune fields + grid for GLOBAL).
+function sectionBlob(key) {
+  const r2 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
+  const o = {};
+  for (const f of (SECTION_FIELDS[key] || [])) o[f] = (f === 'steps') ? Math.round(tune[f]) : r2(tune[f]);
+  const out = { tune: o };
+  if (key === 'GLOBAL') out.grid = { gx: GX, gy: GY };
+  return out;
+}
+// Copy a settings object to the clipboard, flashing the button; on failure
+// dump the JSON into the shared fallback textarea for hand-copying.
+async function copyJSON(obj, btn, okLabel) {
+  const json = JSON.stringify(obj, null, 2);
+  const orig = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(json);
+    btn.textContent = okLabel || 'copied ✓';
+    clearTimeout(btn._flashT);
+    btn._flashT = setTimeout(() => { btn.textContent = orig; }, 1200);
+  } catch {
+    const dump = el('copysetDump');
+    if (dump) { dump.value = json; dump.style.display = 'block'; dump.focus(); dump.select(); }
+  }
+}
+
 // Append a "COPY SETTINGS" button to the control panel (with a hidden readable
 // fallback element). On click → copy the settings JSON to the clipboard; on
 // failure dump it into the fallback element for hand-copying. Flash "copied ✓".
@@ -1853,8 +1888,13 @@ function buildControlPanel() {
     st.textContent =
       '#panel{max-height:94vh;overflow-y:auto;gap:6px}' +
       '#panel .grp{margin-top:7px;color:#9fd;font-size:10px;font-weight:600;' +
-      'letter-spacing:0.18em;text-transform:uppercase;border-top:1px solid rgba(255,255,255,0.12);padding-top:6px}' +
-      '#panel .grp:first-of-type{border-top:none;margin-top:2px}';
+      'letter-spacing:0.18em;text-transform:uppercase;border-top:1px solid rgba(255,255,255,0.12);padding-top:6px;' +
+      'display:flex;align-items:center;justify-content:space-between;gap:8px}' +
+      '#panel .grp:first-of-type{border-top:none;margin-top:2px}' +
+      '#panel .grpcopy{cursor:pointer;font-size:9px;font-weight:600;letter-spacing:0.1em;' +
+      'color:#9fd;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.18);' +
+      'border-radius:5px;padding:2px 8px;text-transform:uppercase}' +
+      '#panel .grpcopy:hover{border-color:rgba(255,255,255,0.4)}';
     document.head.appendChild(st);
   }
   // Remove every .row except the play/restart row and the clock row (keep core
@@ -1866,11 +1906,22 @@ function buildControlPanel() {
   if (clockRow) keep.add(clockRow);
   Array.from(panel.querySelectorAll('.row')).forEach((r) => { if (!keep.has(r)) r.remove(); });
 
-  // small section header
+  // small section header — with a per-block "copy" button for its settings.
   const header = (text) => {
     const d = document.createElement('div');
     d.className = 'grp';
-    d.textContent = text;
+    const lab = document.createElement('span');
+    lab.textContent = text;
+    d.appendChild(lab);
+    if (SECTION_FIELDS[text]) {
+      const cp = document.createElement('button');
+      cp.type = 'button';
+      cp.className = 'grpcopy';
+      cp.textContent = 'copy';
+      cp.title = 'copy ' + text + ' settings';
+      cp.addEventListener('click', (e) => { e.stopPropagation(); copyJSON(sectionBlob(text), cp, '✓'); });
+      d.appendChild(cp);
+    }
     panel.appendChild(d);
   };
   // one slider row → fmt(v) returns the readout string and applies the value.
