@@ -109,10 +109,10 @@ const tune = {
   // The macro height is a heavily-BLURRED accumulation of every real pass/event
   // (long half-life), tilted by the cumulative dominance (domBias) and ROLLED by
   // the real per-minute momentum series. No sine sum, no fbm — 100% match data.
-  macroAmp: 1.1,      // amplitude — height of the dominance relief (→ uWave)
+  macroAmp: 2.5,      // amplitude — height of the dominance relief (→ uWave)
   macroSpeed: 1.0,    // speed — how fast the field decays-and-rebuilds + momentum-roll rate
-  macroSmooth: 0.5,   // smoothness — how heavily the dominance field is blurred (more = broader swells)
-  macroScale: 1.0,    // scale — blur radius / spatial wavelength of the field (fold size)
+  macroSmooth: 0.84,  // smoothness — how heavily the dominance field is blurred (more = broader swells)
+  macroScale: 1.55,   // scale — blur radius / spatial wavelength of the field (fold size)
 
   // ---- H2 POSSESSION (the flood / tide) ----
   height: 1.6,        // amplitude — flood relief height multiplier (→ uHScale)
