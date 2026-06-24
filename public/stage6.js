@@ -56,9 +56,11 @@ const tune = {
   ownerDim: 0.46,   // brightness floor of the team NOT currently in possession
   glow: 0.48,       // glowing-crest highlight amount (the bright "высветленный" special-effect)
   glowCol: '#ff6f1f', // glow / crest highlight colour (default fiery)
+  homeCol: null,    // home team colour override (null = use the data team colour)
+  awayCol: null,    // away team colour override
   sat: 2.0,         // colour saturation boost
-  light: 0.52,      // key/fill light intensity
-  amb: 0.62,        // ambient floor
+  light: 0.32,      // key/fill light intensity
+  amb: 0.26,        // ambient floor
   tex: 0.9,         // clay texture (marble) amount
   wobble: 0.47,     // organic churn of the colour seam
 };
@@ -331,12 +333,23 @@ function vivid(rgb) {
   const k = 0.95 / m;
   return [clamp(c[0] * k, 0, 1), clamp(c[1] * k, 0, 1), clamp(c[2] * k, 0, 1)];
 }
+function rgbToHex(c) {
+  const f = (v) => ('0' + Math.round(clamp(v, 0, 1) * 255).toString(16)).slice(-2);
+  return '#' + f(c[0]) + f(c[1]) + f(c[2]);
+}
 function applyTeamColors() {
+  // default = the vivid data team colour; a user override (tune.homeCol/awayCol
+  // from the colour pickers) wins.
   const h = vivid(model.home.rgb), a = vivid(model.away.rgb);
-  material.uniforms.uHome.value.setRGB(h[0], h[1], h[2]);
-  material.uniforms.uAway.value.setRGB(a[0], a[1], a[2]);
-  document.documentElement.style.setProperty('--home-color', `rgb(${model.home.rgb.r|0},${model.home.rgb.g|0},${model.home.rgb.b|0})`);
-  document.documentElement.style.setProperty('--away-color', `rgb(${model.away.rgb.r|0},${model.away.rgb.g|0},${model.away.rgb.b|0})`);
+  const hHex = tune.homeCol || rgbToHex(h);
+  const aHex = tune.awayCol || rgbToHex(a);
+  if (tune.homeCol) material.uniforms.uHome.value.set(hHex); else material.uniforms.uHome.value.setRGB(h[0], h[1], h[2]);
+  if (tune.awayCol) material.uniforms.uAway.value.set(aHex); else material.uniforms.uAway.value.setRGB(a[0], a[1], a[2]);
+  // seed the pickers with the current colours (so they show what's on screen)
+  const hc = el('homecol'), ac = el('awaycol');
+  if (hc) hc.value = hHex; if (ac) ac.value = aHex;
+  document.documentElement.style.setProperty('--home-color', hHex);
+  document.documentElement.style.setProperty('--away-color', aHex);
 }
 
 // ============================================================================
@@ -601,6 +614,20 @@ function bindUI() {
     applyGc();
   }
 
+  // per-team colour pickers (override the data colours)
+  const hc = el('homecol');
+  if (hc) hc.addEventListener('input', () => {
+    tune.homeCol = hc.value;
+    if (material) material.uniforms.uHome.value.set(hc.value);
+    document.documentElement.style.setProperty('--home-color', hc.value);
+  });
+  const ac = el('awaycol');
+  if (ac) ac.addEventListener('input', () => {
+    tune.awayCol = ac.value;
+    if (material) material.uniforms.uAway.value.set(ac.value);
+    document.documentElement.style.setProperty('--away-color', ac.value);
+  });
+
   // COPY SETTINGS → clipboard (with a textarea fallback)
   const copyBtn = el('copyset');
   if (copyBtn) {
@@ -633,6 +660,8 @@ function settingsBlob() {
       seamPoss: r2(tune.seamPoss), wobble: r2(tune.wobble), ownerDim: r2(tune.ownerDim),
       sat: r2(tune.sat), light: r2(tune.light), amb: r2(tune.amb), tex: r2(tune.tex),
       glow: r2(tune.glow), glowCol: tune.glowCol,
+      homeCol: (el('homecol') && el('homecol').value) || tune.homeCol,
+      awayCol: (el('awaycol') && el('awaycol').value) || tune.awayCol,
     },
     camera: {
       pos: [r2(camera.position.x), r2(camera.position.y), r2(camera.position.z)],
