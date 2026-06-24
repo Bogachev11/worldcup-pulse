@@ -22,6 +22,14 @@ import { clamp, lerp, smoothstep, fbm, buildModel, at, rgb01, xgUpTo } from './c
 const ID = new URLSearchParams(location.search).get('id') || '1953888';
 const el = (id) => document.getElementById(id);
 
+// baked-in default camera (user-tuned)
+const DEFAULT_CAM = { pos: [-12.86, 18.18, 17.62], target: [-1.43, 1.97, -0.48] };
+function applyDefaultCamera() {
+  camera.position.set(DEFAULT_CAM.pos[0], DEFAULT_CAM.pos[1], DEFAULT_CAM.pos[2]);
+  controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
+  controls.update();
+}
+
 // ---- grid resolution (segments) ---------------------------------------------
 const GX = 200;   // along length (x: home goal 0 → away goal 1)
 const GY = 120;   // across width (y)
@@ -45,13 +53,14 @@ const tune = {
   ridgeSharp: 1.0,
   flowSpeed: 1.0,
   seamPoss: 0.6,    // how strongly the colour seam tracks possession share (0 = stay centred, 1 = full possession territory)
-  ownerDim: 0.45,   // brightness floor of the team NOT currently in possession
-  glow: 0.35,       // glowing-crest highlight amount (the bright "высветленный" special-effect)
-  sat: 1.5,         // colour saturation boost
-  light: 0.7,       // key/fill light intensity
-  amb: 0.42,        // ambient floor
-  tex: 0.35,        // clay texture (marble) amount
-  wobble: 0.28,     // organic churn of the colour seam
+  ownerDim: 0.46,   // brightness floor of the team NOT currently in possession
+  glow: 0.48,       // glowing-crest highlight amount (the bright "высветленный" special-effect)
+  glowCol: '#ff6f1f', // glow / crest highlight colour (default fiery)
+  sat: 2.0,         // colour saturation boost
+  light: 0.52,      // key/fill light intensity
+  amb: 0.62,        // ambient floor
+  tex: 0.9,         // clay texture (marble) amount
+  wobble: 0.47,     // organic churn of the colour seam
 };
 
 // transient eruption bumps that decay (built lazily as clock passes goals/shots)
@@ -114,15 +123,15 @@ function setupThree() {
   scene.fog = new THREE.FogExp2(0x05070d, 0.042);
 
   camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
-  camera.position.set(0.0, 8.2, 11.5);
+  camera.position.set(DEFAULT_CAM.pos[0], DEFAULT_CAM.pos[1], DEFAULT_CAM.pos[2]);
 
   controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.minDistance = 4;
-  controls.maxDistance = 30;
+  controls.maxDistance = 36;
   controls.maxPolarAngle = Math.PI * 0.495;   // keep above the ground plane
-  controls.target.set(0, 0.6, 0);
+  controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
 
   // lighting: brighter, cooler key + fill + raised hemisphere so colour reads
   // vivid rather than dim clay.
@@ -159,8 +168,9 @@ function buildHeightfield() {
       uFront: { value: 0.5 },             // LIVE colour seam (home left .. away right)
       uPoss: { value: 0.5 },              // live away-possession share (0 home..1 away)
       uDim: { value: 0.45 },              // passive-team brightness floor
-      uGlow: { value: 0.35 },             // highlight / glowing-crest special-effect amount
-      uSat: { value: 1.5 },               // colour saturation boost (kills the muddy look)
+      uGlow: { value: 0.48 },             // highlight / glowing-crest special-effect amount
+      uGlowCol: { value: new THREE.Color(0xff6f1f) }, // crest highlight colour (fiery by default)
+      uSat: { value: 2.0 },               // colour saturation boost (kills the muddy look)
       uLight: { value: 0.7 },             // key/fill light intensity
       uAmb: { value: 0.42 },              // ambient floor
       uTex: { value: 0.35 },              // clay texture (marble) amount
@@ -235,6 +245,7 @@ const FRAG = /* glsl */`
   uniform float uPoss;
   uniform float uDim;
   uniform float uGlow;
+  uniform vec3 uGlowCol;
   uniform float uSat;
   uniform float uLight;
   uniform float uAmb;
@@ -296,7 +307,9 @@ const FRAG = /* glsl */`
     float steep = 1.0 - clamp(N.y, 0.0, 1.0);
     float hot = smoothstep(0.3, 1.3, vH) * smoothstep(0.12, 0.62, steep);
     float flick = 0.82 + 0.18*vn(vUvN*40.0 + uTime*0.7);
-    vec3 hi = mix(team, vec3(1.7, 1.8, 2.0), 0.7);   // lifted, whitened tint
+    // chosen glow colour (default fiery), pushed bright so it blazes on crests;
+    // its hottest core whitens out for a molten look.
+    vec3 hi = uGlowCol * 2.2 + smoothstep(0.7, 1.4, vH) * 0.6;
     col += hi * hot * uGlow * 2.4 * flick;
 
     // cinematic fresnel rim
@@ -502,6 +515,7 @@ function applyLookUniforms() {
   const u = material.uniforms;
   u.uDim.value = tune.ownerDim;
   u.uGlow.value = tune.glow;
+  u.uGlowCol.value.set(tune.glowCol);
   u.uSat.value = tune.sat;
   u.uLight.value = tune.light;
   u.uAmb.value = tune.amb;
@@ -572,17 +586,53 @@ function bindUI() {
   bindSlider('tex', 'texV', (v) => { tune.tex = v; return v.toFixed(2); });
   bindSlider('glow', 'glowV', (v) => { tune.glow = v; return v.toFixed(2); });
 
-  el('resetcam').addEventListener('click', () => {
-    camera.position.set(0.0, 8.2, 11.5);
-    controls.target.set(0, 0.6, 0);
-    controls.update();
-  });
+  // glow colour picker
+  const gc = el('glowcol');
+  if (gc) {
+    gc.value = tune.glowCol;
+    const applyGc = () => { tune.glowCol = gc.value; if (material) material.uniforms.uGlowCol.value.set(gc.value); };
+    gc.addEventListener('input', applyGc);
+    applyGc();
+  }
+
+  // COPY SETTINGS → clipboard (with a textarea fallback)
+  const copyBtn = el('copyset');
+  if (copyBtn) {
+    const dump = el('copysetDump');
+    let flashT = 0;
+    copyBtn.addEventListener('click', async () => {
+      const json = JSON.stringify(settingsBlob(), null, 2);
+      const flash = () => { copyBtn.textContent = 'copied ✓'; clearTimeout(flashT); flashT = setTimeout(() => { copyBtn.textContent = 'COPY SETTINGS'; }, 1400); };
+      try { await navigator.clipboard.writeText(json); if (dump) dump.style.display = 'none'; flash(); }
+      catch { if (dump) { dump.value = json; dump.style.display = 'block'; dump.focus(); dump.select(); } copyBtn.textContent = 'copy below ↓'; clearTimeout(flashT); flashT = setTimeout(() => { copyBtn.textContent = 'COPY SETTINGS'; }, 1800); }
+    });
+  }
+
+  el('resetcam').addEventListener('click', () => { applyDefaultCamera(); });
   el('copycam').addEventListener('click', async () => {
     const s = `{ pos: [${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)}], ` +
       `target: [${controls.target.x.toFixed(2)}, ${controls.target.y.toFixed(2)}, ${controls.target.z.toFixed(2)}] }`;
     try { await navigator.clipboard.writeText(s); el('camread').textContent = 'copied'; }
     catch { el('camread').textContent = s; }
   });
+}
+
+// Snapshot every tunable + the camera as a JSON blob (paste back to set defaults).
+function settingsBlob() {
+  const r2 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
+  return {
+    tune: {
+      speed: r2(tune.speed), heightScale: r2(tune.heightScale), turbulence: r2(tune.turbulence),
+      ridgeSharp: r2(tune.ridgeSharp), flowSpeed: r2(tune.flowSpeed),
+      seamPoss: r2(tune.seamPoss), wobble: r2(tune.wobble), ownerDim: r2(tune.ownerDim),
+      sat: r2(tune.sat), light: r2(tune.light), amb: r2(tune.amb), tex: r2(tune.tex),
+      glow: r2(tune.glow), glowCol: tune.glowCol,
+    },
+    camera: {
+      pos: [r2(camera.position.x), r2(camera.position.y), r2(camera.position.z)],
+      target: [r2(controls.target.x), r2(controls.target.y), r2(controls.target.z)],
+    },
+  };
 }
 
 function bindSlider(id, valId, fn) {
