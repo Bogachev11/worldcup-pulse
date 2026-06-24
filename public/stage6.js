@@ -352,17 +352,23 @@ const TURB_SCALE = 0.55;
 const RIDGE_H = 1.3;
 const RIDGE_W = 0.07;
 
-let permFrontShove = 0;   // accumulated goal shoves on the front
+let permFrontShove = 0;   // (kept for the goal height-bumps path; no longer shoves the seam)
 
-// Front (colour seam) at row yN, time t: possession territory boundary blended
-// toward centre by `seamPoss`, plus the live momentum push. All REAL data.
+// Front (colour seam) at row yN, time t. Driven by the LIVE, two-way signals so
+// the boundary ebbs and flows with who is on the ball RIGHT NOW:
+//   - possHome(t): instantaneous ±4min home pass-share (REAL, swings 0..1)
+//   - mom(t): live momentum (REAL, signed)
+// NB: we deliberately do NOT use the cumulative integrals (cumPossHome/cumMom)
+// or a permanent goal shove here — those only ratchet toward whoever led overall
+// (France), which made Senegal never come back in the 2nd half. Territory now
+// follows live possession, so a real 2nd-half Senegal spell pushes the seam.
 function frontAt(yN, t) {
   const mom = at(model.series.mom, t, model.STEP);
-  const cumMom = at(model.series.cumMom, t, model.STEP);
-  const possFront = clamp(at(model.series.cumPossHome, t, model.STEP), 0.05, 0.95); // home territory share
+  const possHomeLive = clamp(at(model.series.possHome, t, model.STEP), 0.05, 0.95); // live home share, SWINGS
   const wave = (fbm(yN * 2.2, 0.0, t * 0.03, 3)) * 0.06;
-  const base = lerp(0.5, possFront, clamp(tune.seamPoss, 0, 1));
-  return clamp(base + A_INSTANT * mom + B_ACCUM * cumMom + wave + permFrontShove, 0.12, 0.88);
+  // seamPoss=1 → seam sits exactly at home's current share; 0 → stays centred.
+  const base = lerp(0.5, possHomeLive, clamp(tune.seamPoss, 0, 1));
+  return clamp(base + A_INSTANT * mom + wave, 0.12, 0.88);
 }
 
 function syncEruptions(t) {
