@@ -45,8 +45,13 @@ const tune = {
   ridgeSharp: 1.0,
   flowSpeed: 1.0,
   seamPoss: 0.6,    // how strongly the colour seam tracks possession share (0 = stay centred, 1 = full possession territory)
-  ownerDim: 0.4,    // brightness floor of the team NOT currently in possession
-  glow: 0.3,        // team-colour emissive lift on ridges/peaks
+  ownerDim: 0.45,   // brightness floor of the team NOT currently in possession
+  glow: 0.35,       // glowing-crest highlight amount (the bright "высветленный" special-effect)
+  sat: 1.5,         // colour saturation boost
+  light: 0.7,       // key/fill light intensity
+  amb: 0.42,        // ambient floor
+  tex: 0.35,        // clay texture (marble) amount
+  wobble: 0.28,     // organic churn of the colour seam
 };
 
 // transient eruption bumps that decay (built lazily as clock passes goals/shots)
@@ -153,8 +158,13 @@ function buildHeightfield() {
       uAway: { value: new THREE.Color(0x12a060) },
       uFront: { value: 0.5 },             // LIVE colour seam (home left .. away right)
       uPoss: { value: 0.5 },              // live away-possession share (0 home..1 away)
-      uDim: { value: 0.4 },               // passive-team brightness floor
-      uGlow: { value: 0.3 },              // team-colour emissive lift
+      uDim: { value: 0.45 },              // passive-team brightness floor
+      uGlow: { value: 0.35 },             // highlight / glowing-crest special-effect amount
+      uSat: { value: 1.5 },               // colour saturation boost (kills the muddy look)
+      uLight: { value: 0.7 },             // key/fill light intensity
+      uAmb: { value: 0.42 },              // ambient floor
+      uTex: { value: 0.35 },              // clay texture (marble) amount
+      uWobble: { value: 0.28 },           // organic churn of the colour seam (NOT a straight line)
       uLightDir: { value: new THREE.Vector3(-6, 9, 4).normalize() },
       uLightDir2: { value: new THREE.Vector3(7, 4, -6).normalize() },
       uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
@@ -225,6 +235,11 @@ const FRAG = /* glsl */`
   uniform float uPoss;
   uniform float uDim;
   uniform float uGlow;
+  uniform float uSat;
+  uniform float uLight;
+  uniform float uAmb;
+  uniform float uTex;
+  uniform float uWobble;
   uniform vec3 uLightDir;
   uniform vec3 uLightDir2;
   uniform float uTime;
@@ -233,46 +248,61 @@ const FRAG = /* glsl */`
   varying vec3 vNormalW;
   varying vec3 vWorldPos;
 
-  // cheap value noise for a SUBTLE clay texture (kept low so colour stays clean)
   float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
   float vn(vec2 p){
     vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
     float a=h21(i), b=h21(i+vec2(1,0)), c=h21(i+vec2(0,1)), d=h21(i+vec2(1,1));
     return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
   }
+  // multi-octave noise → organic churn (seam wobble + clay marbling)
+  float fbm2(vec2 p){
+    float s=0.0, a=0.5;
+    for (int i=0;i<4;i++){ s += a*vn(p); p = p*2.03 + vec2(11.3,7.7); a *= 0.5; }
+    return s;
+  }
 
   void main(){
     vec3 N = normalize(vNormalW);
 
-    // OWNERSHIP: the LIVE seam (uFront) moves with possession + momentum, so the
-    // territory each colour fills matches who is on whom. A small organic wobble.
-    float jitter = (vn(vUvN.yy*7.0 + uTime*0.05) - 0.5) * 0.05;
-    float side = smoothstep(uFront - 0.05 + jitter, uFront + 0.05 + jitter, vUvN.x); // 0 home → 1 away
+    // OWNERSHIP — the seam position (uFront) tracks possession+momentum, but the
+    // boundary is DOMAIN-WARPED by animated multi-octave noise so it churns and
+    // wobbles instead of riding as a straight vertical line.
+    float warp = fbm2(vUvN * vec2(3.0, 5.0) + vec2(uTime*0.06, uTime*0.045));
+    float warpX = vUvN.x + uWobble * (warp - 0.5);
+    float side = smoothstep(uFront - 0.04, uFront + 0.04, warpX); // 0 home → 1 away
     vec3 team = mix(uHome, uAway, side);
 
-    // POSSESSION GATE (H2): the side that has the ball NOW stays bright; the
-    // other dims toward uDim. possActive ≈1 if this cell's team is possessing.
+    // SATURATION boost so the hues read vivid, not pale/muddy.
+    float lum = dot(team, vec3(0.299, 0.587, 0.114));
+    team = max(mix(vec3(lum), team, uSat), 0.0);
+
+    // POSSESSION GATE (H2): the side with the ball NOW stays bright; other dims.
     float possActive = mix(1.0 - uPoss, uPoss, side);
     float possGate = mix(uDim, 1.0, possActive);
     vec3 base = team * possGate;
 
-    // SUBTLE clay texture (small amplitude → no dirty marbling)
-    float marble = vn(vUvN*24.0 + vec2(0.0, uTime*0.04));
-    base *= 0.92 + 0.10*marble;
+    // CLAY TEXTURE — churning multi-octave marble, amount = uTex.
+    float marble = fbm2(vUvN * 22.0 + vec2(0.0, uTime*0.05));
+    base *= (1.0 - 0.5*uTex) + uTex*marble;
 
-    // lighting tuned so a fully-lit cell reads at ~its own colour (peak ≈ 1.0),
-    // with a soft ambient floor so shadows stay coloured, not muddy/black.
+    // LIGHTING — key + fill (uLight) over an ambient floor (uAmb).
     float d1 = max(dot(N, normalize(uLightDir)), 0.0);
     float d2 = max(dot(N, normalize(uLightDir2)), 0.0) * 0.5;
-    vec3 col = base * (0.42 + d1*0.50 + d2*0.30);
+    vec3 col = base * (uAmb + d1*uLight + d2*uLight*0.6);
 
-    // faint TEAM-COLOUR glow on the tall contested ridges (vivid, not orange)
-    col += team * possGate * smoothstep(0.6, 1.6, vH) * uGlow;
+    // GLOWING-CREST special-effect: brightened/whitened team colour blazing on
+    // the steep, tall, contested ridges (the "высветленный" highlight), with a
+    // live flicker. Amount = uGlow.
+    float steep = 1.0 - clamp(N.y, 0.0, 1.0);
+    float hot = smoothstep(0.3, 1.3, vH) * smoothstep(0.12, 0.62, steep);
+    float flick = 0.82 + 0.18*vn(vUvN*40.0 + uTime*0.7);
+    vec3 hi = mix(team, vec3(1.7, 1.8, 2.0), 0.7);   // lifted, whitened tint
+    col += hi * hot * uGlow * 2.4 * flick;
 
-    // subtle fresnel rim for a cinematic edge
+    // cinematic fresnel rim
     vec3 V = normalize(cameraPosition - vWorldPos);
     float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-    col += fres * 0.08 * base;
+    col += fres * 0.12 * base;
 
     gl_FragColor = vec4(col, 1.0);   // ACES applied by the renderer
   }
@@ -285,7 +315,7 @@ const FRAG = /* glsl */`
 function vivid(rgb) {
   const c = rgb01(rgb);
   const m = Math.max(c[0], c[1], c[2], 1e-3);
-  const k = 0.85 / m;
+  const k = 0.95 / m;
   return [clamp(c[0] * k, 0, 1), clamp(c[1] * k, 0, 1), clamp(c[2] * k, 0, 1)];
 }
 function applyTeamColors() {
@@ -431,8 +461,7 @@ function loop(now) {
     const targetAway = 1 - possHome;                       // uPoss: 0 home has ball .. 1 away
     uPossCur += (targetAway - uPossCur) * Math.min(1, dt * 3.0);
     material.uniforms.uPoss.value = uPossCur;
-    material.uniforms.uDim.value = tune.ownerDim;
-    material.uniforms.uGlow.value = tune.glow;
+    applyLookUniforms();
   }
 
   controls.update();
@@ -459,14 +488,26 @@ window.__setClock = (min) => {
     const possHome = clamp(at(model.series.possHome, clock, model.STEP), 0, 1);
     uPossCur = 1 - possHome;
     material.uniforms.uPoss.value = uPossCur;
-    material.uniforms.uDim.value = tune.ownerDim;
-    material.uniforms.uGlow.value = tune.glow;
+    applyLookUniforms();
   }
   controls.update();
   renderer.render(scene, camera);
   updateHud();
   updateCamReadout();
 };
+
+// Push all the colour/lighting/effect tunables into the material uniforms.
+function applyLookUniforms() {
+  if (!material) return;
+  const u = material.uniforms;
+  u.uDim.value = tune.ownerDim;
+  u.uGlow.value = tune.glow;
+  u.uSat.value = tune.sat;
+  u.uLight.value = tune.light;
+  u.uAmb.value = tune.amb;
+  u.uTex.value = tune.tex;
+  u.uWobble.value = tune.wobble;
+}
 
 // ---- HUD --------------------------------------------------------------------
 function updateHud() {
@@ -523,7 +564,12 @@ function bindUI() {
   bindSlider('ridge', 'ridgeV', (v) => { tune.ridgeSharp = v; lastSimT = -1; return v.toFixed(2); });
   bindSlider('flow', 'flowV', (v) => { tune.flowSpeed = v; return v.toFixed(2); });
   bindSlider('seam', 'seamV', (v) => { tune.seamPoss = v; lastSimT = -1; return v.toFixed(2); });
+  bindSlider('wobble', 'wobbleV', (v) => { tune.wobble = v; return v.toFixed(2); });
   bindSlider('ownerdim', 'ownerdimV', (v) => { tune.ownerDim = v; return v.toFixed(2); });
+  bindSlider('sat', 'satV', (v) => { tune.sat = v; return v.toFixed(2); });
+  bindSlider('light', 'lightV', (v) => { tune.light = v; return v.toFixed(2); });
+  bindSlider('amb', 'ambV', (v) => { tune.amb = v; return v.toFixed(2); });
+  bindSlider('tex', 'texV', (v) => { tune.tex = v; return v.toFixed(2); });
   bindSlider('glow', 'glowV', (v) => { tune.glow = v; return v.toFixed(2); });
 
   el('resetcam').addEventListener('click', () => {
