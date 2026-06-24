@@ -278,9 +278,13 @@ const FRAG = /* glsl */`
     vec3 N = normalize(vNormalW);
 
     // OWNERSHIP — the seam position (uFront) tracks possession+momentum, but the
-    // boundary is DOMAIN-WARPED by animated multi-octave noise so it churns and
-    // wobbles instead of riding as a straight vertical line.
-    float warp = fbm2(vUvN * vec2(3.0, 5.0) + vec2(uTime*0.06, uTime*0.045));
+    // boundary is DOMAIN-WARPED by noise so it churns instead of riding straight.
+    // TWO scales: a broad slow warp PLUS a finer, faster ripple. The fine ripple
+    // guarantees the edge always has teeth — even where the broad warp goes calm
+    // (otherwise the seam briefly straightens into "just the possession wave").
+    float warpBroad = fbm2(vUvN * vec2(3.0, 5.0) + vec2(uTime*0.06, uTime*0.045));
+    float warpFine  = fbm2(vUvN * vec2(13.0, 19.0) + vec2(-uTime*0.16, uTime*0.12));
+    float warp = mix(warpBroad, warpFine, 0.4);
     float warpX = vUvN.x + uWobble * (warp - 0.5);
     float side = smoothstep(uFront - 0.04, uFront + 0.04, warpX); // 0 home → 1 away
     vec3 team = mix(uHome, uAway, side);
