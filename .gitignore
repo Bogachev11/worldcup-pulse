@@ -8,3 +8,5 @@ node_modules/
 
 # dev capture artifact
 public/_cap.png
+
+.vercel
