@@ -114,6 +114,7 @@ async function init() {
   buildHeightfield();
   setupComposer();
   bindUI();
+  setupHudLayout();
   applyTeamColors();
   applyLookUniforms();
 
@@ -1120,4 +1121,88 @@ function bindSlider(id, valId, fn) {
   const apply = () => { v.textContent = fn(+s.value); };
   s.addEventListener('input', apply);
   apply();
+}
+
+// ---- draggable / resizable HUD layout --------------------------------------
+// Each HUD widget (team names, score, clock, possession, momentum, xG) can be
+// freely positioned and scaled with the mouse in "edit" mode, then saved
+// (localStorage + clipboard JSON). Display-only and click-through otherwise.
+const HUD_KEYS = ['teams', 'score', 'clock', 'poss', 'mom', 'xg'];
+const HUD_STORE = 'stage7_hud_v1';
+function setupHudLayout() {
+  const widget = (k) => el('w_' + k);
+  const defaults = () => {
+    const rx = Math.max(120, window.innerWidth - 210);
+    return {
+      teams: { x: rx, y: 16, s: 1 }, score: { x: rx, y: 42, s: 1 },
+      clock: { x: rx, y: 100, s: 1 }, poss: { x: rx, y: 130, s: 1 },
+      mom: { x: rx, y: 154, s: 1 }, xg: { x: rx, y: 178, s: 1 },
+    };
+  };
+  let layout;
+  try { layout = JSON.parse(localStorage.getItem(HUD_STORE)) || defaults(); } catch { layout = defaults(); }
+
+  const curOf = (k) => {
+    const w = widget(k);
+    return { x: Math.round(parseFloat(w.style.left) || 0), y: Math.round(parseFloat(w.style.top) || 0), s: +(parseFloat(w.dataset.s) || 1).toFixed(3) };
+  };
+  const apply = () => {
+    for (const k of HUD_KEYS) {
+      const w = widget(k); if (!w) continue;
+      const p = layout[k] || { x: 20, y: 20, s: 1 };
+      w.style.left = p.x + 'px'; w.style.top = p.y + 'px';
+      w.style.transform = 'scale(' + (p.s || 1) + ')';
+      w.dataset.s = String(p.s || 1);
+    }
+  };
+  apply();
+
+  const editing = () => document.body.classList.contains('hud-edit');
+  for (const k of HUD_KEYS) {
+    const w = widget(k); if (!w) continue;
+    const handle = w.querySelector('.rsz');
+    // DRAG (move) — anywhere on the widget except the resize handle. Move/up are
+    // bound to window so the drag follows the cursor anywhere on screen.
+    w.addEventListener('pointerdown', (e) => {
+      if (!editing() || e.target === handle) return;
+      e.preventDefault();
+      const sx = e.clientX, sy = e.clientY;
+      const ox = parseFloat(w.style.left) || 0, oy = parseFloat(w.style.top) || 0;
+      const mv = (ev) => { w.style.left = (ox + ev.clientX - sx) + 'px'; w.style.top = (oy + ev.clientY - sy) + 'px'; };
+      const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); layout[k] = curOf(k); };
+      window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
+    });
+    // RESIZE (scale) — drag the corner handle (move/up on window too).
+    if (handle) handle.addEventListener('pointerdown', (e) => {
+      if (!editing()) return;
+      e.preventDefault(); e.stopPropagation();
+      const sx = e.clientX, sy = e.clientY, os = parseFloat(w.dataset.s) || 1;
+      const mv = (ev) => {
+        const s = clamp(os + ((ev.clientX - sx) + (ev.clientY - sy)) / 180, 0.3, 6);
+        w.style.transform = 'scale(' + s + ')'; w.dataset.s = String(s);
+      };
+      const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); layout[k] = curOf(k); };
+      window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
+    });
+  }
+
+  const editBtn = el('hudedit');
+  if (editBtn) editBtn.addEventListener('click', () => {
+    document.body.classList.toggle('hud-edit');
+    editBtn.textContent = editing() ? '✓ готово' : '✥ двигать HUD';
+  });
+  const saveBtn = el('hudsave');
+  if (saveBtn) saveBtn.addEventListener('click', async () => {
+    for (const k of HUD_KEYS) layout[k] = curOf(k);
+    const json = JSON.stringify(layout);
+    try { localStorage.setItem(HUD_STORE, json); } catch {}
+    try { await navigator.clipboard.writeText(json); } catch {}
+    const o = saveBtn.textContent; saveBtn.textContent = 'saved ✓';
+    setTimeout(() => { saveBtn.textContent = o; }, 1300);
+  });
+  const resetBtn = el('hudreset');
+  if (resetBtn) resetBtn.addEventListener('click', () => {
+    try { localStorage.removeItem(HUD_STORE); } catch {}
+    layout = defaults(); apply();
+  });
 }

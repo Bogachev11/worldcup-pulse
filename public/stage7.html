@@ -36,16 +36,24 @@
       text-transform: uppercase; border-top: 1px solid var(--stroke); padding-top: 7px; }
     #title2 { font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink); }
     #camread { min-width: auto; color: #9fd; letter-spacing: 0.06em; }
-    #hud2 {
-      position: fixed; top: 14px; right: 14px; z-index: 30;
-      text-align: right; font-variant-numeric: tabular-nums; line-height: 1.5;
-      background: rgba(10,12,20,0.45); border: 1px solid var(--stroke);
-      border-radius: 12px; padding: 10px 14px; font-size: 12px; letter-spacing: 0.06em;
+    /* free-floating, individually draggable + resizable HUD widgets */
+    .hud-w {
+      position: fixed; z-index: 31; white-space: nowrap; font-variant-numeric: tabular-nums;
+      color: var(--ink); letter-spacing: 0.06em; font-size: 13px; padding: 2px 4px;
+      transform-origin: top left; user-select: none; -webkit-user-select: none;
     }
-    #hud2 .big { font-size: 26px; font-weight: 200; }
-    #hud2 .dim { color: var(--ink-dim); font-size: 11px; letter-spacing: 0.12em; }
-    #hud2 .home { color: var(--home-color); }
-    #hud2 .away { color: var(--away-color); }
+    .hud-w.big { font-size: 30px; font-weight: 200; letter-spacing: 0.04em; }
+    .hud-w.dim { color: var(--ink-dim); font-size: 12px; letter-spacing: 0.12em; }
+    .hud-w .home { color: var(--home-color); font-weight: 600; }
+    .hud-w .away { color: var(--away-color); font-weight: 600; }
+    .hud-w .rsz { display: none; }
+    /* edit mode: outline, move cursor, draggable, with a resize handle */
+    body:not(.hud-edit) .hud-w { pointer-events: none; }
+    body.hud-edit .hud-w { pointer-events: auto; cursor: move; outline: 1px dashed rgba(120,170,255,0.7); border-radius: 4px; }
+    body.hud-edit .hud-w .rsz {
+      display: block; position: absolute; right: -6px; bottom: -6px; width: 13px; height: 13px;
+      background: #6aa0ff; border: 1px solid #04050a; border-radius: 3px; cursor: nwse-resize; pointer-events: auto;
+    }
     .btn { cursor: pointer; border: 1px solid var(--stroke); background: rgba(255,255,255,0.05);
       color: var(--ink); border-radius: 7px; padding: 5px 10px; font-size: 11px; }
     .btn:hover { border-color: rgba(255,255,255,0.3); }
@@ -132,17 +140,21 @@
       <button id="copycam" class="btn">copy camera</button>
       <button id="resetcam" class="btn">reset</button>
     </div>
-    <div class="dim" style="color:var(--ink-dim);font-size:10px">drag to orbit · wheel to zoom · цвет = текущее владение (h2): шов едет к тому, кто давит</div>
+    <div class="row" style="margin-top:2px">
+      <button id="hudedit" class="btn" style="flex:1">✥ двигать HUD</button>
+      <button id="hudsave" class="btn" style="flex:1">save layout</button>
+      <button id="hudreset" class="btn">reset</button>
+    </div>
+    <div class="dim" style="color:var(--ink-dim);font-size:10px">drag to orbit · wheel to zoom · «двигать HUD» → таскай блоки, угол-квадратик = размер, потом save</div>
   </div>
 
-  <div id="hud2">
-    <div class="dim"><span class="home" id="hAbbr">FRA</span> vs <span class="away" id="aAbbr">SEN</span></div>
-    <div class="big"><span id="hScore">0</span> – <span id="aScore">0</span></div>
-    <div class="dim"><span id="clk">0'</span></div>
-    <div class="dim">poss <span id="hPoss">50</span> – <span id="aPoss">50</span>%</div>
-    <div class="dim">mom <span id="mom">0.00</span></div>
-    <div class="dim">xG <span id="hXg">0.00</span> – <span id="aXg">0.00</span></div>
-  </div>
+  <!-- free-floating HUD widgets — each draggable + resizable in edit mode -->
+  <div class="hud-w" id="w_teams" data-k="teams"><span class="home" id="hAbbr">FRA</span> vs <span class="away" id="aAbbr">SEN</span><span class="rsz"></span></div>
+  <div class="hud-w big" id="w_score" data-k="score"><span id="hScore">0</span> – <span id="aScore">0</span><span class="rsz"></span></div>
+  <div class="hud-w" id="w_clock" data-k="clock"><span id="clk">0'</span><span class="rsz"></span></div>
+  <div class="hud-w dim" id="w_poss" data-k="poss">poss <span id="hPoss">50</span> – <span id="aPoss">50</span>%<span class="rsz"></span></div>
+  <div class="hud-w dim" id="w_mom" data-k="mom">mom <span id="mom">0.00</span><span class="rsz"></span></div>
+  <div class="hud-w dim" id="w_xg" data-k="xg">xG <span id="hXg">0.00</span> – <span id="aXg">0.00</span><span class="rsz"></span></div>
 
   <noscript>This stage requires JavaScript (ES modules) and WebGL.</noscript>
   <script type="module" src="stage7.js"></script>
