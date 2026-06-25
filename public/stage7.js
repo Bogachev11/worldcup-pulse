@@ -26,7 +26,7 @@ const ID = new URLSearchParams(location.search).get('id') || '1953888';
 const el = (id) => document.getElementById(id);
 
 // baked-in default camera (user-tuned)
-const DEFAULT_CAM = { pos: [-12.288, 17.37, 16.715], target: [-1.43, 1.97, -0.48] };
+const DEFAULT_CAM = { pos: [-11.745, 16.6, 15.855], target: [-1.43, 1.97, -0.48] };
 function applyDefaultCamera() {
   camera.position.set(DEFAULT_CAM.pos[0], DEFAULT_CAM.pos[1], DEFAULT_CAM.pos[2]);
   controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
@@ -61,35 +61,37 @@ const tune = {
   flowSpeed: 0.48,
   seamPoss: 0.46,
   ownerDim: 0.6,    // tint floor for the passive team (it relaxes toward neutral clay, not black)
-  glow: 0.62,       // ember at the contested seam — kept SUBTLE (material crease, not a light show)
-  glowCol: '#ff6f1f',
-  homeCol: '#6da0f2',
-  awayCol: '#14f27f',
+  glow: 0.22,       // ember at the contested seam
+  glowCol: '#fea858',
+  homeCol: '#396dc0',
+  awayCol: '#99ffca',
   sat: 1.0,         // natural saturation (no neon boost)
   tint: 0.58,       // how strongly the clay is tinted by the team colour
   clay: '#6a6560',  // neutral clay/stone base the team colour tints
   light: 0.3,
+  lightCol: '#ffffff', // key-light colour
   amb: 0.26,
   tex: 0.86,
   wobble: 0.21,
-  // SOLID BODY + MICRO-SURFACE
-  thickness: 2.5,   // extruded block depth: skirt walls drop to y=-thickness, flat base cap
-  detail: 0.5,      // micro-surface bump amount (fine procedural normal perturbation)
-  detailScale: 1.0, // micro-surface frequency multiplier
+  // SOLID BODY + SURFACE PATTERN (fine volumetric mesh)
+  thickness: 0.2,   // extruded block depth: skirt walls drop to y=-thickness, flat base cap
+  pattern: 0,       // surface pattern: 0 grid · 1 weave · 2 lines · 3 dots · 4 hex · 5 grain
+  detail: 0.48,     // pattern depth/strength
+  detailScale: 0.3, // pattern density (frequency)
   // material / render
-  rough: 0.46,      // matte clay
-  metal: 0.0,
+  rough: 0.18,
+  metal: 0.27,
   env: 1.24,
-  shadow: 0.8,
+  shadow: 0.42,
   ao: 1.0,
-  // post (kept gentle — material/light should carry it, not effects)
-  bloomStr: 0.28,
-  bloomRad: 0.14,
-  bloomThr: 0.76,
+  // post
+  bloomStr: 0.5,
+  bloomRad: 0.66,
+  bloomThr: 0.52,
   vig: 1.28,
-  expo: 0.74,
-  contr: 1.08,
-  gsat: 1.1,
+  expo: 1.26,
+  contr: 1.12,
+  gsat: 1.3,
 };
 
 // transient eruption bumps that decay (built lazily as clock passes goals/shots)
@@ -174,7 +176,7 @@ function setupThree() {
   controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
 
   // shadow-casting key light (warm), plus a cool rim fill + hemisphere floor.
-  keyLight = new THREE.DirectionalLight(0xfff0dc, 2.6);
+  keyLight = new THREE.DirectionalLight(0xffffff, 2.6);
   keyLight.position.set(-9, 14, 7);
   keyLight.castShadow = true;
   keyLight.shadow.mapSize.set(2048, 2048);
@@ -305,6 +307,7 @@ function buildHeightfield() {
     uThickness: { value: tune.thickness },
     uDetail: { value: tune.detail },
     uDetailScale: { value: tune.detailScale },
+    uPattern: { value: tune.pattern },
   };
   material.userData.u = u;
 
@@ -387,8 +390,9 @@ function buildHeightfield() {
       uniform float uWobble;
       uniform float uAO;
       uniform float uTime;
-      uniform float uDetail;        // micro-surface bump amount
-      uniform float uDetailScale;   // micro-surface frequency multiplier
+      uniform float uDetail;        // surface pattern depth/strength
+      uniform float uDetailScale;   // surface pattern density (frequency)
+      uniform float uPattern;       // which pattern (0 grid · 1 weave · 2 lines · 3 dots · 4 hex · 5 grain)
       varying float vHd;
       varying vec2 vUvN;
       varying float vBaseMix;       // 0 displaced top .. 1 base (side-wall body)
@@ -404,12 +408,29 @@ function buildHeightfield() {
         for (int i=0;i<4;i++){ s += a*vn7(p); p = p*2.03 + vec2(11.3,7.7); a *= 0.5; }
         return s;
       }
-      // Fine multi-octave micro-relief HEIGHT for the tactile surface grain.
-      // Higher frequency than the marble tint; drives bump + roughness + cavity.
-      float micro7(vec2 p){
-        float s=0.0, a=0.5;
-        for (int i=0;i<3;i++){ s += a*vn7(p); p = p*2.17 + vec2(5.2,9.1); a *= 0.55; }
-        return s;
+      // FINE VOLUMETRIC SURFACE PATTERN — a tactile relief HEIGHT in [0,1].
+      // Built ONLY from continuous (sin/cos/noise) primitives so its screen-space
+      // derivative is smooth → drives a stable bump WITHOUT the firefly/white
+      // speckle that a hash-noise micro-grain produced. Micro-texture only.
+      const float PI7 = 3.14159265;
+      float pat7(vec2 p){
+        if (uPattern < 0.5) {            // GRID — grooved lattice (raised cells)
+          float lx = abs(sin(PI7 * p.x));
+          float ly = abs(sin(PI7 * p.y));
+          return smoothstep(0.0, 0.45, min(lx, ly));
+        } else if (uPattern < 1.5) {     // WEAVE
+          return 0.5 + 0.5 * sin(p.x * 6.2831853) * sin(p.y * 6.2831853);
+        } else if (uPattern < 2.5) {     // LINES — parallel ridges
+          return 0.5 + 0.5 * sin(p.y * 6.2831853);
+        } else if (uPattern < 3.5) {     // DOTS — bump per cell
+          return (0.5 + 0.5*cos(p.x*6.2831853)) * (0.5 + 0.5*cos(p.y*6.2831853));
+        } else if (uPattern < 4.5) {     // HEX-ish — three rotated sine waves
+          float a = sin(p.x*6.2831853);
+          float b = sin((p.x*0.5 + p.y*0.8660254)*6.2831853);
+          float c = sin((p.x*0.5 - p.y*0.8660254)*6.2831853);
+          return clamp(0.5 + 0.22*(a+b+c), 0.0, 1.0);
+        }
+        return fbm7(p * 0.9);            // GRAIN — smooth organic
       }
     ` + shader.fragmentShader;
 
@@ -451,12 +472,11 @@ function buildHeightfield() {
         float ao = clamp(1.0 - uAO * 0.5 * (lowAO*0.7 + (1.0-crevAO)*0.5), 0.25, 1.0);
         baseCol *= ao;
 
-        // CAVITY / curvature AO from the fine micro-relief: darken the tiny
-        // crevices so the surface reads as physically grainy & heavy (a key tell
-        // of a dense matte material vs. smooth CG plastic). Micro-texture only.
-        float mh = micro7(vUvN * (90.0 * uDetailScale));
-        float cavity = 1.0 - uDetail * 0.45 * smoothstep(0.62, 0.18, mh);
-        baseCol *= clamp(cavity, 0.35, 1.0);
+        // CAVITY AO from the surface pattern: the pattern grooves (low pat7) sink
+        // into shadow so the lattice reads as real recessed volume, not a decal.
+        float pc = pat7(vUvN * (46.0 * uDetailScale));
+        float cavity = 1.0 - uDetail * 0.5 * (1.0 - pc);
+        baseCol *= clamp(cavity, 0.3, 1.0);
 
         // SOLID-BLOCK SIDE WALLS: as vBaseMix ramps 0→1 down the skirt, mix the
         // colour toward a dark slate body so walls read as the block's MASS, not a
@@ -477,9 +497,11 @@ function buildHeightfield() {
       '#include <roughnessmap_fragment>',
       `#include <roughnessmap_fragment>
       {
-        float mr = micro7(vUvN * (60.0 * uDetailScale) + vec2(3.7, 1.9));
+        // pattern grooves read slightly ROUGHER (matte recess) than the raised
+        // cells; floor kept well above 0 so nothing turns into a shiny sparkle.
+        float pr = pat7(vUvN * (46.0 * uDetailScale));
         float topMask = 1.0 - clamp(vBaseMix, 0.0, 1.0);
-        roughnessFactor = clamp(roughnessFactor + uDetail * 0.28 * (mr - 0.5) * topMask, 0.04, 1.0);
+        roughnessFactor = clamp(roughnessFactor + uDetail * 0.22 * (0.5 - pr) * topMask, 0.16, 1.0);
       }
       `
     );
@@ -493,11 +515,13 @@ function buildHeightfield() {
       `#include <normal_fragment_maps>
       {
         float topMask = 1.0 - clamp(vBaseMix, 0.0, 1.0);
-        float amp = uDetail * 0.22 * topMask;
+        float amp = uDetail * 0.3 * topMask;
         if (amp > 0.0001) {
-          vec2 mp = vUvN * (130.0 * uDetailScale);
-          float hC = micro7(mp);
-          // perturb shading normal by the screen-space gradient of the micro height.
+          vec2 mp = vUvN * (46.0 * uDetailScale);
+          float hC = pat7(mp);
+          // perturb the shading normal by the screen-space gradient of the SMOOTH
+          // pattern height. Because pat7 is continuous (no hash noise), dFdx/dFdy
+          // are stable → a clean volumetric relief with no white speckle blowout.
           vec3 dpdx = dFdx(-vViewPosition);
           vec3 dpdy = dFdy(-vViewPosition);
           float dhx = dFdx(hC);
@@ -506,6 +530,9 @@ function buildHeightfield() {
           vec3 r2 = cross(normal, dpdx);
           float det = dot(dpdx, r1);
           vec3 surfGrad = (abs(det) > 1e-8) ? (dhx * r1 + dhy * r2) / det : vec3(0.0);
+          // clamp the perturbation so steep groove walls can't fling the normal
+          // to a grazing sliver that catches a blown-out specular spark.
+          surfGrad = clamp(surfGrad, vec3(-4.0), vec3(4.0));
           normal = normalize(normal - amp * surfGrad);
         }
       }
@@ -834,6 +861,7 @@ function applyLookUniforms() {
   u.uThickness.value = th;
   u.uDetail.value = tune.detail;
   u.uDetailScale.value = tune.detailScale;
+  u.uPattern.value = tune.pattern;
   if (slab) slab.position.y = -th - 0.12;
 
   // PBR material
@@ -845,6 +873,7 @@ function applyLookUniforms() {
   // key/fill intensity from `light`; ambient floor from `amb` (env intensity
   // also lifts the IBL ambient). Shadow strength via key opacity-ish.
   keyLight.intensity = 1.0 + tune.light * 3.0;
+  keyLight.color.set(tune.lightCol);
   // ambient floor: scale the hemisphere up with `amb`.
   scene.children.forEach((c) => {
     if (c.isHemisphereLight) c.intensity = 0.25 + tune.amb * 1.4;
@@ -942,6 +971,15 @@ function bindUI() {
   bindSlider('thickness', 'thicknessV', (v) => { tune.thickness = v; return v.toFixed(2); });
   bindSlider('detail', 'detailV', (v) => { tune.detail = v; return v.toFixed(2); });
   bindSlider('detailScale', 'detailScaleV', (v) => { tune.detailScale = v; return v.toFixed(2); });
+  // surface pattern selector
+  const pat = el('pattern');
+  if (pat) {
+    pat.value = String(tune.pattern);
+    pat.addEventListener('change', () => {
+      tune.pattern = +pat.value;
+      if (material) material.userData.u.uPattern.value = tune.pattern;
+    });
+  }
   // post
   bindSlider('bloomStr', 'bloomStrV', (v) => { tune.bloomStr = v; return v.toFixed(2); });
   bindSlider('bloomRad', 'bloomRadV', (v) => { tune.bloomRad = v; return v.toFixed(2); });
@@ -950,6 +988,15 @@ function bindUI() {
   bindSlider('expo', 'expoV', (v) => { tune.expo = v; return v.toFixed(2); });
   bindSlider('contr', 'contrV', (v) => { tune.contr = v; return v.toFixed(2); });
   bindSlider('gsat', 'gsatV', (v) => { tune.gsat = v; return v.toFixed(2); });
+
+  // key-light colour picker
+  const lc = el('lightcol');
+  if (lc) {
+    lc.value = tune.lightCol;
+    const applyLc = () => { tune.lightCol = lc.value; if (keyLight) keyLight.color.set(lc.value); };
+    lc.addEventListener('input', applyLc);
+    applyLc();
+  }
 
   // clay (material base) colour picker
   const cl = el('claycol');
@@ -1014,15 +1061,16 @@ function settingsBlob() {
       ridgeSharp: r2(tune.ridgeSharp), flowSpeed: r2(tune.flowSpeed),
       seamPoss: r2(tune.seamPoss), wobble: r2(tune.wobble), ownerDim: r2(tune.ownerDim),
       sat: r2(tune.sat), tint: r2(tune.tint), clay: tune.clay,
-      light: r2(tune.light), amb: r2(tune.amb), tex: r2(tune.tex),
+      light: r2(tune.light), lightCol: tune.lightCol, amb: r2(tune.amb), tex: r2(tune.tex),
       glow: r2(tune.glow), glowCol: tune.glowCol,
       homeCol: (el('homecol') && el('homecol').value) || tune.homeCol,
       awayCol: (el('awaycol') && el('awaycol').value) || tune.awayCol,
       // cinematic additions
       rough: r2(tune.rough), metal: r2(tune.metal), env: r2(tune.env),
       shadow: r2(tune.shadow), ao: r2(tune.ao),
-      // solid body + micro-surface
-      thickness: r2(tune.thickness), detail: r2(tune.detail), detailScale: r2(tune.detailScale),
+      // solid body + surface pattern
+      thickness: r2(tune.thickness), pattern: tune.pattern,
+      detail: r2(tune.detail), detailScale: r2(tune.detailScale),
       bloomStr: r2(tune.bloomStr), bloomRad: r2(tune.bloomRad), bloomThr: r2(tune.bloomThr),
       vig: r2(tune.vig), expo: r2(tune.expo), contr: r2(tune.contr), gsat: r2(tune.gsat),
     },
