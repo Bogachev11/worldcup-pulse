@@ -306,17 +306,37 @@ def whoscored_warmup(pg):
     pg.wait_for_timeout(3500)
 
 
-# WC2026: tournament 36, season 10498
-WS_FIXTURE_URLS = [
-    "https://www.whoscored.com/regions/247/tournaments/36/seasons/10498/international-fifa-world-cup-2026",
-]
+# WC2026: tournament 36, season 10498.
+#
+# IMPORTANT (enumeration mechanism, discovered by live inspection 2026-06-25):
+# On WhoScored the WC2026 group stage is split into ONE STAGE PER GROUP. Each
+# group's "fixtures" page reliably lists exactly that group's 6 matches as
+# /matches/{id}/live anchors. The stage ids are consecutive:
+#     Group A=23753, B=23754, C=23755, D=23756, E=23757, F=23758,
+#     G=23759, H=23760, I=23761, J=23762, K=23763, L=23764
+# The season landing page only ever shows the *current* matchday (~6 fixtures),
+# and the in-page day-change arrow / ?d=YYYYMMDD param are pure client-side
+# widgets that DO NOT change the embedded fixture set -> they cannot be used to
+# page through matchdays. The reliable approach is to visit each group-stage
+# fixtures page and harvest its 6 anchors. That yields all 72 group fixtures.
+WS_SEASON_URL = ("https://www.whoscored.com/regions/247/tournaments/36/"
+                 "seasons/10498/international-fifa-world-cup-2026")
+# All 12 group-stage stage ids (A..L). Probed live: 23744..23752 and 23765+
+# fall back to a single default match (1988523), so we restrict to A..L.
+WS_GROUP_STAGE_IDS = list(range(23753, 23765))  # 23753 .. 23764 inclusive
+
+def _ws_stage_fixtures_url(sid):
+    return (f"https://www.whoscored.com/regions/247/tournaments/36/"
+            f"seasons/10498/stages/{sid}/fixtures/"
+            f"international-fifa-world-cup-2026")
 
 
 def whoscored_enumerate(pg):
-    """Collect all /matches/{id}/live/... anchors for WC2026.
+    """Collect all /matches/{id}/live/... anchors for the WC2026 group stage.
 
-    Strategy: visit the season page + stage 'show' pages, harvest fixture anchors.
-    Also try the tournament fixtures Ajax pages via in-page fetch.
+    Primary strategy: iterate over the 12 per-group stage *fixtures* pages
+    (one stage per group on WhoScored) and harvest each group's 6 fixture
+    anchors. Falls back to the season landing page if a stage fails.
     """
     found = {}  # matchId -> url
 
@@ -337,71 +357,33 @@ def whoscored_enumerate(pg):
                 url = f"https://www.whoscored.com/matches/{mid}/live/{slug}"
                 found[mid] = url
 
-    # 1) Season landing page
-    for u in WS_FIXTURE_URLS:
+    # 1) Iterate every per-group stage fixtures page (A..L). Each lists its 6
+    #    group fixtures. try/except per stage so one bad page never hangs/aborts
+    #    the crawl.
+    for sid in WS_GROUP_STAGE_IDS:
+        url = _ws_stage_fixtures_url(sid)
+        before = len(found)
         try:
-            log("  [ws] season page ...")
-            pg.goto(u, wait_until="domcontentloaded")
+            log(f"  [ws] group stage {sid} fixtures ...")
+            pg.goto(url, wait_until="domcontentloaded")
+            pg.wait_for_timeout(2500)
+            harvest_anchors()
+            log(f"  [ws] stage {sid}: +{len(found)-before} (total {len(found)})")
+        except Exception as e:
+            log(f"  [ws] stage {sid} failed: {str(e)[:80]}")
+        time.sleep(0.3)
+
+    # 2) Fallback: if the per-stage crawl somehow under-delivered, also scrape
+    #    the season landing page (current matchday) so we at least get those.
+    if len(found) < 60:
+        try:
+            log(f"  [ws] only {len(found)} anchors; scraping season landing page ...")
+            pg.goto(WS_SEASON_URL, wait_until="domcontentloaded")
             pg.wait_for_timeout(4000)
             harvest_anchors()
             log(f"  [ws] after season page: {len(found)} anchors")
         except Exception as e:
-            log(f"  [ws] season page failed {u}: {e}")
-
-    # 2) The season landing page already lists every fixture for the tournament
-    #    (all groups), so if we got a healthy set of anchors we are done. Visiting
-    #    each individual stage page is slow and redundant. Only fall back to the
-    #    stage pages if the season page yielded too few.
-    if len(found) >= 30:
-        log(f"  [ws] season page sufficient ({len(found)} anchors); skipping stage pages")
-        return found
-
-    # Discover stage IDs from anchors on the page, then visit stage pages.
-    stage_ids = set()
-    try:
-        st = pg.evaluate("""()=>{
-            const out=[];
-            for(const a of document.querySelectorAll('a[href]')){
-                const h=a.getAttribute('href')||'';
-                const m=h.match(/stages\\/(\\d+)/);
-                if(m) out.push(m[1]);
-            }
-            return out;
-        }""")
-        for s in st or []:
-            stage_ids.add(s)
-    except Exception:
-        pass
-    # known group-stage ids from recipe
-    for s in ("23757", "23758", "23759"):
-        stage_ids.add(s)
-
-    # 3) For each stage, navigate to the stage page and harvest fixture anchors.
-    #    (navigation timeout is capped at the page level so a slow page raises
-    #    instead of hanging the whole run.)
-    for sid in sorted(stage_ids):
-        url = (f"https://www.whoscored.com/regions/247/tournaments/36/"
-               f"seasons/10498/stages/{sid}/"
-               f"international-fifa-world-cup-2026")
-        try:
-            log(f"  [ws] stage {sid} ...")
-            pg.goto(url, wait_until="domcontentloaded")
-            pg.wait_for_timeout(3000)
-            harvest_anchors()
-            # click "Fixtures" tab if present (best-effort)
-            try:
-                pg.evaluate("""()=>{
-                    for(const a of document.querySelectorAll('a,button')){
-                        if(/fixtures/i.test(a.textContent||'')){ a.click(); return; }
-                    }
-                }""")
-                pg.wait_for_timeout(2000)
-                harvest_anchors()
-            except Exception:
-                pass
-            log(f"  [ws] after stage {sid}: {len(found)} anchors total")
-        except Exception as e:
-            log(f"  [ws] stage {sid} failed: {e}")
+            log(f"  [ws] season page failed: {str(e)[:80]}")
 
     return found
 
