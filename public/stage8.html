@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>GOAL MOUTH — where every goal went in</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@200;300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #04050a; color: #eef1f7;
+      font-family: 'Barlow', ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
+    #stage { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+    #hud {
+      position: fixed; top: 16px; left: 18px; z-index: 10; pointer-events: none;
+      letter-spacing: 0.06em;
+    }
+    #title { font-size: 13px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; color: #cfd6e6; }
+    #sub { font-size: 12px; color: #8a93a8; margin-top: 3px; letter-spacing: 0.1em; }
+    #back {
+      position: fixed; top: 16px; right: 18px; z-index: 10;
+      font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+      color: #9fd; text-decoration: none; border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 7px; padding: 6px 11px; background: rgba(10,12,20,0.5);
+    }
+    #back:hover { border-color: rgba(255,255,255,0.34); }
+    #legend { position: fixed; bottom: 16px; left: 18px; z-index: 10; pointer-events: none;
+      font-size: 11px; color: #8a93a8; letter-spacing: 0.08em; }
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="hud">
+    <div id="title">GOAL MOUTH</div>
+    <div id="sub">loading…</div>
+  </div>
+  <a id="back" href="matches.html">← gallery</a>
+  <div id="legend">each blob = one goal · across &amp; height = where it crossed the line · colour = scoring team</div>
+  <noscript>This stage requires JavaScript.</noscript>
+  <script type="module" src="stage8.js"></script>
+</body>
+</html>
