@@ -6,6 +6,23 @@ import { fingerprintSVG } from './fingerprint.js';
 const grid = document.getElementById('grid');
 const statusEl = document.getElementById('status');
 
+// team abbr → ISO flag code (flagcdn). Mapped by COUNTRY, not by guessing the
+// abbr (note: AUS=Austria, BAN=Bosnia, IRA=Iraq, TUR=Türkiye here).
+const FLAG = {
+  MEX: 'mx', SAF: 'za', SKO: 'kr', CZE: 'cz', CAN: 'ca', BAN: 'ba', QAT: 'qa',
+  SWI: 'ch', BRA: 'br', MOR: 'ma', USA: 'us', PAR: 'py', HAI: 'ht', SCO: 'gb-sct',
+  GER: 'de', CUR: 'cw', NET: 'nl', JAP: 'jp', AUS: 'at', TUR: 'tr', ICO: 'ci',
+  ECU: 'ec', BEL: 'be', EGY: 'eg', SPA: 'es', CVE: 'cv', SAR: 'sa', URU: 'uy',
+  SWE: 'se', TUN: 'tn', IRA: 'iq', NZE: 'nz', FRA: 'fr', SEN: 'sn', NOR: 'no',
+  JOR: 'jo', ARG: 'ar', ALG: 'dz', ENG: 'gb-eng', CRO: 'hr', POR: 'pt',
+  DCO: 'cd', UZB: 'uz', COL: 'co', GHA: 'gh', PAN: 'pa',
+};
+function flag(abbr) {
+  const code = FLAG[abbr];
+  if (!code) return '<span class="dot"></span>'; // fallback to the coloured dot
+  return `<img class="flag" loading="lazy" alt="${abbr}" title="${abbr}" src="https://flagcdn.com/${code}.svg">`;
+}
+
 function fmtDate(iso) {
   try {
     const d = new Date(iso + 'T00:00:00Z');
@@ -35,11 +52,11 @@ function card(m) {
     </div>
     <div class="score">
       <span class="team home" style="--c:${hc}">
-        <span class="dot"></span><span class="abbr">${m.home.abbr}</span>
+        ${flag(m.home.abbr)}<span class="abbr">${m.home.abbr}</span>
       </span>
       <span class="nums"><b>${m.home.score}</b><span class="dash">–</span><b>${m.away.score}</b></span>
       <span class="team away" style="--c:${ac}">
-        <span class="abbr">${m.away.abbr}</span><span class="dot"></span>
+        <span class="abbr">${m.away.abbr}</span>${flag(m.away.abbr)}
       </span>
     </div>
     <div class="fp">${fingerprintSVG(m, { w: 440, h: 150 })}</div>
