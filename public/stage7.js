@@ -26,7 +26,7 @@ const ID = new URLSearchParams(location.search).get('id') || '1953888';
 const el = (id) => document.getElementById(id);
 
 // baked-in default camera (user-tuned)
-const DEFAULT_CAM = { pos: [-11.745, 16.6, 15.855], target: [-1.43, 1.97, -0.48] };
+const DEFAULT_CAM = { pos: [-9.852, 18.1, 15.68], target: [-0.928, 0.947, 1.072] };
 function applyDefaultCamera() {
   camera.position.set(DEFAULT_CAM.pos[0], DEFAULT_CAM.pos[1], DEFAULT_CAM.pos[2]);
   controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
@@ -60,24 +60,24 @@ const tune = {
   ridgeSharp: 1.0,
   flowSpeed: 0.48,
   seamPoss: 0.46,
-  ownerDim: 0.6,    // tint floor for the passive team (it relaxes toward neutral clay, not black)
-  glow: 0.22,       // ember at the contested seam
+  ownerDim: 0.54,   // tint floor for the passive team (it relaxes toward neutral clay, not black)
+  glow: 0.5,        // ember ceiling — gentle quadratic curve + tied to real match intensity
   glowCol: '#fea858',
   homeCol: '#396dc0',
   awayCol: '#99ffca',
-  sat: 1.0,         // natural saturation (no neon boost)
-  tint: 0.58,       // how strongly the clay is tinted by the team colour
+  sat: 0.86,        // natural saturation (no neon boost)
+  tint: 0.44,       // how strongly the clay is tinted by the team colour
   clay: '#6a6560',  // neutral clay/stone base the team colour tints
-  light: 0.3,
+  light: 0.35,
   lightCol: '#ffffff', // key-light colour
   amb: 0.26,
   tex: 0.86,
   wobble: 0.42,
   // SOLID BODY + SURFACE PATTERN (fine volumetric mesh)
   thickness: 0.2,   // extruded block depth: skirt walls drop to y=-thickness, flat base cap
-  pattern: 0,       // surface pattern: 0 grid · 1 weave · 2 lines · 3 dots · 4 hex · 5 grain
-  detail: 0.48,     // pattern depth/strength
-  detailScale: 0.3, // pattern density (frequency)
+  pattern: 4,       // surface pattern: 0 grid · 1 weave · 2 lines · 3 dots · 4 hex · 5 grain
+  detail: 1.1,      // pattern depth/strength
+  detailScale: 2.62,// pattern density (frequency)
   // material / render
   rough: 0.18,
   metal: 0.27,
@@ -85,11 +85,11 @@ const tune = {
   shadow: 0.42,
   ao: 1.0,
   // post
-  bloomStr: 0.5,
+  bloomStr: 0.12,
   bloomRad: 0.66,
   bloomThr: 0.52,
   vig: 1.28,
-  expo: 1.26,
+  expo: 1.72,
   contr: 1.12,
   gsat: 1.3,
 };
@@ -302,6 +302,7 @@ function buildHeightfield() {
     uTex: { value: tune.tex },
     uWobble: { value: tune.wobble },
     uAO: { value: tune.ao },
+    uIntensity: { value: 0 },        // REAL match intensity (event rate) → drives the ember
     uTime: { value: 0 },
     // SOLID BODY + MICRO-SURFACE
     uThickness: { value: tune.thickness },
@@ -389,6 +390,7 @@ function buildHeightfield() {
       uniform float uTex;
       uniform float uWobble;
       uniform float uAO;
+      uniform float uIntensity;     // real match intensity → ember strength
       uniform float uTime;
       uniform float uDetail;        // surface pattern depth/strength
       uniform float uDetailScale;   // surface pattern density (frequency)
@@ -550,8 +552,13 @@ function buildHeightfield() {
         float steep = 1.0 - clamp(Nw.y, 0.0, 1.0);
         float hot = smoothstep(0.3, 1.3, vHd) * smoothstep(0.12, 0.62, steep);
         float flick = 0.82 + 0.18*vn7(vUvN*40.0 + uTime*0.7);
-        vec3 hi = uGlowCol * 2.2 + smoothstep(0.7, 1.4, vHd) * 0.6;
-        totalEmissiveRadiance += hi * hot * uGlow * 2.0 * flick;
+        // GENTLE + DATA-DRIVEN ember: quadratic in the slider (so the low end is
+        // genuinely faint, not a hard jump from 0), and scaled by REAL match
+        // intensity — the crease barely smoulders in calm play and flares when the
+        // match is hot. Far smaller base multiplier than before so min is subtle.
+        float ember = uGlow * uGlow * mix(0.18, 1.0, clamp(uIntensity, 0.0, 1.0));
+        vec3 hi = uGlowCol * (1.0 + smoothstep(0.7, 1.4, vHd) * 0.5);
+        totalEmissiveRadiance += hi * hot * ember * 1.3 * flick;
       }
       `
     );
@@ -817,6 +824,7 @@ function updateFrameUniforms(dt) {
   const targetAway = 1 - possHome;
   uPossCur += (targetAway - uPossCur) * Math.min(1, dt * 3.0);
   u.uPoss.value = uPossCur;
+  u.uIntensity.value = clamp(at(model.series.intensity, clock, model.STEP), 0, 1);
 }
 
 // ---- dev hook ---------------------------------------------------------------
@@ -837,6 +845,7 @@ window.__setClock = (min) => {
     const possHome = clamp(at(model.series.possHome, clock, model.STEP), 0, 1);
     uPossCur = 1 - possHome;
     u.uPoss.value = uPossCur;
+    u.uIntensity.value = clamp(at(model.series.intensity, clock, model.STEP), 0, 1);
     applyLookUniforms();
   }
   controls.update();

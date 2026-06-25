@@ -73,16 +73,16 @@
     <div class="row"><label>wobble ▸ колбасит</label><input id="wobble" type="range" min="0" max="0.7" step="0.01" value="0.42"><span class="val" id="wobbleV">0.42</span></div>
 
     <div class="sec">colour · цвет</div>
-    <div class="row"><label>tint ▸ оттенок</label><input id="tint" type="range" min="0" max="1" step="0.02" value="0.58"><span class="val" id="tintV">0.58</span></div>
-    <div class="row"><label>owner dim</label><input id="ownerdim" type="range" min="0" max="1" step="0.02" value="0.6"><span class="val" id="ownerdimV">0.60</span></div>
-    <div class="row"><label>saturation</label><input id="sat" type="range" min="0.3" max="2.6" step="0.02" value="1.0"><span class="val" id="satV">1.00</span></div>
+    <div class="row"><label>tint ▸ оттенок</label><input id="tint" type="range" min="0" max="1" step="0.02" value="0.44"><span class="val" id="tintV">0.44</span></div>
+    <div class="row"><label>owner dim</label><input id="ownerdim" type="range" min="0" max="1" step="0.02" value="0.54"><span class="val" id="ownerdimV">0.54</span></div>
+    <div class="row"><label>saturation</label><input id="sat" type="range" min="0.3" max="2.6" step="0.02" value="0.86"><span class="val" id="satV">0.86</span></div>
     <div class="row"><label>texture</label><input id="tex" type="range" min="0" max="1" step="0.02" value="0.86"><span class="val" id="texV">0.86</span></div>
     <div class="row"><label>clay colour</label><input id="claycol" type="color" value="#6a6560" style="flex:1;height:22px;padding:0;border:1px solid var(--stroke);border-radius:6px;background:none;cursor:pointer"></div>
-    <div class="row"><label>home colour</label><input id="homecol" type="color" value="#6da0f2" style="flex:1;height:22px;padding:0;border:1px solid var(--stroke);border-radius:6px;background:none;cursor:pointer"></div>
-    <div class="row"><label>away colour</label><input id="awaycol" type="color" value="#14f27f" style="flex:1;height:22px;padding:0;border:1px solid var(--stroke);border-radius:6px;background:none;cursor:pointer"></div>
+    <div class="row"><label>home colour</label><input id="homecol" type="color" value="#396dc0" style="flex:1;height:22px;padding:0;border:1px solid var(--stroke);border-radius:6px;background:none;cursor:pointer"></div>
+    <div class="row"><label>away colour</label><input id="awaycol" type="color" value="#99ffca" style="flex:1;height:22px;padding:0;border:1px solid var(--stroke);border-radius:6px;background:none;cursor:pointer"></div>
 
     <div class="sec">glow · свечение</div>
-    <div class="row"><label>glow ▸ свечение</label><input id="glow" type="range" min="0" max="1.5" step="0.02" value="0.22"><span class="val" id="glowV">0.22</span></div>
+    <div class="row"><label>glow ▸ свечение</label><input id="glow" type="range" min="0" max="1.5" step="0.02" value="0.5"><span class="val" id="glowV">0.50</span></div>
     <div class="row"><label>glow colour</label><input id="glowcol" type="color" value="#fea858" style="flex:1;height:22px;padding:0;border:1px solid var(--stroke);border-radius:6px;background:none;cursor:pointer"></div>
 
     <div class="sec">material · PBR</div>
@@ -99,25 +99,25 @@
       <option value="4">hex · соты</option>
       <option value="5">grain · зерно</option>
     </select></div>
-    <div class="row"><label>detail ▸ глубина</label><input id="detail" type="range" min="0" max="1.5" step="0.02" value="0.48"><span class="val" id="detailV">0.48</span></div>
-    <div class="row"><label>density ▸ частота</label><input id="detailScale" type="range" min="0.2" max="6" step="0.02" value="0.3"><span class="val" id="detailScaleV">0.30</span></div>
+    <div class="row"><label>detail ▸ глубина</label><input id="detail" type="range" min="0" max="1.5" step="0.02" value="1.1"><span class="val" id="detailV">1.10</span></div>
+    <div class="row"><label>density ▸ частота</label><input id="detailScale" type="range" min="0.2" max="6" step="0.02" value="2.62"><span class="val" id="detailScaleV">2.62</span></div>
 
     <div class="sec">solid body · масса</div>
     <div class="row"><label>thickness ▸ толщина</label><input id="thickness" type="range" min="0" max="8" step="0.05" value="0.2"><span class="val" id="thicknessV">0.20</span></div>
 
     <div class="sec">lighting · свет</div>
-    <div class="row"><label>light</label><input id="light" type="range" min="0" max="6" step="0.05" value="0.3"><span class="val" id="lightV">0.30</span></div>
+    <div class="row"><label>light</label><input id="light" type="range" min="0" max="6" step="0.05" value="0.35"><span class="val" id="lightV">0.35</span></div>
     <div class="row"><label>light colour</label><input id="lightcol" type="color" value="#ffffff" style="flex:1;height:22px;padding:0;border:1px solid var(--stroke);border-radius:6px;background:none;cursor:pointer"></div>
     <div class="row"><label>ambient</label><input id="amb" type="range" min="0" max="2" step="0.02" value="0.26"><span class="val" id="ambV">0.26</span></div>
     <div class="row"><label>shadow ▸ тень</label><input id="shadow" type="range" min="0" max="1" step="0.02" value="0.42"><span class="val" id="shadowV">0.42</span></div>
     <div class="row"><label>AO ▸ затенение</label><input id="ao" type="range" min="0" max="2.5" step="0.02" value="1.0"><span class="val" id="aoV">1.00</span></div>
 
     <div class="sec">post · кино</div>
-    <div class="row"><label>bloom str</label><input id="bloomStr" type="range" min="0" max="2" step="0.02" value="0.5"><span class="val" id="bloomStrV">0.50</span></div>
+    <div class="row"><label>bloom str</label><input id="bloomStr" type="range" min="0" max="2" step="0.02" value="0.12"><span class="val" id="bloomStrV">0.12</span></div>
     <div class="row"><label>bloom radius</label><input id="bloomRad" type="range" min="0" max="1.5" step="0.02" value="0.66"><span class="val" id="bloomRadV">0.66</span></div>
     <div class="row"><label>bloom thresh</label><input id="bloomThr" type="range" min="0" max="1.5" step="0.02" value="0.52"><span class="val" id="bloomThrV">0.52</span></div>
     <div class="row"><label>vignette</label><input id="vig" type="range" min="0" max="1.5" step="0.02" value="1.28"><span class="val" id="vigV">1.28</span></div>
-    <div class="row"><label>exposure</label><input id="expo" type="range" min="0.3" max="2" step="0.02" value="1.26"><span class="val" id="expoV">1.26</span></div>
+    <div class="row"><label>exposure</label><input id="expo" type="range" min="0.3" max="2" step="0.02" value="1.72"><span class="val" id="expoV">1.72</span></div>
     <div class="row"><label>contrast</label><input id="contr" type="range" min="0.6" max="1.8" step="0.02" value="1.12"><span class="val" id="contrV">1.12</span></div>
     <div class="row"><label>grade sat</label><input id="gsat" type="range" min="0" max="2" step="0.02" value="1.3"><span class="val" id="gsatV">1.30</span></div>
 
