@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>World Cup Pulse — Match Gallery</title>
+  <!-- Barlow (Google Fonts), matching the cinematic stage -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@200;300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #04050a;
+      --ink: rgba(255,255,255,0.90);
+      --ink-dim: rgba(255,255,255,0.42);
+      --ink-faint: rgba(255,255,255,0.20);
+      --stroke: rgba(255,255,255,0.10);
+      --card: rgba(14,17,28,0.66);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background:
+        radial-gradient(1200px 700px at 75% -10%, rgba(60,90,160,0.16), transparent 60%),
+        radial-gradient(900px 600px at 10% 110%, rgba(160,70,60,0.12), transparent 60%),
+        var(--bg);
+      color: var(--ink);
+      font-family: 'Barlow', ui-sans-serif, system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+    header.hd {
+      padding: 44px 32px 22px;
+      max-width: 1480px; margin: 0 auto;
+    }
+    header.hd .kick {
+      font-size: 12px; letter-spacing: 0.42em; text-transform: uppercase;
+      color: #9fd; font-weight: 500; margin-bottom: 10px;
+    }
+    header.hd h1 {
+      font-size: clamp(30px, 5vw, 54px); font-weight: 200; letter-spacing: 0.02em;
+      margin: 0; line-height: 1.02;
+    }
+    header.hd h1 b { font-weight: 600; }
+    header.hd .sub {
+      margin-top: 12px; max-width: 720px; color: var(--ink-dim);
+      font-size: 14px; line-height: 1.5; font-weight: 300;
+    }
+    header.hd #status {
+      margin-top: 14px; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--ink-faint);
+    }
+    .legend {
+      display: flex; flex-wrap: wrap; gap: 18px; margin-top: 16px;
+      font-size: 11px; letter-spacing: 0.06em; color: var(--ink-dim);
+    }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .legend i { width: 18px; height: 0; border-top: 2px solid currentColor; display: inline-block; }
+    .legend .rib { width: 14px; height: 9px; border-radius: 2px; display: inline-block; }
+
+    .grid {
+      max-width: 1480px; margin: 0 auto; padding: 8px 32px 64px;
+      display: grid; gap: 18px;
+      grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+    }
+    .card {
+      display: block; text-decoration: none; color: inherit;
+      background: var(--card);
+      border: 1px solid var(--stroke);
+      border-radius: 14px;
+      padding: 14px 16px 12px;
+      transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+    }
+    .card:hover {
+      transform: translateY(-3px);
+      border-color: rgba(255,255,255,0.28);
+      box-shadow: 0 14px 36px rgba(0,0,0,0.45);
+    }
+    .card .meta {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--ink-dim); margin-bottom: 8px;
+    }
+    .card .score {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; margin-bottom: 4px;
+    }
+    .card .team { display: inline-flex; align-items: center; gap: 7px; }
+    .card .team .abbr {
+      font-size: 19px; font-weight: 600; letter-spacing: 0.04em; color: var(--c);
+    }
+    .card .team .dot {
+      width: 10px; height: 10px; border-radius: 50%; background: var(--c);
+      box-shadow: 0 0 10px color-mix(in srgb, var(--c) 70%, transparent);
+    }
+    .card .nums {
+      font-size: 22px; font-weight: 200; letter-spacing: 0.04em;
+      font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
+    .card .nums b { font-weight: 500; }
+    .card .nums .dash { color: var(--ink-faint); margin: 0 5px; }
+    .card .fp { margin: 6px 0 4px; }
+    .card .fp svg { display: block; width: 100%; height: auto; }
+    .card .foot {
+      display: flex; justify-content: space-between; align-items: baseline;
+      font-size: 11px; letter-spacing: 0.04em; color: var(--ink-dim);
+      font-variant-numeric: tabular-nums;
+    }
+    .card .foot .k { color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.14em; font-size: 9.5px; }
+    .card .foot b { font-weight: 600; }
+  </style>
+</head>
+<body>
+  <header class="hd">
+    <div class="kick">FIFA World Cup 2026</div>
+    <h1>Pulse · <b>Match Gallery</b></h1>
+    <div class="sub">
+      Each match as a still seismograph: the momentum ribbon shows who pressed
+      when (home above the line, away below), and bright spikes mark every goal.
+      Click any match to open the cinematic 3D replay.
+    </div>
+    <div class="legend">
+      <span><span class="rib" style="background:#6cf"></span> home pressure</span>
+      <span><span class="rib" style="background:#f96"></span> away pressure</span>
+      <span style="color:#fff"><i></i> goal spike (minute)</span>
+    </div>
+    <div id="status">loading…</div>
+  </header>
+  <main id="grid" class="grid"></main>
+
+  <noscript>This gallery requires JavaScript (ES modules).</noscript>
+  <script type="module" src="matches.js"></script>
+</body>
+</html>
