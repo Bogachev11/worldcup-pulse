@@ -60,29 +60,32 @@ const tune = {
   ridgeSharp: 1.0,
   flowSpeed: 1.0,
   seamPoss: 0.6,
-  ownerDim: 0.46,
-  glow: 0.48,
+  ownerDim: 0.6,    // tint floor for the passive team (it relaxes toward neutral clay, not black)
+  glow: 0.08,       // ember at the contested seam — kept SUBTLE (material crease, not a light show)
   glowCol: '#ff6f1f',
   homeCol: '#6da0f2',
   awayCol: '#14f27f',
-  sat: 2.0,
+  sat: 1.0,         // natural saturation (no neon boost)
+  tint: 0.62,       // how strongly the clay is tinted by the team colour
+  clay: '#6a6560',  // neutral clay/stone base the team colour tints
   light: 0.32,
   amb: 0.26,
   tex: 0.54,
   wobble: 0.47,
-  // cinematic additions
-  rough: 0.62,
-  metal: 0.08,
+  // material / render
+  rough: 0.85,      // matte clay
+  metal: 0.0,
   env: 1.0,
   shadow: 0.8,
   ao: 1.0,
-  bloomStr: 0.62,
-  bloomRad: 0.55,
-  bloomThr: 0.62,
+  // post (kept gentle — material/light should carry it, not effects)
+  bloomStr: 0.12,
+  bloomRad: 0.5,
+  bloomThr: 0.85,
   vig: 0.5,
   expo: 1.0,
   contr: 1.06,
-  gsat: 1.04,
+  gsat: 1.0,
 };
 
 // transient eruption bumps that decay (built lazily as clock passes goals/shots)
@@ -236,6 +239,8 @@ function buildHeightfield() {
     uGlow: { value: tune.glow },
     uGlowCol: { value: new THREE.Color(tune.glowCol) },
     uSat: { value: tune.sat },
+    uClay: { value: new THREE.Color(tune.clay) },
+    uTint: { value: tune.tint },
     uTex: { value: tune.tex },
     uWobble: { value: tune.wobble },
     uAO: { value: tune.ao },
@@ -300,6 +305,8 @@ function buildHeightfield() {
       uniform float uGlow;
       uniform vec3 uGlowCol;
       uniform float uSat;
+      uniform vec3 uClay;
+      uniform float uTint;
       uniform float uTex;
       uniform float uWobble;
       uniform float uAO;
@@ -334,16 +341,19 @@ function buildHeightfield() {
         float side = smoothstep(uFront - 0.04, uFront + 0.04, warpX);
         vec3 team = mix(uHome, uAway, side);
 
-        // saturation boost (kills muddy look)
+        // gentle saturation control (natural, not neon)
         float lum = dot(team, vec3(0.299, 0.587, 0.114));
         team = max(mix(vec3(lum), team, uSat), 0.0);
 
-        // POSSESSION GATE (H2): possessing side bright, passive dims to uDim.
+        // NATURAL MATERIAL: the surface is a believable clay/stone (uClay) that is
+        // only TINTED by the owning team's colour. Possession sets how strongly it
+        // is tinted — the passive side relaxes toward neutral clay (floor uDim),
+        // so ownership still reads without neon or going black.
         float possActive = mix(1.0 - uPoss, uPoss, side);
-        float possGate = mix(uDim, 1.0, possActive);
-        vec3 baseCol = team * possGate;
+        float tintAmt = clamp(uTint * mix(uDim, 1.0, possActive), 0.0, 1.0);
+        vec3 baseCol = mix(uClay, team, tintAmt);
 
-        // CLAY TEXTURE — churning multi-octave marble, amount = uTex.
+        // subtle clay micro-texture, amount = uTex.
         float marble = fbm7(vUvN * 22.0 + vec2(0.0, uTime*0.05));
         baseCol *= (1.0 - 0.5*uTex) + uTex*marble;
 
@@ -661,6 +671,8 @@ function applyLookUniforms() {
   u.uGlow.value = tune.glow;
   u.uGlowCol.value.set(tune.glowCol);
   u.uSat.value = tune.sat;
+  u.uClay.value.set(tune.clay);
+  u.uTint.value = tune.tint;
   u.uTex.value = tune.tex;
   u.uWobble.value = tune.wobble;
   u.uAO.value = tune.ao;
@@ -755,6 +767,7 @@ function bindUI() {
   // colour
   bindSlider('ownerdim', 'ownerdimV', (v) => { tune.ownerDim = v; return v.toFixed(2); });
   bindSlider('sat', 'satV', (v) => { tune.sat = v; return v.toFixed(2); });
+  bindSlider('tint', 'tintV', (v) => { tune.tint = v; return v.toFixed(2); });
   bindSlider('tex', 'texV', (v) => { tune.tex = v; return v.toFixed(2); });
   bindSlider('glow', 'glowV', (v) => { tune.glow = v; return v.toFixed(2); });
   // material
@@ -774,6 +787,15 @@ function bindUI() {
   bindSlider('expo', 'expoV', (v) => { tune.expo = v; return v.toFixed(2); });
   bindSlider('contr', 'contrV', (v) => { tune.contr = v; return v.toFixed(2); });
   bindSlider('gsat', 'gsatV', (v) => { tune.gsat = v; return v.toFixed(2); });
+
+  // clay (material base) colour picker
+  const cl = el('claycol');
+  if (cl) {
+    cl.value = tune.clay;
+    const applyCl = () => { tune.clay = cl.value; if (material) material.userData.u.uClay.value.set(cl.value); };
+    cl.addEventListener('input', applyCl);
+    applyCl();
+  }
 
   // glow colour picker
   const gc = el('glowcol');
@@ -828,7 +850,8 @@ function settingsBlob() {
       speed: r2(tune.speed), heightScale: r2(tune.heightScale), turbulence: r2(tune.turbulence),
       ridgeSharp: r2(tune.ridgeSharp), flowSpeed: r2(tune.flowSpeed),
       seamPoss: r2(tune.seamPoss), wobble: r2(tune.wobble), ownerDim: r2(tune.ownerDim),
-      sat: r2(tune.sat), light: r2(tune.light), amb: r2(tune.amb), tex: r2(tune.tex),
+      sat: r2(tune.sat), tint: r2(tune.tint), clay: tune.clay,
+      light: r2(tune.light), amb: r2(tune.amb), tex: r2(tune.tex),
       glow: r2(tune.glow), glowCol: tune.glowCol,
       homeCol: (el('homecol') && el('homecol').value) || tune.homeCol,
       awayCol: (el('awaycol') && el('awaycol').value) || tune.awayCol,
