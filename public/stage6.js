@@ -56,12 +56,12 @@ const tune = {
   ownerDim: 0.46,   // brightness floor of the team NOT currently in possession
   glow: 0.48,       // glowing-crest highlight amount (the bright "высветленный" special-effect)
   glowCol: '#ff6f1f', // glow / crest highlight colour (default fiery)
-  homeCol: null,    // home team colour override (null = use the data team colour)
-  awayCol: null,    // away team colour override
+  homeCol: '#6da0f2', // home team colour (override; null would use the data colour)
+  awayCol: '#14f27f', // away team colour
   sat: 2.0,         // colour saturation boost
   light: 0.32,      // key/fill light intensity
   amb: 0.26,        // ambient floor
-  tex: 0.9,         // clay texture (marble) amount
+  tex: 0.54,        // clay texture (marble) amount
   wobble: 0.47,     // organic churn of the colour seam
 };
 
