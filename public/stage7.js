@@ -63,8 +63,8 @@ const tune = {
   ownerDim: 0.64,   // tint floor for the passive team (it relaxes toward neutral clay, not black)
   glow: 0.42,       // ember ceiling — gentle quadratic curve + tied to real match intensity
   glowCol: '#f0d8c1',
-  homeCol: '#396dc0',
-  awayCol: '#99ffca',
+  homeCol: null,    // null = use THIS match's real team colour (vivid-lifted); pickers override per session
+  awayCol: null,
   sat: 0.86,        // natural saturation (no neon boost)
   tint: 1.0,        // how strongly the clay is tinted by the team colour
   clay: '#6a6560',  // neutral clay/stone base the team colour tints
