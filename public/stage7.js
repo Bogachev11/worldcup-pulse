@@ -72,7 +72,7 @@ const tune = {
   lightCol: '#ffffff', // key-light colour
   amb: 0.26,
   tex: 0.86,
-  wobble: 0.21,
+  wobble: 0.42,
   // SOLID BODY + SURFACE PATTERN (fine volumetric mesh)
   thickness: 0.2,   // extruded block depth: skirt walls drop to y=-thickness, flat base cap
   pattern: 0,       // surface pattern: 0 grid · 1 weave · 2 lines · 3 dots · 4 hex · 5 grain
@@ -441,11 +441,13 @@ function buildHeightfield() {
       {
         // OWNERSHIP — seam (uFront) tracks live possession+momentum, boundary
         // domain-warped by two noise scales (broad warp + fine ripple teeth).
-        float warpBroad = fbm7(vUvN * vec2(3.0, 5.0) + vec2(uTime*0.06, uTime*0.045));
-        float warpFine  = fbm7(vUvN * vec2(13.0, 19.0) + vec2(-uTime*0.16, uTime*0.12));
-        float warp = mix(warpBroad, warpFine, 0.4);
-        float warpX = vUvN.x + uWobble * (warp - 0.5);
-        float side = smoothstep(uFront - 0.04, uFront + 0.04, warpX);
+        float warpBroad = fbm7(vUvN * vec2(2.0, 3.2) + vec2(uTime*0.06, uTime*0.045));
+        float warpFine  = fbm7(vUvN * vec2(11.0, 16.0) + vec2(-uTime*0.16, uTime*0.12));
+        float warp = mix(warpBroad, warpFine, 0.35);
+        // amplified meander so even a modest wobble value SNAKES the ownership
+        // boundary organically (not a straight diagonal line).
+        float warpX = vUvN.x + uWobble * (warp - 0.5) * 1.7;
+        float side = smoothstep(uFront - 0.06, uFront + 0.06, warpX);
         vec3 team = mix(uHome, uAway, side);
 
         // gentle saturation control (natural, not neon)
