@@ -25,6 +25,11 @@ import { clamp, lerp, smoothstep, fbm, buildModel, at, rgb01, xgUpTo } from './c
 const ID = new URLSearchParams(location.search).get('id') || '1953888';
 const el = (id) => document.getElementById(id);
 
+// Per-abbreviation team-colour OVERRIDE. If a team's abbr appears here, that hex
+// is used for it instead of its per-match data colour (the session colour pickers
+// still override on top). Everyone else keeps their per-match colour.
+const TEAM_COL = { FRA: '#387ef0' };
+
 // baked-in default camera (user-tuned)
 const DEFAULT_CAM = { pos: [-11.962, 18.664, 17.842], target: [-0.621, 1.826, 0.268] };
 function applyDefaultCamera() {
@@ -88,6 +93,10 @@ const tune = {
   // GOAL-ENTRY RINGS (contracting, scoring-team colour, flat on the cloth)
   ringSize: 1.0,    // settled-ring size multiplier
   ringStr: 1.6,     // ring emissive brightness multiplier
+  // SHOT DOTS + Z (height) controls for shots and goals
+  shotSize: 1.0,    // shot-dot radius multiplier
+  shotZ: 1.0,       // multiplier on shot dots' onGoalY→worldY mapping
+  goalZ: 1.0,       // multiplier on the goal rings' onGoalY→worldY mapping
   // material / render
   rough: 1.0,
   metal: 0.81,
@@ -115,6 +124,13 @@ let goalRings = [];                       // [{ goal, mesh, mat, u, v, y }]
 const RING_GROW_LIFE = 5.0;               // match-minutes over which the ring contracts
 const RING_R_BIG = 2.6;                   // start radius (world units)
 const RING_R_SMALL = 0.6;                 // settled radius (world units)
+
+// SHOT DOTS: one small emissive sphere per shot (ALL shots, goals included),
+// placed at the goal mouth exactly like the goal rings. Smaller + dimmer than the
+// rings so the goals still dominate. [{ shot, mesh, mat, u, v, ogy }]
+let shotDots = [];
+const SHOT_FADE_LIFE = 0.6;               // match-minutes to fade in after the shot
+const SHOT_R = 0.16;                       // base dot radius (world units)
 
 // ---- boot -------------------------------------------------------------------
 init().catch((e) => fail(e.message || String(e)));
@@ -637,13 +653,21 @@ const PITCH_FRAG = /* glsl */`
 // the RAW shots. model.shots is built as raw.shots.filter(Number.isFinite(x)).map(...)
 // — same order — so the isGoal entries line up; we also keep team+minute as a guard.
 function attachGoalMouth(raw) {
-  const rawGoals = (raw.shots || []).filter((s) => Number.isFinite(s.x) && s.isGoal);
-  const modelGoals = (model.shots || []).filter((s) => s.isGoal);
-  for (let i = 0; i < modelGoals.length; i++) {
-    const r = rawGoals[i] || rawGoals.find((g) => g.team === modelGoals[i].team && (Number(g.minute) || 0) === modelGoals[i].minute);
+  // model.shots is built as raw.shots.filter(Number.isFinite(x)).map(normShot) —
+  // SAME order — so the goal-mouth crossing (onGoalX/onGoalY) dropped by normShot
+  // lines up by index. Attach onto EVERY shot (goals AND off-target shots) so the
+  // shot-dot layer can place all of them; the goal rings reuse the same fields.
+  const rawShots = (raw.shots || []).filter((s) => Number.isFinite(s.x));
+  const modelShots = model.shots || [];
+  for (let i = 0; i < modelShots.length; i++) {
+    let r = rawShots[i];
+    // guard: if order ever drifts, fall back to a team+minute match.
+    if (!r || r.team !== modelShots[i].team || (Number(r.minute) || 0) !== modelShots[i].minute) {
+      r = rawShots.find((g) => g.team === modelShots[i].team && (Number(g.minute) || 0) === modelShots[i].minute) || r;
+    }
     if (r) {
-      modelGoals[i].onGoalX = Number.isFinite(r.onGoalX) ? r.onGoalX : null;
-      modelGoals[i].onGoalY = Number.isFinite(r.onGoalY) ? r.onGoalY : null;
+      modelShots[i].onGoalX = Number.isFinite(r.onGoalX) ? r.onGoalX : null;
+      modelShots[i].onGoalY = Number.isFinite(r.onGoalY) ? r.onGoalY : null;
     }
   }
 }
@@ -662,8 +686,8 @@ function buildGoalRings() {
     const v = clamp(0.5 + sign * off * (mouthHalfV * 2), 0.04, 0.96);
 
     // CENTRE HEIGHT from onGoalY: 0 = ground, 1 ≈ crossbar (2.44m) → world units.
+    // Stored raw; the goalZ multiplier is applied live in updateGoalRings.
     const ogy = Number.isFinite(g.onGoalY) ? g.onGoalY : 0.0;
-    const y = clamp(ogy, 0, 1.2) * CROSSBAR_M * M2W;  // world Y above the y=0 plane
 
     const col = (g.team === 'home' ? uHome() : uAway()).clone();
     const mat = new THREE.MeshStandardMaterial({
@@ -684,8 +708,9 @@ function buildGoalRings() {
     m.renderOrder = 5;
     m.visible = false;
     scene.add(m);
-    goalRings.push({ goal: g, mesh: m, mat, u, v, y });
+    goalRings.push({ goal: g, mesh: m, mat, u, v, ogy });
   }
+  buildShotDots();
 }
 
 // Update every goal ring for the current clock. settled=true (scrub) snaps each
@@ -708,12 +733,74 @@ function updateGoalRings(settled) {
     // world Z (across width) and Y (height). Scale those, leave the normal (Z) 1.
     r.mesh.scale.set(radius, radius, 1);
     // stand at the goal mouth, centred at the goal's entry height above y=0.
-    r.mesh.position.set(worldX(r.u), r.y, worldZ(r.v));
+    // height: onGoalY → world Y (crossbar mapping) × the live goal-Z multiplier.
+    const y = clamp(r.ogy, 0, 1.2) * CROSSBAR_M * M2W * tune.goalZ;
+    r.mesh.position.set(worldX(r.u), y, worldZ(r.v));
     r.mat.emissiveIntensity = bright;
     r.mat.opacity = opacity;
     // keep the colour in sync with any live team-colour picker change
     r.mat.emissive.copy(g.team === 'home' ? uHome() : uAway());
     r.mesh.visible = true;
+  }
+}
+
+// ---- SHOT DOTS --------------------------------------------------------------
+// One small emissive sphere per shot in model.shots (ALL 17, goals included).
+// Placed at the goal mouth with the SAME convention as the goal rings:
+//   along length u : home → u≈1 (away end), away → u≈0 (home end).
+//   across width v : 0.5 + sign·((onGoalX−1)/2)·(7.32/68), away frame mirrored.
+//   height (world Y): onGoalY × 2.44 × (WORLD_Z/68) × shotZ — same metre→world
+//                     mapping the rings use, scaled by the live shot-Z control.
+// Off-target shots (onGoalX up to ~1.9, onGoalY up to ~0.7) intentionally spread
+// around / above the goal frame — it reads as a real shot map. Dots are smaller +
+// dimmer than the goal rings so goals still dominate.
+function buildShotDots() {
+  shotDots = [];
+  const shots = model.shots || [];
+  const mouthFracV = 7.32 / 68;                       // goal mouth as a fraction of width
+  // one shared unit sphere geometry; per-dot material for team colour + fade.
+  const geo = new THREE.SphereGeometry(1.0, 18, 14);
+  for (const s of shots) {
+    const u = s.team === 'home' ? 0.985 : 0.015;       // attacking goal line (like rings)
+    const ogx = Number.isFinite(s.onGoalX) ? s.onGoalX : 1.0;
+    const sign = s.team === 'home' ? 1 : -1;           // away frame mirrored → flip
+    const v = clamp(0.5 + sign * ((ogx - 1) / 2) * mouthFracV, 0.01, 0.99);
+    const ogy = Number.isFinite(s.onGoalY) ? s.onGoalY : 0.0;
+    const col = (s.team === 'home' ? uHome() : uAway()).clone();
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x000000,
+      emissive: col,
+      emissiveIntensity: 1.5,                          // dimmer than goal rings (2.2–5)
+      roughness: 0.5, metalness: 0.0,
+      transparent: true, opacity: 0.0,
+      depthWrite: false,
+    });
+    const m = new THREE.Mesh(geo, mat);
+    m.renderOrder = 4;                                 // just under the goal rings (5)
+    m.visible = false;
+    scene.add(m);
+    shotDots.push({ shot: s, mesh: m, mat, u, v, ogy });
+  }
+}
+
+// Show every shot dot up to the current clock. Brief fade-in at its minute, then
+// persists (no contraction — that's the goal ring's job). settled=true (scrub)
+// snaps each past shot fully visible immediately.
+function updateShotDots(settled) {
+  if (!shotDots.length) return;
+  for (const d of shotDots) {
+    const s = d.shot;
+    if (clock < s.t) { d.mesh.visible = false; continue; }
+    const age = clock - s.t;
+    const fade = settled ? 1.0 : clamp(age / SHOT_FADE_LIFE, 0, 1);
+    const radius = SHOT_R * tune.shotSize;
+    const y = clamp(d.ogy, 0, 1.2) * CROSSBAR_M * M2W * tune.shotZ;
+    d.mesh.scale.setScalar(radius);
+    d.mesh.position.set(worldX(d.u), y, worldZ(d.v));
+    d.mat.opacity = lerp(0.0, 0.92, fade);
+    // keep colour synced with live team-colour picker changes
+    d.mat.emissive.copy(s.team === 'home' ? uHome() : uAway());
+    d.mesh.visible = true;
   }
 }
 
@@ -790,10 +877,13 @@ function uHome() { return material.userData.u.uHome.value; }
 function uAway() { return material.userData.u.uAway.value; }
 function applyTeamColors() {
   const h = vivid(model.home.rgb), a = vivid(model.away.rgb);
-  const hHex = tune.homeCol || rgbToHex(h);
-  const aHex = tune.awayCol || rgbToHex(a);
-  if (tune.homeCol) uHome().set(hHex); else uHome().setRGB(h[0], h[1], h[2]);
-  if (tune.awayCol) uAway().set(aHex); else uAway().setRGB(a[0], a[1], a[2]);
+  // per-abbr override (e.g. FRA → #387ef0); session pickers still win on top.
+  const hOver = TEAM_COL[model.home.abbr] || null;
+  const aOver = TEAM_COL[model.away.abbr] || null;
+  const hHex = tune.homeCol || hOver || rgbToHex(h);
+  const aHex = tune.awayCol || aOver || rgbToHex(a);
+  if (tune.homeCol || hOver) uHome().set(hHex); else uHome().setRGB(h[0], h[1], h[2]);
+  if (tune.awayCol || aOver) uAway().set(aHex); else uAway().setRGB(a[0], a[1], a[2]);
   const hc = el('homecol'), ac = el('awaycol');
   if (hc) hc.value = hHex; if (ac) ac.value = aHex;
   document.documentElement.style.setProperty('--home-color', hHex);
@@ -978,6 +1068,7 @@ function loop(now) {
   }
 
   updateGoalRings(false);
+  updateShotDots(false);
 
   controls.update();
   composer.render();
@@ -1022,6 +1113,7 @@ window.__setClock = (min) => {
     applyLookUniforms();
   }
   updateGoalRings(true);   // scrub → show each past goal's ring in its settled small state
+  updateShotDots(true);    // scrub → show all shots up to this minute
   controls.update();
   composer.render();
   updateHud();
@@ -1153,6 +1245,10 @@ function bindUI() {
   // goal-entry rings
   bindSlider('ringSize', 'ringSizeV', (v) => { tune.ringSize = v; return v.toFixed(2); });
   bindSlider('ringStr', 'ringStrV', (v) => { tune.ringStr = v; return v.toFixed(2); });
+  // shots · goals (dot size + Z height for shots and goals)
+  bindSlider('shotSize', 'shotSizeV', (v) => { tune.shotSize = v; return v.toFixed(2); });
+  bindSlider('shotZ', 'shotZV', (v) => { tune.shotZ = v; return v.toFixed(2); });
+  bindSlider('goalZ', 'goalZV', (v) => { tune.goalZ = v; return v.toFixed(2); });
   // surface pattern selector
   const pat = el('pattern');
   if (pat) {
@@ -1254,6 +1350,7 @@ function settingsBlob() {
       thickness: r2(tune.thickness), pattern: tune.pattern,
       detail: r2(tune.detail), detailScale: r2(tune.detailScale), lines: r2(tune.lines),
       ringSize: r2(tune.ringSize), ringStr: r2(tune.ringStr),
+      shotSize: r2(tune.shotSize), shotZ: r2(tune.shotZ), goalZ: r2(tune.goalZ),
       bloomStr: r2(tune.bloomStr), bloomRad: r2(tune.bloomRad), bloomThr: r2(tune.bloomThr),
       vig: r2(tune.vig), expo: r2(tune.expo), contr: r2(tune.contr), gsat: r2(tune.gsat),
     },
