@@ -678,21 +678,22 @@ function applyTeamColors() {
 // ============================================================================
 // THE SIMULATION — identical to stage6 (real data only).
 // ============================================================================
-const A_INSTANT = 0.34;   // live momentum push (raised so attacking surges sweep the seam)
+const A_INSTANT = 0.27;   // live momentum push (gentler so swings aren't twitchy)
 const B_ACCUM = 0.22;
 const H_MAX = 0.9;
 const BASE_AMP = 0.05;
 const TURB_SCALE = 0.55;
 const RIDGE_H = 1.3;
 const RIDGE_W = 0.07;
+const SEAM_EASE = 1.8;    // how fast the seam's dynamic part glides to its target (lower = softer)
 
 let permFrontShove = 0;
-let attackPush = 0;       // transient seam surge from recent shots (a wave crashing on the attacked goal)
+let seamDyn = 0;          // SMOOTHED dynamic seam offset (momentum + attack surge), eased per frame
 
 // A shot is an attack on a goal: away shots shove the seam toward the HOME goal
 // (x→0, green crashes onto the blue goal), home shots toward the away goal (x→1).
-// Decays over a few match-minutes → a wave that surges in then recedes. Real data.
-const PUSH_LIFE = 5;      // match-minutes
+// Swells in then recedes over a few match-minutes — softened so it's not abrupt.
+const PUSH_LIFE = 6;      // match-minutes
 function attackPushAt(t) {
   let s = 0;
   for (let i = 0; i < model.eruptions.length; i++) {
@@ -700,22 +701,25 @@ function attackPushAt(t) {
     if (e.t > t) break;                       // shots are time-sorted
     const age = t - e.t;
     if (age > PUSH_LIFE) continue;
-    const rise = smoothstep(0, 0.4, age);     // quick swell
-    const fall = 1 - smoothstep(PUSH_LIFE * 0.35, PUSH_LIFE, age);
+    const rise = smoothstep(0, 1.4, age);     // gentle swell (was a quick snap)
+    const fall = 1 - smoothstep(PUSH_LIFE * 0.5, PUSH_LIFE, age);
     const w = (0.35 + (e.xg || 0) * 1.6) * (e.isGoal ? 1.7 : 1.0);
     s += (e.team === 'away' ? -1 : 1) * w * rise * fall;
   }
-  return clamp(s * 0.6, -0.6, 0.6);
+  return clamp(s * 0.48, -0.55, 0.55);
+}
+// target for the dynamic seam offset (eased into seamDyn each frame)
+function seamDynTarget(t) {
+  return A_INSTANT * at(model.series.mom, t, model.STEP) + attackPushAt(t);
 }
 
 function frontAt(yN, t) {
-  const mom = at(model.series.mom, t, model.STEP);
   const possHomeLive = clamp(at(model.series.possHome, t, model.STEP), 0.05, 0.95);
   const wave = (fbm(yN * 2.2, 0.0, t * 0.03, 3)) * 0.06;
   const base = lerp(0.5, possHomeLive, clamp(tune.seamPoss, 0, 1));
-  // momentum + the transient attack surge can now sweep the seam all the way onto
-  // a goal (clamp widened) — so green waves DO reach the blue goal when Senegal attacks.
-  return clamp(base + A_INSTANT * mom + attackPush + wave, 0.06, 0.94);
+  // possession base (already smooth) + the EASED dynamic offset (momentum + attack
+  // surge). The easing makes the back-and-forth glide instead of snapping.
+  return clamp(base + seamDyn + wave, 0.06, 0.94);
 }
 
 function syncEruptions(t) {
@@ -759,7 +763,6 @@ function eruptionAt(xN, yN, t) {
 
 function computeHeight(t) {
   syncEruptions(t);
-  attackPush = attackPushAt(t);   // refresh the transient seam surge (used by frontAt)
   const S = model.series;
   const intensity = at(S.intensity, t, model.STEP);
   const cumPH = at(S.cumPossHome, t, model.STEP);
@@ -823,6 +826,12 @@ function loop(now) {
     if (clock >= model.duration) { clock = model.duration; playing = false; el('play').textContent = '▶ play'; }
   }
 
+  // glide the seam's dynamic part toward its target (softens the back-and-forth)
+  if (model) {
+    const target = seamDynTarget(clock);
+    seamDyn += (target - seamDyn) * (1 - Math.exp(-dt * SEAM_EASE));
+  }
+
   simAccum += dt;
   if (model && (simAccum >= 1 / 30 || lastSimT < 0)) { simAccum = 0; computeHeight(clock); }
 
@@ -860,6 +869,7 @@ window.__setClock = (min) => {
   playing = false;
   const playBtn = el('play'); if (playBtn) playBtn.textContent = '▶ play';
   lastSimT = -1;
+  seamDyn = seamDynTarget(clock);   // snap (scrub shows the right seam position immediately)
   computeHeight(clock);
   if (material) {
     const u = material.userData.u;
