@@ -150,6 +150,7 @@ async function init() {
   setupComposer();
   bindUI();
   setupHudLayout();
+  setupSectionCopy();
   applyTeamColors();
   applyLookUniforms();
 
@@ -624,8 +625,6 @@ const PITCH_FRAG = /* glsl */`
       vec2 P = vec2(uv.x * PL, uv.y * PW);
       float outside = (dir > 0.0) ? step(pax, P.x) : step(P.x, pax);
       c = max(c, arc * outside);
-      c = max(c, ring7(uv, vec2(gx, inset),       1.0, hw));            // corner arcs
-      c = max(c, ring7(uv, vec2(gx, PW - inset),  1.0, hw));
     }
     return clamp(c, 0.0, 1.0);
   }
@@ -1044,14 +1043,23 @@ function onResize() {
 // ---- main loop --------------------------------------------------------------
 let lastNow = performance.now();
 let simAccum = 0;
+let ended = false;        // reached full time (drives the calm-down settle)
+let calm = 0;             // 0 normal .. 1 fully settled (waves died down)
+const CALM_TIME = 4.0;    // real seconds for the post-match settle
 function loop(now) {
   const dt = Math.min(0.1, Math.max(0, (now - lastNow) / 1000));
   lastNow = now;
 
   if (model && playing) {
     clock += dt * tune.speed;
-    if (clock >= model.duration) { clock = model.duration; playing = false; el('play').textContent = '▶ play'; }
+    if (clock >= model.duration) { clock = model.duration; playing = false; ended = true; el('play').textContent = '▶ play'; }
   }
+
+  // FULL-TIME SETTLE: after the final whistle don't freeze the chaotic peak —
+  // let the waves die down (relief eases flat, the ember fades) over CALM_TIME
+  // real seconds; goal rings/dots stay. Reset if the user scrubs back.
+  if (model && clock < model.duration - 0.01) { ended = false; calm = 0; }
+  if (ended && calm < 1) calm = Math.min(1, calm + dt / CALM_TIME);
 
   // glide the seam's dynamic part toward its target (softens the back-and-forth)
   if (model) {
@@ -1060,11 +1068,18 @@ function loop(now) {
   }
 
   simAccum += dt;
+  // keep simulating while settling so the surface visibly calms, not just when playing
   if (model && (simAccum >= 1 / 30 || lastSimT < 0)) { simAccum = 0; computeHeight(clock); }
 
   if (material && model) {
     updateFrameUniforms(dt);
     applyLookUniforms();
+    if (calm > 0) {                                  // ease the surface to a calm, flat, quiet end
+      const u = material.userData.u;
+      const k = calm * calm * (3 - 2 * calm);        // smoothstep
+      u.uHScale.value *= (1 - 0.92 * k);
+      u.uGlow.value *= (1 - 0.95 * k);
+    }
   }
 
   updateGoalRings(false);
@@ -1366,6 +1381,35 @@ function bindSlider(id, valId, fn) {
   const apply = () => { v.textContent = fn(+s.value); };
   s.addEventListener('input', apply);
   apply();
+}
+
+// Per-section "copy" button: copies just that block's controls (every input/select
+// between this .sec header and the next) as JSON, so each block can be shared/baked
+// on its own. Walks the DOM so it always matches what's shown in the section.
+function setupSectionCopy() {
+  const panel = el('panel');
+  if (!panel) return;
+  for (const sec of panel.querySelectorAll('.sec')) {
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'seccopy'; btn.textContent = 'copy';
+    sec.appendChild(btn);
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const out = {};
+      let n = sec.nextElementSibling;
+      while (n && !n.classList.contains('sec')) {
+        for (const inp of n.querySelectorAll('input, select')) {
+          if (!inp.id) continue;
+          out[inp.id] = (inp.type === 'range') ? +inp.value : inp.value;
+        }
+        n = n.nextElementSibling;
+      }
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(out));
+        btn.textContent = '✓'; setTimeout(() => { btn.textContent = 'copy'; }, 1000);
+      } catch { btn.textContent = JSON.stringify(out).slice(0, 0) || 'err'; setTimeout(() => { btn.textContent = 'copy'; }, 1200); }
+    });
+  }
 }
 
 // ---- draggable / resizable HUD layout --------------------------------------

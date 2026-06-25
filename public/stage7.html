@@ -41,7 +41,12 @@
     .pnl input[type=range] { flex: 1; accent-color: #6aa0ff; }
     .pnl .val { min-width: 52px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
     .pnl .sec { margin-top: 4px; color: #9fd; font-size: 10px; letter-spacing: 0.18em;
-      text-transform: uppercase; border-top: 1px solid var(--stroke); padding-top: 7px; }
+      text-transform: uppercase; border-top: 1px solid var(--stroke); padding-top: 7px;
+      display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .pnl .seccopy { cursor: pointer; font-size: 9px; font-weight: 600; letter-spacing: 0.1em;
+      color: #9fd; background: rgba(255,255,255,0.06); border: 1px solid var(--stroke);
+      border-radius: 5px; padding: 2px 7px; text-transform: uppercase; }
+    .pnl .seccopy:hover { border-color: rgba(255,255,255,0.4); }
     #title2 { font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink); }
     #camread { min-width: auto; color: #9fd; letter-spacing: 0.06em; }
     /* free-floating, individually draggable + resizable HUD widgets */
