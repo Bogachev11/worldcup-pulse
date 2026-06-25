@@ -74,10 +74,14 @@ const tune = {
   tex: 0.86,
   wobble: 0.42,
   // SOLID BODY + SURFACE PATTERN (fine volumetric mesh)
-  thickness: 0.4,   // extruded block depth: skirt walls drop to y=-thickness, flat base cap
+  thickness: 0,     // THIN CLOTH: 0 = no block body (skirt collapses to surface); raise for a solid extruded block
   pattern: 4,       // surface pattern: 0 grid · 1 weave · 2 lines · 3 dots · 4 hex · 5 grain
   detail: 1.1,      // pattern depth/strength
   detailScale: 2.58,// pattern density (frequency)
+  lines: 0.6,       // football PITCH MARKINGS strength on the top surface (0 = off)
+  // GOAL-ENTRY RINGS (contracting, scoring-team colour, flat on the cloth)
+  ringSize: 1.0,    // settled-ring size multiplier
+  ringStr: 1.0,     // ring emissive brightness multiplier
   // material / render
   rough: 1.0,
   metal: 0.81,
@@ -98,6 +102,13 @@ const tune = {
 let activeEruptions = [];
 let eruptionCursor = 0;
 
+// GOAL-ENTRY RINGS: one flat ring mesh per goal, contracting big→small in the
+// scoring team's colour, lying on the relief surface at the goal-line crossing.
+let goalRings = [];                       // [{ goal, mesh, mat, uPos, vPos }]
+const RING_GROW_LIFE = 5.0;               // match-minutes over which the ring contracts
+const RING_R_BIG = 1.7;                   // start radius (world units)
+const RING_R_SMALL = 0.34;                // settled radius (world units)
+
 // ---- boot -------------------------------------------------------------------
 init().catch((e) => fail(e.message || String(e)));
 
@@ -109,6 +120,7 @@ async function init() {
     return r.json();
   });
   model = buildModel(raw);
+  attachGoalMouth(raw);   // carry onGoalX/onGoalY from the raw shots onto model goals
 
   setupThree();
   buildHeightfield();
@@ -310,6 +322,7 @@ function buildHeightfield() {
     uDetail: { value: tune.detail },
     uDetailScale: { value: tune.detailScale },
     uPattern: { value: tune.pattern },
+    uLines: { value: tune.lines },     // football pitch-marking line strength (top surface only)
   };
   material.userData.u = u;
 
@@ -396,6 +409,7 @@ function buildHeightfield() {
       uniform float uDetail;        // surface pattern depth/strength
       uniform float uDetailScale;   // surface pattern density (frequency)
       uniform float uPattern;       // which pattern (0 grid · 1 weave · 2 lines · 3 dots · 4 hex · 5 grain)
+      uniform float uLines;         // football pitch-marking line strength
       varying float vHd;
       varying vec2 vUvN;
       varying float vBaseMix;       // 0 displaced top .. 1 base (side-wall body)
@@ -434,6 +448,85 @@ function buildHeightfield() {
           return clamp(0.5 + 0.22*(a+b+c), 0.0, 1.0);
         }
         return fbm7(p * 0.9);            // GRAIN — smooth organic
+      }
+
+      // ---- FOOTBALL PITCH MARKINGS -------------------------------------------
+      // Standard FIFA-ish pitch (105m × 68m) drawn in normalised pitch uv
+      // (u = length 0..1, v = width 0..1). Anti-aliased to ~1px via fwidth so the
+      // lines stay crisp and don't shimmer at any distance. Returns line coverage
+      // in [0,1]. Pure overlay — sits UNDER the data colour intensity.
+      const float PL = 105.0;   // pitch length (m)
+      const float PW = 68.0;    // pitch width (m)
+      // a straight segment in uv between two metre points, with metre half-width.
+      float seg7(vec2 puv, vec2 a, vec2 b, float halfW){
+        // work in metres so the line width is uniform on both axes.
+        vec2 P = vec2(puv.x * PL, puv.y * PW);
+        vec2 ab = b - a, ap = P - a;
+        float t = clamp(dot(ap, ab) / max(dot(ab, ab), 1e-5), 0.0, 1.0);
+        float d = length(P - (a + t * ab));
+        // convert metre distance to a screen-stable AA band using fwidth of P.
+        float aa = (fwidth(P.x) + fwidth(P.y)) * 0.5 + 1e-4;
+        return 1.0 - smoothstep(halfW, halfW + aa, d);
+      }
+      // rectangle outline (metres), half-width line.
+      float rect7(vec2 puv, vec2 lo, vec2 hi, float halfW){
+        float c = 0.0;
+        c = max(c, seg7(puv, vec2(lo.x, lo.y), vec2(hi.x, lo.y), halfW));
+        c = max(c, seg7(puv, vec2(hi.x, lo.y), vec2(hi.x, hi.y), halfW));
+        c = max(c, seg7(puv, vec2(hi.x, hi.y), vec2(lo.x, hi.y), halfW));
+        c = max(c, seg7(puv, vec2(lo.x, hi.y), vec2(lo.x, lo.y), halfW));
+        return c;
+      }
+      // circle/arc ring (metres), centre c, radius r, half-width.
+      float ring7(vec2 puv, vec2 cen, float r, float halfW){
+        vec2 P = vec2(puv.x * PL, puv.y * PW);
+        float d = abs(length(P - cen) - r);
+        float aa = (fwidth(P.x) + fwidth(P.y)) * 0.5 + 1e-4;
+        return 1.0 - smoothstep(halfW, halfW + aa, d);
+      }
+      float dot7(vec2 puv, vec2 cen, float r){
+        vec2 P = vec2(puv.x * PL, puv.y * PW);
+        float d = length(P - cen);
+        float aa = (fwidth(P.x) + fwidth(P.y)) * 0.5 + 1e-4;
+        return 1.0 - smoothstep(r, r + aa, d);
+      }
+      // full pitch-marking coverage at pitch uv.
+      float pitchLines7(vec2 uv){
+        float hw = 0.10;            // line half-width in metres (~0.12m FIFA line)
+        float inset = 1.6;          // pull the boundary a touch in from the cloth edge (m)
+        vec2 lo = vec2(inset, inset);
+        vec2 hi = vec2(PL - inset, PW - inset);
+        float c = 0.0;
+        // outer boundary
+        c = max(c, rect7(uv, lo, hi, hw));
+        // halfway line
+        c = max(c, seg7(uv, vec2(PL*0.5, lo.y), vec2(PL*0.5, hi.y), hw));
+        // centre circle (r 9.15m) + centre spot
+        c = max(c, ring7(uv, vec2(PL*0.5, PW*0.5), 9.15, hw));
+        c = max(c, dot7(uv, vec2(PL*0.5, PW*0.5), 0.35));
+        // penalty + goal areas, penalty spots & arcs — both ends.
+        for (int s = 0; s < 2; s++){
+          float dir = (s == 0) ? 1.0 : -1.0;
+          float gx  = (s == 0) ? inset : PL - inset;     // goal-line x (m)
+          // penalty area 16.5m deep × 40.32m wide
+          float pax = gx + dir * 16.5;
+          c = max(c, rect7(uv, vec2(min(gx,pax), PW*0.5 - 20.16), vec2(max(gx,pax), PW*0.5 + 20.16), hw));
+          // goal area 5.5m deep × 18.32m wide
+          float gax = gx + dir * 5.5;
+          c = max(c, rect7(uv, vec2(min(gx,gax), PW*0.5 - 9.16), vec2(max(gx,gax), PW*0.5 + 9.16), hw));
+          // penalty spot 11m from goal line
+          vec2 pSpot = vec2(gx + dir * 11.0, PW*0.5);
+          c = max(c, dot7(uv, pSpot, 0.35));
+          // penalty arc (r 9.15m around the spot) — only the part OUTSIDE the box.
+          float arc = ring7(uv, pSpot, 9.15, hw);
+          vec2 P = vec2(uv.x * PL, uv.y * PW);
+          float outside = (dir > 0.0) ? step(pax, P.x) : step(P.x, pax);
+          c = max(c, arc * outside);
+          // corner arcs (r 1.0m) at the two corners of this goal line
+          c = max(c, ring7(uv, vec2(gx, inset),       1.0, hw));
+          c = max(c, ring7(uv, vec2(gx, PW - inset),  1.0, hw));
+        }
+        return clamp(c, 0.0, 1.0);
       }
     ` + shader.fragmentShader;
 
@@ -489,6 +582,12 @@ function buildHeightfield() {
         // to the top colour. Top surface (vBaseMix=0) is untouched.
         float wall = clamp(vBaseMix, 0.0, 1.0);
         baseCol = mix(baseCol, baseCol * vec3(0.32, 0.34, 0.40), wall * wall * 0.85);
+
+        // FOOTBALL PITCH MARKINGS — faint white lines on the TOP surface only.
+        // Overlay (mix toward white) so the possession colour still shows through.
+        float topMaskL = 1.0 - clamp(vBaseMix, 0.0, 1.0);
+        float lines = pitchLines7(vUvN) * uLines * topMaskL;
+        baseCol = mix(baseCol, vec3(0.92, 0.94, 0.96), clamp(lines * 0.5, 0.0, 0.6));
 
         diffuseColor.rgb = baseCol;
       }
@@ -590,6 +689,92 @@ function buildHeightfield() {
   slab.position.y = -tune.thickness - 0.12;
   slab.receiveShadow = true;
   scene.add(slab);
+
+  buildGoalRings();
+}
+
+// Build one flat, emissive RingGeometry per GOAL, positioned at the goal-line
+// crossing point on the cloth. Real data: model.shots filtered to isGoal.
+//   along length u : home attacks → u≈1 (away end); away attacks → u≈0 (home end)
+//                    (matches the eruption convention max(e.x,0.7)/min(e.x,0.3))
+//   across width v : 7.32m goal mouth centred at v=0.5, placed by onGoalX (1=centre).
+//                    onGoalX is in the shooter's own attacking frame; away's frame
+//                    is mirrored in normShot (x=1-x, y=1-y) so we flip the away sign
+//                    to keep the ring inside the believable goal mouth.
+// claybattle's normShot drops the goal-mouth crossing point, so re-attach it from
+// the RAW shots. model.shots is built as raw.shots.filter(Number.isFinite(x)).map(...)
+// — same order — so the isGoal entries line up; we also keep team+minute as a guard.
+function attachGoalMouth(raw) {
+  const rawGoals = (raw.shots || []).filter((s) => Number.isFinite(s.x) && s.isGoal);
+  const modelGoals = (model.shots || []).filter((s) => s.isGoal);
+  for (let i = 0; i < modelGoals.length; i++) {
+    const r = rawGoals[i] || rawGoals.find((g) => g.team === modelGoals[i].team && (Number(g.minute) || 0) === modelGoals[i].minute);
+    if (r) {
+      modelGoals[i].onGoalX = Number.isFinite(r.onGoalX) ? r.onGoalX : null;
+      modelGoals[i].onGoalY = Number.isFinite(r.onGoalY) ? r.onGoalY : null;
+    }
+  }
+}
+
+function buildGoalRings() {
+  goalRings = [];
+  const goals = (model.shots || []).filter((s) => s.isGoal);
+  // goal mouth (7.32m) as a fraction of pitch WIDTH (68m), expressed in v.
+  const mouthHalfV = (7.32 / 68) * 0.5;
+  for (const g of goals) {
+    const u = g.team === 'home' ? 0.985 : 0.015;     // attacking goal line
+    // onGoalX 0..2 (1 = centre). Map offset-from-centre into the goal mouth in v.
+    const ogx = Number.isFinite(g.onGoalX) ? g.onGoalX : 1.0;
+    const off = (ogx - 1) / 2;                        // -0.5..0.5 across the mouth
+    const sign = g.team === 'home' ? 1 : -1;          // away frame mirrored → flip
+    const v = clamp(0.5 + sign * off * (mouthHalfV * 2), 0.04, 0.96);
+
+    const col = (g.team === 'home' ? uHome() : uAway()).clone();
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x000000,
+      emissive: col,
+      emissiveIntensity: 2.4,
+      roughness: 0.5, metalness: 0.0,
+      transparent: true, opacity: 1.0,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    // unit ring; we re-scale per frame to animate the contraction.
+    const geo = new THREE.RingGeometry(0.78, 1.0, 96);
+    geo.rotateX(-Math.PI / 2);                        // lie flat on XZ
+    const m = new THREE.Mesh(geo, mat);
+    m.renderOrder = 5;
+    m.visible = false;
+    scene.add(m);
+    goalRings.push({ goal: g, mesh: m, mat, u, v });
+  }
+}
+
+// Update every goal ring for the current clock. settled=true (scrub) snaps each
+// past goal to its tidy small settled state; otherwise animates the contraction.
+function updateGoalRings(settled) {
+  if (!goalRings.length) return;
+  for (const r of goalRings) {
+    const g = r.goal;
+    if (clock < g.t) { r.mesh.visible = false; continue; }
+    const age = clock - g.t;                          // match-minutes since the goal
+    let p;                                            // 0 = just scored (big), 1 = settled
+    if (settled) p = 1.0;
+    else p = clamp(age / RING_GROW_LIFE, 0, 1);
+    const ease = p * p * (3 - 2 * p);                 // smoothstep contraction
+    const radius = lerp(RING_R_BIG, RING_R_SMALL, ease) * tune.ringSize;
+    // brightness: bright on spawn, easing to a faint-but-visible settled glow.
+    const bright = lerp(3.6, 1.3, ease) * tune.ringStr;
+    const opacity = lerp(0.96, 0.7, ease);
+    r.mesh.scale.set(radius, 1, radius);
+    const y = reliefHeightAt(r.u, r.v) + 0.08;        // sit just above the cloth/eruption
+    r.mesh.position.set(worldX(r.u), y, worldZ(r.v));
+    r.mat.emissiveIntensity = bright;
+    r.mat.opacity = opacity;
+    // keep the colour in sync with any live team-colour picker change
+    r.mat.emissive.copy(g.team === 'home' ? uHome() : uAway());
+    r.mesh.visible = true;
+  }
 }
 
 // ---- post-processing composer ----------------------------------------------
@@ -798,6 +983,24 @@ function computeHeight(t) {
   lastSimT = t;
 }
 
+// Sample the relief HEIGHT (world Y) at normalised pitch (u,v) — bilinear over
+// the height field, scaled by uHScale, so a ring can lie ON the undulating cloth.
+function reliefHeightAt(u, v) {
+  if (!heightData) return 0;
+  const fx = clamp(u, 0, 1) * (VX - 1);
+  const fy = clamp(v, 0, 1) * (VY - 1);
+  const i0 = Math.floor(fx), j0 = Math.floor(fy);
+  const i1 = Math.min(i0 + 1, VX - 1), j1 = Math.min(j0 + 1, VY - 1);
+  const tx = fx - i0, ty = fy - j0;
+  const h00 = heightData[j0 * VX + i0], h10 = heightData[j0 * VX + i1];
+  const h01 = heightData[j1 * VX + i0], h11 = heightData[j1 * VX + i1];
+  const h = lerp(lerp(h00, h10, tx), lerp(h01, h11, tx), ty);
+  return h * tune.heightScale;
+}
+// World X/Z from normalised pitch (u,v) — same mapping the plane/skirt use.
+const worldX = (u) => (u - 0.5) * WORLD_X;
+const worldZ = (v) => (0.5 - v) * WORLD_Z;
+
 // ---- resize -----------------------------------------------------------------
 function onResize() {
   const w = Math.max(1, window.innerWidth), h = Math.max(1, window.innerHeight);
@@ -839,6 +1042,8 @@ function loop(now) {
     updateFrameUniforms(dt);
     applyLookUniforms();
   }
+
+  updateGoalRings(false);
 
   controls.update();
   composer.render();
@@ -882,6 +1087,7 @@ window.__setClock = (min) => {
     u.uIntensity.value = clamp(at(model.series.intensity, clock, model.STEP), 0, 1);
     applyLookUniforms();
   }
+  updateGoalRings(true);   // scrub → show each past goal's ring in its settled small state
   controls.update();
   composer.render();
   updateHud();
@@ -907,6 +1113,7 @@ function applyLookUniforms() {
   u.uDetail.value = tune.detail;
   u.uDetailScale.value = tune.detailScale;
   u.uPattern.value = tune.pattern;
+  u.uLines.value = tune.lines;
   if (slab) slab.position.y = -th - 0.12;
 
   // PBR material
@@ -1010,6 +1217,10 @@ function bindUI() {
   bindSlider('thickness', 'thicknessV', (v) => { tune.thickness = v; return v.toFixed(2); });
   bindSlider('detail', 'detailV', (v) => { tune.detail = v; return v.toFixed(2); });
   bindSlider('detailScale', 'detailScaleV', (v) => { tune.detailScale = v; return v.toFixed(2); });
+  bindSlider('lines', 'linesV', (v) => { tune.lines = v; if (material) material.userData.u.uLines.value = v; return v.toFixed(2); });
+  // goal-entry rings
+  bindSlider('ringSize', 'ringSizeV', (v) => { tune.ringSize = v; return v.toFixed(2); });
+  bindSlider('ringStr', 'ringStrV', (v) => { tune.ringStr = v; return v.toFixed(2); });
   // surface pattern selector
   const pat = el('pattern');
   if (pat) {
@@ -1109,7 +1320,8 @@ function settingsBlob() {
       shadow: r2(tune.shadow), ao: r2(tune.ao),
       // solid body + surface pattern
       thickness: r2(tune.thickness), pattern: tune.pattern,
-      detail: r2(tune.detail), detailScale: r2(tune.detailScale),
+      detail: r2(tune.detail), detailScale: r2(tune.detailScale), lines: r2(tune.lines),
+      ringSize: r2(tune.ringSize), ringStr: r2(tune.ringStr),
       bloomStr: r2(tune.bloomStr), bloomRad: r2(tune.bloomRad), bloomThr: r2(tune.bloomThr),
       vig: r2(tune.vig), expo: r2(tune.expo), contr: r2(tune.contr), gsat: r2(tune.gsat),
     },
