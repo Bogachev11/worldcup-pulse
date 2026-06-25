@@ -39,12 +39,18 @@ const GY = 120;   // across width (y)
 const VX = GX + 1, VY = GY + 1;          // vertex counts
 const NV = VX * VY;
 const WORLD_X = 16, WORLD_Z = 9.6;       // pitch footprint (16:9.6 ~ pitch)
+// metre→world: pitch WIDTH (68m) maps onto WORLD_Z, so 1m = WORLD_Z/68 world units.
+// Goal heights (onGoalY, crossbar ≈ 2.44m) lift the rings off the y=0 plane by this.
+const M2W = WORLD_Z / 68;                 // metres → world units
+const CROSSBAR_M = 2.44;                  // goal crossbar height (m)
 
 // ---- scene state ------------------------------------------------------------
 let renderer, scene, camera, controls, composer;
 let bloomPass, gradePass, smaaPass;
 let heightTex, heightData;               // DataTexture (R32F) of per-vertex H
-let mesh, skirt, material, slab, keyLight;
+let mesh, material, keyLight;
+let pitchPlane, pitchMat;                 // static flat markings plane at y=0
+let heightBaseline = 0;                   // CPU-computed mean height → cloth straddles y=0
 let injected = null;                     // ref to the compiled onBeforeCompile shader.uniforms
 let model = null;                        // built data model
 let clock = 0, playing = true;
@@ -74,7 +80,7 @@ const tune = {
   tex: 0.86,
   wobble: 0.42,
   // SOLID BODY + SURFACE PATTERN (fine volumetric mesh)
-  thickness: 0,     // THIN CLOTH: 0 = no block body (skirt collapses to surface); raise for a solid extruded block
+  thickness: 0,     // NO-OP: the cloth is now a single thin sheet floating in air (no skirt/slab)
   pattern: 4,       // surface pattern: 0 grid · 1 weave · 2 lines · 3 dots · 4 hex · 5 grain
   detail: 1.1,      // pattern depth/strength
   detailScale: 2.58,// pattern density (frequency)
@@ -102,13 +108,13 @@ const tune = {
 let activeEruptions = [];
 let eruptionCursor = 0;
 
-// GOAL-ENTRY RINGS: one flat ring mesh per goal, contracting big→small in the
-// scoring team's colour, lying on the relief surface at the goal-line crossing.
-let goalRings = [];                       // [{ goal, mesh, mat, uPos, vPos }]
+// GOAL-ENTRY RINGS: one VERTICAL ring mesh per goal, standing in the goal-mouth
+// plane (disc normal points down the pitch length, ±X) at the height the goal was
+// scored. Contracts big→small in the scoring team's colour.
+let goalRings = [];                       // [{ goal, mesh, mat, u, v, y }]
 const RING_GROW_LIFE = 5.0;               // match-minutes over which the ring contracts
 const RING_R_BIG = 2.6;                   // start radius (world units)
 const RING_R_SMALL = 0.6;                 // settled radius (world units)
-const RING_LIFT = 0.7;                    // float this far ABOVE the relief peak so it never buries
 
 // ---- boot -------------------------------------------------------------------
 init().catch((e) => fail(e.message || String(e)));
@@ -227,62 +233,14 @@ function makeGradientTexture() {
   return tex;
 }
 
-// Build the SKIRT geometry: vertical wall quads around the 4 perimeter edges of
-// the displaced top plane PLUS a flat bottom cap, as one BufferGeometry that
-// SHARES the mesh material. Each TOP-ring vertex carries the EXACT plane-edge uv
-// (aBase=0) so the injected vertex shader displaces it by H(uv) identically to
-// the plane edge (walls meet the relief edge with no gap). Each BOTTOM vertex
-// (aBase=1) is pinned to y=-uThickness → the flat base. UV↔position mapping
-// mirrors PlaneGeometry(WORLD_X,WORLD_Z)+rotateX(-90°):
-//   localX = (u-0.5)*WORLD_X ;  localZ = (0.5-v)*WORLD_Z
-function buildSkirtGeometry(segX, segY) {
-  const pos = [], uvs = [], base = [], idx = [];
-  const X = (u) => (u - 0.5) * WORLD_X;
-  const Z = (v) => (0.5 - v) * WORLD_Z;
-
-  // One vertical quad for a perimeter edge (u0,v0)→(u1,v1). top0,top1,bot0,bot1.
-  const addWall = (u0, v0, u1, v1, flip) => {
-    const o = pos.length / 3;
-    const x0 = X(u0), z0 = Z(v0), x1 = X(u1), z1 = Z(v1);
-    pos.push(x0, 0, z0,  x1, 0, z1,  x0, 0, z0,  x1, 0, z1);
-    uvs.push(u0, v0,  u1, v1,  u0, v0,  u1, v1);
-    base.push(0, 0, 1, 1);                 // top, top, bottom, bottom
-    const t0 = o, t1 = o + 1, b0 = o + 2, b1 = o + 3;
-    if (!flip) idx.push(t0, b0, t1,  t1, b0, b1);
-    else       idx.push(t0, t1, b0,  t1, b1, b0);
-  };
-  // Walk the 4 edges at the SAME sample points the plane uses (segX/segY).
-  for (let i = 0; i < segX; i++) addWall(i / segX, 0, (i + 1) / segX, 0, false);          // v=0
-  for (let i = 0; i < segY; i++) addWall(1, i / segY, 1, (i + 1) / segY, false);          // u=1
-  for (let i = 0; i < segX; i++) addWall((segX - i) / segX, 1, (segX - i - 1) / segX, 1, false); // v=1
-  for (let i = 0; i < segY; i++) addWall(0, (segY - i) / segY, 0, (segY - i - 1) / segY, false); // u=0
-
-  // BOTTOM CAP — single quad at the base rectangle (all aBase=1 → y=-uThickness).
-  {
-    const o = pos.length / 3;
-    pos.push(X(0), 0, Z(0),  X(1), 0, Z(0),  X(1), 0, Z(1),  X(0), 0, Z(1));
-    uvs.push(0, 0,  1, 0,  1, 1,  0, 1);
-    base.push(1, 1, 1, 1);
-    idx.push(o, o + 1, o + 2,  o, o + 2, o + 3);
-  }
-
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-  g.setAttribute('aBase', new THREE.Float32BufferAttribute(base, 1));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(pos.length), 3));
-  g.setIndex(idx);
-  return g;
-}
-
 // ---- heightfield mesh: MeshStandardMaterial + onBeforeCompile injection ------
+// A SINGLE THIN SHEET (like stage2): one PlaneGeometry displaced by H(uv) in the
+// vertex shader — no skirt walls, no bottom cap, no base slab. It oscillates
+// AROUND y=0 (we subtract a CPU-computed baseline) so it weaves through the flat
+// markings plane at y=0.
 function buildHeightfield() {
   const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, GX, GY);
   geo.rotateX(-Math.PI / 2);              // lay flat: plane now in XZ, +Y up
-  // The plane is the TOP surface — every vertex is a displaced-top vertex
-  // (aBase=0). Supply the attribute explicitly so the SHARED material binds it
-  // for the plane too (never rely on a missing attribute defaulting to 0).
-  geo.setAttribute('aBase', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count), 1));
 
   heightData = new Float32Array(NV);
   heightTex = new THREE.DataTexture(heightData, VX, VY, THREE.RedFormat, THREE.FloatType);
@@ -302,6 +260,7 @@ function buildHeightfield() {
     uHeight: { value: heightTex },
     uTexel: { value: new THREE.Vector2(1 / VX, 1 / VY) },
     uHScale: { value: tune.heightScale },
+    uBaseline: { value: 0 },          // CPU mean height → sheet straddles y=0
     uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
     uHome: { value: new THREE.Color(0x335a9a) },
     uAway: { value: new THREE.Color(0x12a060) },
@@ -318,12 +277,10 @@ function buildHeightfield() {
     uAO: { value: tune.ao },
     uIntensity: { value: 0 },        // REAL match intensity (event rate) → drives the ember
     uTime: { value: 0 },
-    // SOLID BODY + MICRO-SURFACE
-    uThickness: { value: tune.thickness },
+    // MICRO-SURFACE
     uDetail: { value: tune.detail },
     uDetailScale: { value: tune.detailScale },
     uPattern: { value: tune.pattern },
-    uLines: { value: tune.lines },     // football pitch-marking line strength (top surface only)
   };
   material.userData.u = u;
 
@@ -331,62 +288,46 @@ function buildHeightfield() {
     Object.assign(shader.uniforms, u);
     injected = shader.uniforms;
 
-    // ---- VERTEX ----
+    // ---- VERTEX ----  (single thin sheet, like stage2)
     shader.vertexShader = `
       uniform sampler2D uHeight;
       uniform vec2 uTexel;
       uniform float uHScale;
+      uniform float uBaseline;        // subtract so the sheet straddles y=0
       uniform vec2 uWorld;
-      uniform float uThickness;       // SOLID BODY depth: base verts pin to y=-uThickness
-      attribute float aBase;          // 1.0 = bottom/base vertex, 0.0 = top/displaced
-      varying float vHd;
+      varying float vHd;              // raw displaced height (for colour/glow cues)
       varying vec2 vUvN;
-      varying float vBaseMix;         // 0 at the displaced top .. 1 at the base (wall shading)
       float H7(vec2 uv){
         float h = texture2D(uHeight, uv).r * uHScale;
         // NaN/Inf guard so the surface never opens see-through holes.
         if (!(h == h)) h = 0.0;
-        return clamp(h, 0.0, 40.0);
+        return h;                     // NO lower clamp: H may now go below 0
       }
     ` + shader.vertexShader;
 
-    // NORMAL: top verts get the finite-difference height normal; skirt walls get
-    // an outward horizontal normal (so they shade as lit solid faces, not black);
-    // the bottom cap points straight down.
+    // NORMAL: finite-difference height normal across the whole sheet.
     shader.vertexShader = shader.vertexShader.replace(
       '#include <beginnormal_vertex>',
       `#include <beginnormal_vertex>
         vUvN = uv;
-        vBaseMix = aBase;
-        if (aBase > 0.5) {
-          // base ring / bottom cap. Outward-down wall normal from the uv (which
-          // edge of the perimeter this vert sits on); interior bottom-cap verts
-          // (uv not on an edge) get a straight-down normal.
-          vec2 e = uv - vec2(0.5);
-          float onX = step(0.49, abs(e.x));    // u≈0 or u≈1 → side wall
-          float onZ = step(0.49, abs(e.y));    // v≈0 or v≈1 → side wall
-          vec3 wn = vec3(sign(e.x) * onX, -0.35, -sign(e.y) * onZ);
-          objectNormal = (onX + onZ > 0.5) ? normalize(wn) : vec3(0.0, -1.0, 0.0);
-        } else {
-          float hl = H7(uv - vec2(uTexel.x, 0.0));
-          float hr = H7(uv + vec2(uTexel.x, 0.0));
-          float hd = H7(uv - vec2(0.0, uTexel.y));
-          float hu = H7(uv + vec2(0.0, uTexel.y));
-          float dx = (uWorld.x * uTexel.x) * 2.0;
-          float dz = (uWorld.y * uTexel.y) * 2.0;
-          objectNormal = normalize(vec3(-(hr - hl)/max(dx,1e-4), 1.0, -(hu - hd)/max(dz,1e-4)));
-        }
+        float hl = H7(uv - vec2(uTexel.x, 0.0));
+        float hr = H7(uv + vec2(uTexel.x, 0.0));
+        float hd = H7(uv - vec2(0.0, uTexel.y));
+        float hu = H7(uv + vec2(0.0, uTexel.y));
+        float dx = (uWorld.x * uTexel.x) * 2.0;
+        float dz = (uWorld.y * uTexel.y) * 2.0;
+        objectNormal = normalize(vec3(-(hr - hl)/max(dx,1e-4), 1.0, -(hu - hd)/max(dz,1e-4)));
       `
     );
 
-    // DISPLACEMENT: top verts (aBase<0.5) ride the height field; base verts
-    // (aBase>0.5) pin to the flat base at y=-uThickness → a solid extruded block.
+    // DISPLACEMENT: ride the height field, re-centred around the baseline so the
+    // sheet floats in air and oscillates BOTH above and below the y=0 plane.
     shader.vertexShader = shader.vertexShader.replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
         float h7 = H7(uv);
         vHd = h7;
-        transformed.y = (aBase > 0.5) ? (-uThickness) : (transformed.y + h7);
+        transformed.y += (h7 - uBaseline);
       `
     );
 
@@ -410,10 +351,8 @@ function buildHeightfield() {
       uniform float uDetail;        // surface pattern depth/strength
       uniform float uDetailScale;   // surface pattern density (frequency)
       uniform float uPattern;       // which pattern (0 grid · 1 weave · 2 lines · 3 dots · 4 hex · 5 grain)
-      uniform float uLines;         // football pitch-marking line strength
       varying float vHd;
       varying vec2 vUvN;
-      varying float vBaseMix;       // 0 displaced top .. 1 base (side-wall body)
 
       float h21_7(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
       float vn7(vec2 p){
@@ -449,85 +388,6 @@ function buildHeightfield() {
           return clamp(0.5 + 0.22*(a+b+c), 0.0, 1.0);
         }
         return fbm7(p * 0.9);            // GRAIN — smooth organic
-      }
-
-      // ---- FOOTBALL PITCH MARKINGS -------------------------------------------
-      // Standard FIFA-ish pitch (105m × 68m) drawn in normalised pitch uv
-      // (u = length 0..1, v = width 0..1). Anti-aliased to ~1px via fwidth so the
-      // lines stay crisp and don't shimmer at any distance. Returns line coverage
-      // in [0,1]. Pure overlay — sits UNDER the data colour intensity.
-      const float PL = 105.0;   // pitch length (m)
-      const float PW = 68.0;    // pitch width (m)
-      // a straight segment in uv between two metre points, with metre half-width.
-      float seg7(vec2 puv, vec2 a, vec2 b, float halfW){
-        // work in metres so the line width is uniform on both axes.
-        vec2 P = vec2(puv.x * PL, puv.y * PW);
-        vec2 ab = b - a, ap = P - a;
-        float t = clamp(dot(ap, ab) / max(dot(ab, ab), 1e-5), 0.0, 1.0);
-        float d = length(P - (a + t * ab));
-        // convert metre distance to a screen-stable AA band using fwidth of P.
-        float aa = (fwidth(P.x) + fwidth(P.y)) * 0.5 + 1e-4;
-        return 1.0 - smoothstep(halfW, halfW + aa, d);
-      }
-      // rectangle outline (metres), half-width line.
-      float rect7(vec2 puv, vec2 lo, vec2 hi, float halfW){
-        float c = 0.0;
-        c = max(c, seg7(puv, vec2(lo.x, lo.y), vec2(hi.x, lo.y), halfW));
-        c = max(c, seg7(puv, vec2(hi.x, lo.y), vec2(hi.x, hi.y), halfW));
-        c = max(c, seg7(puv, vec2(hi.x, hi.y), vec2(lo.x, hi.y), halfW));
-        c = max(c, seg7(puv, vec2(lo.x, hi.y), vec2(lo.x, lo.y), halfW));
-        return c;
-      }
-      // circle/arc ring (metres), centre c, radius r, half-width.
-      float ring7(vec2 puv, vec2 cen, float r, float halfW){
-        vec2 P = vec2(puv.x * PL, puv.y * PW);
-        float d = abs(length(P - cen) - r);
-        float aa = (fwidth(P.x) + fwidth(P.y)) * 0.5 + 1e-4;
-        return 1.0 - smoothstep(halfW, halfW + aa, d);
-      }
-      float dot7(vec2 puv, vec2 cen, float r){
-        vec2 P = vec2(puv.x * PL, puv.y * PW);
-        float d = length(P - cen);
-        float aa = (fwidth(P.x) + fwidth(P.y)) * 0.5 + 1e-4;
-        return 1.0 - smoothstep(r, r + aa, d);
-      }
-      // full pitch-marking coverage at pitch uv.
-      float pitchLines7(vec2 uv){
-        float hw = 0.10;            // line half-width in metres (~0.12m FIFA line)
-        float inset = 1.6;          // pull the boundary a touch in from the cloth edge (m)
-        vec2 lo = vec2(inset, inset);
-        vec2 hi = vec2(PL - inset, PW - inset);
-        float c = 0.0;
-        // outer boundary
-        c = max(c, rect7(uv, lo, hi, hw));
-        // halfway line
-        c = max(c, seg7(uv, vec2(PL*0.5, lo.y), vec2(PL*0.5, hi.y), hw));
-        // centre circle (r 9.15m) + centre spot
-        c = max(c, ring7(uv, vec2(PL*0.5, PW*0.5), 9.15, hw));
-        c = max(c, dot7(uv, vec2(PL*0.5, PW*0.5), 0.35));
-        // penalty + goal areas, penalty spots & arcs — both ends.
-        for (int s = 0; s < 2; s++){
-          float dir = (s == 0) ? 1.0 : -1.0;
-          float gx  = (s == 0) ? inset : PL - inset;     // goal-line x (m)
-          // penalty area 16.5m deep × 40.32m wide
-          float pax = gx + dir * 16.5;
-          c = max(c, rect7(uv, vec2(min(gx,pax), PW*0.5 - 20.16), vec2(max(gx,pax), PW*0.5 + 20.16), hw));
-          // goal area 5.5m deep × 18.32m wide
-          float gax = gx + dir * 5.5;
-          c = max(c, rect7(uv, vec2(min(gx,gax), PW*0.5 - 9.16), vec2(max(gx,gax), PW*0.5 + 9.16), hw));
-          // penalty spot 11m from goal line
-          vec2 pSpot = vec2(gx + dir * 11.0, PW*0.5);
-          c = max(c, dot7(uv, pSpot, 0.35));
-          // penalty arc (r 9.15m around the spot) — only the part OUTSIDE the box.
-          float arc = ring7(uv, pSpot, 9.15, hw);
-          vec2 P = vec2(uv.x * PL, uv.y * PW);
-          float outside = (dir > 0.0) ? step(pax, P.x) : step(P.x, pax);
-          c = max(c, arc * outside);
-          // corner arcs (r 1.0m) at the two corners of this goal line
-          c = max(c, ring7(uv, vec2(gx, inset),       1.0, hw));
-          c = max(c, ring7(uv, vec2(gx, PW - inset),  1.0, hw));
-        }
-        return clamp(c, 0.0, 1.0);
       }
     ` + shader.fragmentShader;
 
@@ -577,19 +437,6 @@ function buildHeightfield() {
         float cavity = 1.0 - uDetail * 0.5 * (1.0 - pc);
         baseCol *= clamp(cavity, 0.3, 1.0);
 
-        // SOLID-BLOCK SIDE WALLS: as vBaseMix ramps 0→1 down the skirt, mix the
-        // colour toward a dark slate body so walls read as the block's MASS, not a
-        // coloured continuation of the top. Quadratic → the top edge stays close
-        // to the top colour. Top surface (vBaseMix=0) is untouched.
-        float wall = clamp(vBaseMix, 0.0, 1.0);
-        baseCol = mix(baseCol, baseCol * vec3(0.32, 0.34, 0.40), wall * wall * 0.85);
-
-        // FOOTBALL PITCH MARKINGS — faint white lines on the TOP surface only.
-        // Overlay (mix toward white) so the possession colour still shows through.
-        float topMaskL = 1.0 - clamp(vBaseMix, 0.0, 1.0);
-        float lines = pitchLines7(vUvN) * uLines * topMaskL;
-        baseCol = mix(baseCol, vec3(0.92, 0.94, 0.96), clamp(lines * 0.5, 0.0, 0.6));
-
         diffuseColor.rgb = baseCol;
       }
       `
@@ -605,8 +452,7 @@ function buildHeightfield() {
         // pattern grooves read slightly ROUGHER (matte recess) than the raised
         // cells; floor kept well above 0 so nothing turns into a shiny sparkle.
         float pr = pat7(vUvN * (46.0 * uDetailScale));
-        float topMask = 1.0 - clamp(vBaseMix, 0.0, 1.0);
-        roughnessFactor = clamp(roughnessFactor + uDetail * 0.22 * (0.5 - pr) * topMask, 0.16, 1.0);
+        roughnessFactor = clamp(roughnessFactor + uDetail * 0.22 * (0.5 - pr), 0.16, 1.0);
       }
       `
     );
@@ -619,8 +465,7 @@ function buildHeightfield() {
       '#include <normal_fragment_maps>',
       `#include <normal_fragment_maps>
       {
-        float topMask = 1.0 - clamp(vBaseMix, 0.0, 1.0);
-        float amp = uDetail * 0.3 * topMask;
+        float amp = uDetail * 0.3;
         if (amp > 0.0001) {
           vec2 mp = vUvN * (46.0 * uDetailScale);
           float hC = pat7(mp);
@@ -670,29 +515,115 @@ function buildHeightfield() {
   mesh.receiveShadow = true;
   scene.add(mesh);
 
-  // SKIRT (side walls + bottom cap) sharing the SAME material so colour/lighting
-  // match. Its top ring shares the plane-edge uv (aBase=0) → displaced by H(uv)
-  // identically to the plane edge (no gaps); bottom ring (aBase=1) pins to the
-  // flat base at y=-uThickness. Together: a thick carved solid block.
-  skirt = new THREE.Mesh(buildSkirtGeometry(GX, GY), material);
-  skirt.castShadow = true;
-  skirt.receiveShadow = true;
-  scene.add(skirt);
-
-  // ground/slab plane that receives the mesh's shadow so masses sit grounded.
-  // Parked just below the solid block's base (y=-uThickness) so there's a floor
-  // under the bottom cap without z-fighting it.
-  slab = new THREE.Mesh(
-    new THREE.PlaneGeometry(WORLD_X * 1.6, WORLD_Z * 1.8),
-    new THREE.MeshStandardMaterial({ color: 0x0a0e18, roughness: 0.92, metalness: 0.0 })
-  );
-  slab.rotation.x = -Math.PI / 2;
-  slab.position.y = -tune.thickness - 0.12;
-  slab.receiveShadow = true;
-  scene.add(slab);
-
+  buildPitchPlane();
   buildGoalRings();
 }
+
+// ---- STATIC PITCH-MARKINGS PLANE at y=0 -------------------------------------
+// A flat plane the full pitch size (WORLD_X × WORLD_Z) at y=0 that draws the
+// football markings into a dark, near-transparent ground. Because the cloth now
+// straddles y=0, this plane shows through where the cloth dips below 0 and is
+// hidden where it rises above — the "weaving" effect. uLines = line intensity.
+function buildPitchPlane() {
+  const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, 1, 1);
+  geo.rotateX(-Math.PI / 2);                 // flat in XZ at y=0
+  pitchMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: true,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uLines: { value: tune.lines },
+      uHome: material.userData.u.uHome,      // share team colours (boundary tint optional)
+      uAway: material.userData.u.uAway,
+    },
+    vertexShader: /* glsl */`
+      varying vec2 vUv;
+      void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+    `,
+    fragmentShader: PITCH_FRAG,
+  });
+  pitchPlane = new THREE.Mesh(geo, pitchMat);
+  pitchPlane.position.y = 0.0;
+  pitchPlane.renderOrder = -1;               // draw under the cloth
+  pitchPlane.receiveShadow = false;
+  scene.add(pitchPlane);
+}
+
+// FIFA-ish pitch (105×68) markings drawn in the plane's uv. Crisp AA white lines
+// on a dark, mostly-transparent ground. Same marking set as before.
+const PITCH_FRAG = /* glsl */`
+  precision highp float;
+  uniform float uLines;
+  varying vec2 vUv;
+  const float PL = 105.0;   // pitch length (m)
+  const float PW = 68.0;    // pitch width (m)
+  float seg7(vec2 puv, vec2 a, vec2 b, float halfW){
+    vec2 P = vec2(puv.x * PL, puv.y * PW);
+    vec2 ab = b - a, ap = P - a;
+    float t = clamp(dot(ap, ab) / max(dot(ab, ab), 1e-5), 0.0, 1.0);
+    float d = length(P - (a + t * ab));
+    float aa = (fwidth(P.x) + fwidth(P.y)) * 0.5 + 1e-4;
+    return 1.0 - smoothstep(halfW, halfW + aa, d);
+  }
+  float rect7(vec2 puv, vec2 lo, vec2 hi, float halfW){
+    float c = 0.0;
+    c = max(c, seg7(puv, vec2(lo.x, lo.y), vec2(hi.x, lo.y), halfW));
+    c = max(c, seg7(puv, vec2(hi.x, lo.y), vec2(hi.x, hi.y), halfW));
+    c = max(c, seg7(puv, vec2(hi.x, hi.y), vec2(lo.x, hi.y), halfW));
+    c = max(c, seg7(puv, vec2(lo.x, hi.y), vec2(lo.x, lo.y), halfW));
+    return c;
+  }
+  float ring7(vec2 puv, vec2 cen, float r, float halfW){
+    vec2 P = vec2(puv.x * PL, puv.y * PW);
+    float d = abs(length(P - cen) - r);
+    float aa = (fwidth(P.x) + fwidth(P.y)) * 0.5 + 1e-4;
+    return 1.0 - smoothstep(halfW, halfW + aa, d);
+  }
+  float dot7(vec2 puv, vec2 cen, float r){
+    vec2 P = vec2(puv.x * PL, puv.y * PW);
+    float d = length(P - cen);
+    float aa = (fwidth(P.x) + fwidth(P.y)) * 0.5 + 1e-4;
+    return 1.0 - smoothstep(r, r + aa, d);
+  }
+  float pitchLines7(vec2 uv){
+    float hw = 0.10;            // line half-width (m)
+    float inset = 1.6;          // boundary inset from the plane edge (m)
+    vec2 lo = vec2(inset, inset);
+    vec2 hi = vec2(PL - inset, PW - inset);
+    float c = 0.0;
+    c = max(c, rect7(uv, lo, hi, hw));                                   // outer boundary
+    c = max(c, seg7(uv, vec2(PL*0.5, lo.y), vec2(PL*0.5, hi.y), hw));    // halfway line
+    c = max(c, ring7(uv, vec2(PL*0.5, PW*0.5), 9.15, hw));               // centre circle
+    c = max(c, dot7(uv, vec2(PL*0.5, PW*0.5), 0.35));                    // centre spot
+    for (int s = 0; s < 2; s++){
+      float dir = (s == 0) ? 1.0 : -1.0;
+      float gx  = (s == 0) ? inset : PL - inset;
+      float pax = gx + dir * 16.5;                                       // penalty area
+      c = max(c, rect7(uv, vec2(min(gx,pax), PW*0.5 - 20.16), vec2(max(gx,pax), PW*0.5 + 20.16), hw));
+      float gax = gx + dir * 5.5;                                        // goal area
+      c = max(c, rect7(uv, vec2(min(gx,gax), PW*0.5 - 9.16), vec2(max(gx,gax), PW*0.5 + 9.16), hw));
+      vec2 pSpot = vec2(gx + dir * 11.0, PW*0.5);                        // penalty spot
+      c = max(c, dot7(uv, pSpot, 0.35));
+      float arc = ring7(uv, pSpot, 9.15, hw);                           // penalty arc (outside box)
+      vec2 P = vec2(uv.x * PL, uv.y * PW);
+      float outside = (dir > 0.0) ? step(pax, P.x) : step(P.x, pax);
+      c = max(c, arc * outside);
+      c = max(c, ring7(uv, vec2(gx, inset),       1.0, hw));            // corner arcs
+      c = max(c, ring7(uv, vec2(gx, PW - inset),  1.0, hw));
+    }
+    return clamp(c, 0.0, 1.0);
+  }
+  void main(){
+    float lines = pitchLines7(vUv) * clamp(uLines, 0.0, 1.0);
+    // dark ground (faint) + crisp white-ish lines; alpha follows line coverage so
+    // the ground is near-transparent and the cloth's troughs reveal the markings.
+    vec3 ground = vec3(0.02, 0.03, 0.05);
+    vec3 lineCol = vec3(0.92, 0.94, 0.97);
+    vec3 col = mix(ground, lineCol, lines);
+    float alpha = max(0.12 * clamp(uLines, 0.0, 1.0), lines);
+    gl_FragColor = vec4(col, alpha);
+  }
+`;
 
 // Build one flat, emissive RingGeometry per GOAL, positioned at the goal-line
 // crossing point on the cloth. Real data: model.shots filtered to isGoal.
@@ -730,6 +661,10 @@ function buildGoalRings() {
     const sign = g.team === 'home' ? 1 : -1;          // away frame mirrored → flip
     const v = clamp(0.5 + sign * off * (mouthHalfV * 2), 0.04, 0.96);
 
+    // CENTRE HEIGHT from onGoalY: 0 = ground, 1 ≈ crossbar (2.44m) → world units.
+    const ogy = Number.isFinite(g.onGoalY) ? g.onGoalY : 0.0;
+    const y = clamp(ogy, 0, 1.2) * CROSSBAR_M * M2W;  // world Y above the y=0 plane
+
     const col = (g.team === 'home' ? uHome() : uAway()).clone();
     const mat = new THREE.MeshStandardMaterial({
       color: 0x000000,
@@ -740,14 +675,16 @@ function buildGoalRings() {
       side: THREE.DoubleSide,
       depthWrite: false,
     });
-    // unit ring; we re-scale per frame to animate the contraction.
+    // unit ring; we re-scale per frame to animate the contraction. RingGeometry
+    // lies in the XY plane (normal +Z); rotate so its disc stands VERTICAL in the
+    // goal-mouth plane (normal points DOWN the pitch length, along ±X).
     const geo = new THREE.RingGeometry(0.7, 1.0, 96);
-    geo.rotateX(-Math.PI / 2);                        // lie flat on XZ
     const m = new THREE.Mesh(geo, mat);
+    m.rotation.y = Math.PI / 2;                        // normal +Z → +X (down-pitch)
     m.renderOrder = 5;
     m.visible = false;
     scene.add(m);
-    goalRings.push({ goal: g, mesh: m, mat, u, v });
+    goalRings.push({ goal: g, mesh: m, mat, u, v, y });
   }
 }
 
@@ -767,9 +704,11 @@ function updateGoalRings(settled) {
     // brightness: bright on spawn, easing to a clear settled glow.
     const bright = lerp(5.0, 2.2, ease) * tune.ringStr;
     const opacity = lerp(0.98, 0.82, ease);
-    r.mesh.scale.set(radius, 1, radius);
-    const y = reliefHeightAt(r.u, r.v) + RING_LIFT;   // float above the cloth/eruption peak
-    r.mesh.position.set(worldX(r.u), y, worldZ(r.v));
+    // VERTICAL ring (rotated normal→±X): its disc spans local X/Y, which map to
+    // world Z (across width) and Y (height). Scale those, leave the normal (Z) 1.
+    r.mesh.scale.set(radius, radius, 1);
+    // stand at the goal mouth, centred at the goal's entry height above y=0.
+    r.mesh.position.set(worldX(r.u), r.y, worldZ(r.v));
     r.mat.emissiveIntensity = bright;
     r.mat.opacity = opacity;
     // keep the colour in sync with any live team-colour picker change
@@ -977,28 +916,22 @@ function computeHeight(t) {
       h += ridgeHeight * Math.exp(-0.5 * dF * dF);
       h += turbAmp * fbm(xN * 6.0, yN * 4.0, flowZ, 4);
       h += eruptionAt(xN, yN, t);
-      heightData[idx] = Math.max(0, h);
+      heightData[idx] = h;                 // NO clamp: surface may dip below 0
     }
   }
   heightTex.needsUpdate = true;
   lastSimT = t;
+
+  // BASELINE so the sheet straddles y=0: subtract the mean displaced height so
+  // roughly half the surface sits below the markings plane. Computed in the same
+  // scaled units the vertex shader applies (× uHScale).
+  let sum = 0;
+  for (let k = 0; k < NV; k++) sum += heightData[k];
+  heightBaseline = (sum / NV) * tune.heightScale;
+  if (material) material.userData.u.uBaseline.value = heightBaseline;
 }
 
-// Sample the relief HEIGHT (world Y) at normalised pitch (u,v) — bilinear over
-// the height field, scaled by uHScale, so a ring can lie ON the undulating cloth.
-function reliefHeightAt(u, v) {
-  if (!heightData) return 0;
-  const fx = clamp(u, 0, 1) * (VX - 1);
-  const fy = clamp(v, 0, 1) * (VY - 1);
-  const i0 = Math.floor(fx), j0 = Math.floor(fy);
-  const i1 = Math.min(i0 + 1, VX - 1), j1 = Math.min(j0 + 1, VY - 1);
-  const tx = fx - i0, ty = fy - j0;
-  const h00 = heightData[j0 * VX + i0], h10 = heightData[j0 * VX + i1];
-  const h01 = heightData[j1 * VX + i0], h11 = heightData[j1 * VX + i1];
-  const h = lerp(lerp(h00, h10, tx), lerp(h01, h11, tx), ty);
-  return h * tune.heightScale;
-}
-// World X/Z from normalised pitch (u,v) — same mapping the plane/skirt use.
+// World X/Z from normalised pitch (u,v) — same mapping the plane uses.
 const worldX = (u) => (u - 0.5) * WORLD_X;
 const worldZ = (v) => (0.5 - v) * WORLD_Z;
 
@@ -1108,14 +1041,12 @@ function applyLookUniforms() {
   u.uTex.value = tune.tex;
   u.uWobble.value = tune.wobble;
   u.uAO.value = tune.ao;
-  // SOLID BODY + MICRO-SURFACE
-  const th = clamp(tune.thickness, 0, 8);
-  u.uThickness.value = th;
+  // MICRO-SURFACE (thickness is now a no-op: the cloth is a single thin sheet)
   u.uDetail.value = tune.detail;
   u.uDetailScale.value = tune.detailScale;
   u.uPattern.value = tune.pattern;
-  u.uLines.value = tune.lines;
-  if (slab) slab.position.y = -th - 0.12;
+  // pitch-markings plane line intensity
+  if (pitchMat) pitchMat.uniforms.uLines.value = tune.lines;
 
   // PBR material
   material.roughness = tune.rough;
@@ -1218,7 +1149,7 @@ function bindUI() {
   bindSlider('thickness', 'thicknessV', (v) => { tune.thickness = v; return v.toFixed(2); });
   bindSlider('detail', 'detailV', (v) => { tune.detail = v; return v.toFixed(2); });
   bindSlider('detailScale', 'detailScaleV', (v) => { tune.detailScale = v; return v.toFixed(2); });
-  bindSlider('lines', 'linesV', (v) => { tune.lines = v; if (material) material.userData.u.uLines.value = v; return v.toFixed(2); });
+  bindSlider('lines', 'linesV', (v) => { tune.lines = v; if (pitchMat) pitchMat.uniforms.uLines.value = v; return v.toFixed(2); });
   // goal-entry rings
   bindSlider('ringSize', 'ringSizeV', (v) => { tune.ringSize = v; return v.toFixed(2); });
   bindSlider('ringStr', 'ringStrV', (v) => { tune.ringStr = v; return v.toFixed(2); });
