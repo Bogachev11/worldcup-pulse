@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>BATTLE OF MASSES · CINEMATIC — 3D</title>
   <link rel="stylesheet" href="style.css" />
+  <!-- Barlow (Google Fonts) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@200;300;400;500;600;700&display=swap" rel="stylesheet">
   <!-- three.js via CDN import map (esm.sh; unpkg is a manual fallback) -->
   <script type="importmap">
   {
@@ -15,6 +19,10 @@
   }
   </script>
   <style>
+    /* Barlow everywhere */
+    body, .pnl, .hud-w, .btn, #title2, #camread, input, select, textarea, button, label, option {
+      font-family: 'Barlow', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
     #stage { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: grab; }
     #stage:active { cursor: grabbing; }
     .pnl {
