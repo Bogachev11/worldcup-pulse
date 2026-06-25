@@ -939,15 +939,9 @@ function updateHud() {
   if (t >= model.duration - 0.01) { gH = model.home.score; gA = model.away.score; }
   else { gH = Math.min(gH, model.home.score); gA = Math.min(gA, model.away.score); }
 
-  const ph = Math.round(at(model.series.possHome, t, model.STEP) * 100);
-  const mom = at(model.series.mom, t, model.STEP);
   el('hScore').textContent = gH; el('aScore').textContent = gA;
   const mm = Math.floor(t);
   el('clk').textContent = mm + "'";
-  el('hPoss').textContent = ph; el('aPoss').textContent = 100 - ph;
-  el('mom').textContent = (mom >= 0 ? '+' : '') + mom.toFixed(2);
-  el('hXg').textContent = xgUpTo(model.shots, 'home', t).toFixed(2);
-  el('aXg').textContent = xgUpTo(model.shots, 'away', t).toFixed(2);
   if (document.activeElement !== el('clock')) el('clock').value = String((t / model.duration) * 100);
 }
 
@@ -1127,18 +1121,16 @@ function bindSlider(id, valId, fn) {
 // Each HUD widget (team names, score, clock, possession, momentum, xG) can be
 // freely positioned and scaled with the mouse in "edit" mode, then saved
 // (localStorage + clipboard JSON). Display-only and click-through otherwise.
-const HUD_KEYS = ['teams', 'score', 'clock', 'poss', 'mom', 'xg'];
-const HUD_STORE = 'stage7_hud_v1';
+const HUD_KEYS = ['teams', 'score', 'clock'];
+const HUD_STORE = 'stage7_hud_v2';
 function setupHudLayout() {
   const widget = (k) => el('w_' + k);
-  const defaults = () => {
-    const rx = Math.max(120, window.innerWidth - 210);
-    return {
-      teams: { x: rx, y: 16, s: 1 }, score: { x: rx, y: 42, s: 1 },
-      clock: { x: rx, y: 100, s: 1 }, poss: { x: rx, y: 130, s: 1 },
-      mom: { x: rx, y: 154, s: 1 }, xg: { x: rx, y: 178, s: 1 },
-    };
-  };
+  // user-baked default layout (poss / mom / xG removed)
+  const defaults = () => ({
+    teams: { x: 558, y: 155, s: 5.213 },
+    score: { x: 572, y: 243, s: 1.827 },
+    clock: { x: 1385, y: 165, s: 2.537 },
+  });
   let layout;
   try { layout = JSON.parse(localStorage.getItem(HUD_STORE)) || defaults(); } catch { layout = defaults(); }
 
