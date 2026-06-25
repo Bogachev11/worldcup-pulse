@@ -677,7 +677,7 @@ function applyTeamColors() {
 // ============================================================================
 // THE SIMULATION — identical to stage6 (real data only).
 // ============================================================================
-const A_INSTANT = 0.18;
+const A_INSTANT = 0.34;   // live momentum push (raised so attacking surges sweep the seam)
 const B_ACCUM = 0.22;
 const H_MAX = 0.9;
 const BASE_AMP = 0.05;
@@ -686,13 +686,35 @@ const RIDGE_H = 1.3;
 const RIDGE_W = 0.07;
 
 let permFrontShove = 0;
+let attackPush = 0;       // transient seam surge from recent shots (a wave crashing on the attacked goal)
+
+// A shot is an attack on a goal: away shots shove the seam toward the HOME goal
+// (x→0, green crashes onto the blue goal), home shots toward the away goal (x→1).
+// Decays over a few match-minutes → a wave that surges in then recedes. Real data.
+const PUSH_LIFE = 5;      // match-minutes
+function attackPushAt(t) {
+  let s = 0;
+  for (let i = 0; i < model.eruptions.length; i++) {
+    const e = model.eruptions[i];
+    if (e.t > t) break;                       // shots are time-sorted
+    const age = t - e.t;
+    if (age > PUSH_LIFE) continue;
+    const rise = smoothstep(0, 0.4, age);     // quick swell
+    const fall = 1 - smoothstep(PUSH_LIFE * 0.35, PUSH_LIFE, age);
+    const w = (0.35 + (e.xg || 0) * 1.6) * (e.isGoal ? 1.7 : 1.0);
+    s += (e.team === 'away' ? -1 : 1) * w * rise * fall;
+  }
+  return clamp(s * 0.6, -0.6, 0.6);
+}
 
 function frontAt(yN, t) {
   const mom = at(model.series.mom, t, model.STEP);
   const possHomeLive = clamp(at(model.series.possHome, t, model.STEP), 0.05, 0.95);
   const wave = (fbm(yN * 2.2, 0.0, t * 0.03, 3)) * 0.06;
   const base = lerp(0.5, possHomeLive, clamp(tune.seamPoss, 0, 1));
-  return clamp(base + A_INSTANT * mom + wave, 0.12, 0.88);
+  // momentum + the transient attack surge can now sweep the seam all the way onto
+  // a goal (clamp widened) — so green waves DO reach the blue goal when Senegal attacks.
+  return clamp(base + A_INSTANT * mom + attackPush + wave, 0.06, 0.94);
 }
 
 function syncEruptions(t) {
@@ -736,6 +758,7 @@ function eruptionAt(xN, yN, t) {
 
 function computeHeight(t) {
   syncEruptions(t);
+  attackPush = attackPushAt(t);   // refresh the transient seam surge (used by frontAt)
   const S = model.series;
   const intensity = at(S.intensity, t, model.STEP);
   const cumPH = at(S.cumPossHome, t, model.STEP);
