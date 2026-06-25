@@ -26,7 +26,7 @@ const ID = new URLSearchParams(location.search).get('id') || '1953888';
 const el = (id) => document.getElementById(id);
 
 // baked-in default camera (user-tuned)
-const DEFAULT_CAM = { pos: [-12.86, 18.18, 17.62], target: [-1.43, 1.97, -0.48] };
+const DEFAULT_CAM = { pos: [-12.288, 17.37, 16.715], target: [-1.43, 1.97, -0.48] };
 function applyDefaultCamera() {
   camera.position.set(DEFAULT_CAM.pos[0], DEFAULT_CAM.pos[1], DEFAULT_CAM.pos[2]);
   controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
@@ -44,7 +44,7 @@ const WORLD_X = 16, WORLD_Z = 9.6;       // pitch footprint (16:9.6 ~ pitch)
 let renderer, scene, camera, controls, composer;
 let bloomPass, gradePass, smaaPass;
 let heightTex, heightData;               // DataTexture (R32F) of per-vertex H
-let mesh, material, slab, keyLight;
+let mesh, skirt, material, slab, keyLight;
 let injected = null;                     // ref to the compiled onBeforeCompile shader.uniforms
 let model = null;                        // built data model
 let clock = 0, playing = true;
@@ -58,34 +58,38 @@ const tune = {
   heightScale: 2.2,
   turbulence: 3.0,
   ridgeSharp: 1.0,
-  flowSpeed: 1.0,
-  seamPoss: 0.6,
+  flowSpeed: 0.48,
+  seamPoss: 0.46,
   ownerDim: 0.6,    // tint floor for the passive team (it relaxes toward neutral clay, not black)
-  glow: 0.08,       // ember at the contested seam — kept SUBTLE (material crease, not a light show)
+  glow: 0.62,       // ember at the contested seam — kept SUBTLE (material crease, not a light show)
   glowCol: '#ff6f1f',
   homeCol: '#6da0f2',
   awayCol: '#14f27f',
   sat: 1.0,         // natural saturation (no neon boost)
-  tint: 0.62,       // how strongly the clay is tinted by the team colour
+  tint: 0.58,       // how strongly the clay is tinted by the team colour
   clay: '#6a6560',  // neutral clay/stone base the team colour tints
-  light: 0.32,
+  light: 0.3,
   amb: 0.26,
-  tex: 0.54,
-  wobble: 0.47,
+  tex: 0.86,
+  wobble: 0.21,
+  // SOLID BODY + MICRO-SURFACE
+  thickness: 2.5,   // extruded block depth: skirt walls drop to y=-thickness, flat base cap
+  detail: 0.5,      // micro-surface bump amount (fine procedural normal perturbation)
+  detailScale: 1.0, // micro-surface frequency multiplier
   // material / render
-  rough: 0.85,      // matte clay
+  rough: 0.46,      // matte clay
   metal: 0.0,
-  env: 1.0,
+  env: 1.24,
   shadow: 0.8,
   ao: 1.0,
   // post (kept gentle — material/light should carry it, not effects)
-  bloomStr: 0.12,
-  bloomRad: 0.5,
-  bloomThr: 0.85,
-  vig: 0.5,
-  expo: 1.0,
-  contr: 1.06,
-  gsat: 1.0,
+  bloomStr: 0.28,
+  bloomRad: 0.14,
+  bloomThr: 0.76,
+  vig: 1.28,
+  expo: 0.74,
+  contr: 1.08,
+  gsat: 1.1,
 };
 
 // transient eruption bumps that decay (built lazily as clock passes goals/shots)
@@ -207,10 +211,62 @@ function makeGradientTexture() {
   return tex;
 }
 
+// Build the SKIRT geometry: vertical wall quads around the 4 perimeter edges of
+// the displaced top plane PLUS a flat bottom cap, as one BufferGeometry that
+// SHARES the mesh material. Each TOP-ring vertex carries the EXACT plane-edge uv
+// (aBase=0) so the injected vertex shader displaces it by H(uv) identically to
+// the plane edge (walls meet the relief edge with no gap). Each BOTTOM vertex
+// (aBase=1) is pinned to y=-uThickness → the flat base. UV↔position mapping
+// mirrors PlaneGeometry(WORLD_X,WORLD_Z)+rotateX(-90°):
+//   localX = (u-0.5)*WORLD_X ;  localZ = (0.5-v)*WORLD_Z
+function buildSkirtGeometry(segX, segY) {
+  const pos = [], uvs = [], base = [], idx = [];
+  const X = (u) => (u - 0.5) * WORLD_X;
+  const Z = (v) => (0.5 - v) * WORLD_Z;
+
+  // One vertical quad for a perimeter edge (u0,v0)→(u1,v1). top0,top1,bot0,bot1.
+  const addWall = (u0, v0, u1, v1, flip) => {
+    const o = pos.length / 3;
+    const x0 = X(u0), z0 = Z(v0), x1 = X(u1), z1 = Z(v1);
+    pos.push(x0, 0, z0,  x1, 0, z1,  x0, 0, z0,  x1, 0, z1);
+    uvs.push(u0, v0,  u1, v1,  u0, v0,  u1, v1);
+    base.push(0, 0, 1, 1);                 // top, top, bottom, bottom
+    const t0 = o, t1 = o + 1, b0 = o + 2, b1 = o + 3;
+    if (!flip) idx.push(t0, b0, t1,  t1, b0, b1);
+    else       idx.push(t0, t1, b0,  t1, b1, b0);
+  };
+  // Walk the 4 edges at the SAME sample points the plane uses (segX/segY).
+  for (let i = 0; i < segX; i++) addWall(i / segX, 0, (i + 1) / segX, 0, false);          // v=0
+  for (let i = 0; i < segY; i++) addWall(1, i / segY, 1, (i + 1) / segY, false);          // u=1
+  for (let i = 0; i < segX; i++) addWall((segX - i) / segX, 1, (segX - i - 1) / segX, 1, false); // v=1
+  for (let i = 0; i < segY; i++) addWall(0, (segY - i) / segY, 0, (segY - i - 1) / segY, false); // u=0
+
+  // BOTTOM CAP — single quad at the base rectangle (all aBase=1 → y=-uThickness).
+  {
+    const o = pos.length / 3;
+    pos.push(X(0), 0, Z(0),  X(1), 0, Z(0),  X(1), 0, Z(1),  X(0), 0, Z(1));
+    uvs.push(0, 0,  1, 0,  1, 1,  0, 1);
+    base.push(1, 1, 1, 1);
+    idx.push(o, o + 1, o + 2,  o, o + 2, o + 3);
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setAttribute('aBase', new THREE.Float32BufferAttribute(base, 1));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(pos.length), 3));
+  g.setIndex(idx);
+  return g;
+}
+
 // ---- heightfield mesh: MeshStandardMaterial + onBeforeCompile injection ------
 function buildHeightfield() {
   const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, GX, GY);
   geo.rotateX(-Math.PI / 2);              // lay flat: plane now in XZ, +Y up
+  // The plane is the TOP surface — every vertex is a displaced-top vertex
+  // (aBase=0). Supply the attribute explicitly so the SHARED material binds it
+  // for the plane too (never rely on a missing attribute defaulting to 0).
+  geo.setAttribute('aBase', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count), 1));
 
   heightData = new Float32Array(NV);
   heightTex = new THREE.DataTexture(heightData, VX, VY, THREE.RedFormat, THREE.FloatType);
@@ -245,6 +301,10 @@ function buildHeightfield() {
     uWobble: { value: tune.wobble },
     uAO: { value: tune.ao },
     uTime: { value: 0 },
+    // SOLID BODY + MICRO-SURFACE
+    uThickness: { value: tune.thickness },
+    uDetail: { value: tune.detail },
+    uDetailScale: { value: tune.detailScale },
   };
   material.userData.u = u;
 
@@ -258,8 +318,11 @@ function buildHeightfield() {
       uniform vec2 uTexel;
       uniform float uHScale;
       uniform vec2 uWorld;
+      uniform float uThickness;       // SOLID BODY depth: base verts pin to y=-uThickness
+      attribute float aBase;          // 1.0 = bottom/base vertex, 0.0 = top/displaced
       varying float vHd;
       varying vec2 vUvN;
+      varying float vBaseMix;         // 0 at the displaced top .. 1 at the base (wall shading)
       float H7(vec2 uv){
         float h = texture2D(uHeight, uv).r * uHScale;
         // NaN/Inf guard so the surface never opens see-through holes.
@@ -268,12 +331,24 @@ function buildHeightfield() {
       }
     ` + shader.vertexShader;
 
-    // finite-difference normal from the height texture
+    // NORMAL: top verts get the finite-difference height normal; skirt walls get
+    // an outward horizontal normal (so they shade as lit solid faces, not black);
+    // the bottom cap points straight down.
     shader.vertexShader = shader.vertexShader.replace(
       '#include <beginnormal_vertex>',
       `#include <beginnormal_vertex>
         vUvN = uv;
-        {
+        vBaseMix = aBase;
+        if (aBase > 0.5) {
+          // base ring / bottom cap. Outward-down wall normal from the uv (which
+          // edge of the perimeter this vert sits on); interior bottom-cap verts
+          // (uv not on an edge) get a straight-down normal.
+          vec2 e = uv - vec2(0.5);
+          float onX = step(0.49, abs(e.x));    // u≈0 or u≈1 → side wall
+          float onZ = step(0.49, abs(e.y));    // v≈0 or v≈1 → side wall
+          vec3 wn = vec3(sign(e.x) * onX, -0.35, -sign(e.y) * onZ);
+          objectNormal = (onX + onZ > 0.5) ? normalize(wn) : vec3(0.0, -1.0, 0.0);
+        } else {
           float hl = H7(uv - vec2(uTexel.x, 0.0));
           float hr = H7(uv + vec2(uTexel.x, 0.0));
           float hd = H7(uv - vec2(0.0, uTexel.y));
@@ -285,13 +360,14 @@ function buildHeightfield() {
       `
     );
 
-    // height displacement
+    // DISPLACEMENT: top verts (aBase<0.5) ride the height field; base verts
+    // (aBase>0.5) pin to the flat base at y=-uThickness → a solid extruded block.
     shader.vertexShader = shader.vertexShader.replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
         float h7 = H7(uv);
         vHd = h7;
-        transformed.y += h7;
+        transformed.y = (aBase > 0.5) ? (-uThickness) : (transformed.y + h7);
       `
     );
 
@@ -311,8 +387,11 @@ function buildHeightfield() {
       uniform float uWobble;
       uniform float uAO;
       uniform float uTime;
+      uniform float uDetail;        // micro-surface bump amount
+      uniform float uDetailScale;   // micro-surface frequency multiplier
       varying float vHd;
       varying vec2 vUvN;
+      varying float vBaseMix;       // 0 displaced top .. 1 base (side-wall body)
 
       float h21_7(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
       float vn7(vec2 p){
@@ -323,6 +402,13 @@ function buildHeightfield() {
       float fbm7(vec2 p){
         float s=0.0, a=0.5;
         for (int i=0;i<4;i++){ s += a*vn7(p); p = p*2.03 + vec2(11.3,7.7); a *= 0.5; }
+        return s;
+      }
+      // Fine multi-octave micro-relief HEIGHT for the tactile surface grain.
+      // Higher frequency than the marble tint; drives bump + roughness + cavity.
+      float micro7(vec2 p){
+        float s=0.0, a=0.5;
+        for (int i=0;i<3;i++){ s += a*vn7(p); p = p*2.17 + vec2(5.2,9.1); a *= 0.55; }
         return s;
       }
     ` + shader.fragmentShader;
@@ -365,7 +451,63 @@ function buildHeightfield() {
         float ao = clamp(1.0 - uAO * 0.5 * (lowAO*0.7 + (1.0-crevAO)*0.5), 0.25, 1.0);
         baseCol *= ao;
 
+        // CAVITY / curvature AO from the fine micro-relief: darken the tiny
+        // crevices so the surface reads as physically grainy & heavy (a key tell
+        // of a dense matte material vs. smooth CG plastic). Micro-texture only.
+        float mh = micro7(vUvN * (90.0 * uDetailScale));
+        float cavity = 1.0 - uDetail * 0.45 * smoothstep(0.62, 0.18, mh);
+        baseCol *= clamp(cavity, 0.35, 1.0);
+
+        // SOLID-BLOCK SIDE WALLS: as vBaseMix ramps 0→1 down the skirt, mix the
+        // colour toward a dark slate body so walls read as the block's MASS, not a
+        // coloured continuation of the top. Quadratic → the top edge stays close
+        // to the top colour. Top surface (vBaseMix=0) is untouched.
+        float wall = clamp(vBaseMix, 0.0, 1.0);
+        baseCol = mix(baseCol, baseCol * vec3(0.32, 0.34, 0.40), wall * wall * 0.85);
+
         diffuseColor.rgb = baseCol;
+      }
+      `
+    );
+
+    // MICRO-ROUGHNESS: modulate roughnessFactor by the same fine micro-relief so
+    // some patches are duller/shinier. Uniform roughness is the #1 CG tell — this
+    // breaks it up. Only the top surface gets it; walls stay matte body.
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <roughnessmap_fragment>',
+      `#include <roughnessmap_fragment>
+      {
+        float mr = micro7(vUvN * (60.0 * uDetailScale) + vec2(3.7, 1.9));
+        float topMask = 1.0 - clamp(vBaseMix, 0.0, 1.0);
+        roughnessFactor = clamp(roughnessFactor + uDetail * 0.28 * (mr - 0.5) * topMask, 0.04, 1.0);
+      }
+      `
+    );
+
+    // MICRO-NORMAL: high-frequency procedural normal perturbation via screen-space
+    // derivatives of a fine noise height → grazing light catches fine surface
+    // relief, making it feel like real clay/stone, not smooth CG plastic. Done
+    // after the normal is set up, before lights. Top surface only.
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <normal_fragment_maps>',
+      `#include <normal_fragment_maps>
+      {
+        float topMask = 1.0 - clamp(vBaseMix, 0.0, 1.0);
+        float amp = uDetail * 0.22 * topMask;
+        if (amp > 0.0001) {
+          vec2 mp = vUvN * (130.0 * uDetailScale);
+          float hC = micro7(mp);
+          // perturb shading normal by the screen-space gradient of the micro height.
+          vec3 dpdx = dFdx(-vViewPosition);
+          vec3 dpdy = dFdy(-vViewPosition);
+          float dhx = dFdx(hC);
+          float dhy = dFdy(hC);
+          vec3 r1 = cross(dpdy, normal);
+          vec3 r2 = cross(normal, dpdx);
+          float det = dot(dpdx, r1);
+          vec3 surfGrad = (abs(det) > 1e-8) ? (dhx * r1 + dhy * r2) / det : vec3(0.0);
+          normal = normalize(normal - amp * surfGrad);
+        }
       }
       `
     );
@@ -391,13 +533,24 @@ function buildHeightfield() {
   mesh.receiveShadow = true;
   scene.add(mesh);
 
+  // SKIRT (side walls + bottom cap) sharing the SAME material so colour/lighting
+  // match. Its top ring shares the plane-edge uv (aBase=0) → displaced by H(uv)
+  // identically to the plane edge (no gaps); bottom ring (aBase=1) pins to the
+  // flat base at y=-uThickness. Together: a thick carved solid block.
+  skirt = new THREE.Mesh(buildSkirtGeometry(GX, GY), material);
+  skirt.castShadow = true;
+  skirt.receiveShadow = true;
+  scene.add(skirt);
+
   // ground/slab plane that receives the mesh's shadow so masses sit grounded.
+  // Parked just below the solid block's base (y=-uThickness) so there's a floor
+  // under the bottom cap without z-fighting it.
   slab = new THREE.Mesh(
     new THREE.PlaneGeometry(WORLD_X * 1.6, WORLD_Z * 1.8),
     new THREE.MeshStandardMaterial({ color: 0x0a0e18, roughness: 0.92, metalness: 0.0 })
   );
   slab.rotation.x = -Math.PI / 2;
-  slab.position.y = -0.02;
+  slab.position.y = -tune.thickness - 0.12;
   slab.receiveShadow = true;
   scene.add(slab);
 }
@@ -676,6 +829,12 @@ function applyLookUniforms() {
   u.uTex.value = tune.tex;
   u.uWobble.value = tune.wobble;
   u.uAO.value = tune.ao;
+  // SOLID BODY + MICRO-SURFACE
+  const th = clamp(tune.thickness, 0, 8);
+  u.uThickness.value = th;
+  u.uDetail.value = tune.detail;
+  u.uDetailScale.value = tune.detailScale;
+  if (slab) slab.position.y = -th - 0.12;
 
   // PBR material
   material.roughness = tune.rough;
@@ -779,6 +938,10 @@ function bindUI() {
   bindSlider('amb', 'ambV', (v) => { tune.amb = v; return v.toFixed(2); });
   bindSlider('shadow', 'shadowV', (v) => { tune.shadow = v; return v.toFixed(2); });
   bindSlider('ao', 'aoV', (v) => { tune.ao = v; return v.toFixed(2); });
+  // solid body + micro-surface
+  bindSlider('thickness', 'thicknessV', (v) => { tune.thickness = v; return v.toFixed(2); });
+  bindSlider('detail', 'detailV', (v) => { tune.detail = v; return v.toFixed(2); });
+  bindSlider('detailScale', 'detailScaleV', (v) => { tune.detailScale = v; return v.toFixed(2); });
   // post
   bindSlider('bloomStr', 'bloomStrV', (v) => { tune.bloomStr = v; return v.toFixed(2); });
   bindSlider('bloomRad', 'bloomRadV', (v) => { tune.bloomRad = v; return v.toFixed(2); });
@@ -858,6 +1021,8 @@ function settingsBlob() {
       // cinematic additions
       rough: r2(tune.rough), metal: r2(tune.metal), env: r2(tune.env),
       shadow: r2(tune.shadow), ao: r2(tune.ao),
+      // solid body + micro-surface
+      thickness: r2(tune.thickness), detail: r2(tune.detail), detailScale: r2(tune.detailScale),
       bloomStr: r2(tune.bloomStr), bloomRad: r2(tune.bloomRad), bloomThr: r2(tune.bloomThr),
       vig: r2(tune.vig), expo: r2(tune.expo), contr: r2(tune.contr), gsat: r2(tune.gsat),
     },
