@@ -26,7 +26,7 @@ const ID = new URLSearchParams(location.search).get('id') || '1953888';
 const el = (id) => document.getElementById(id);
 
 // baked-in default camera (user-tuned)
-const DEFAULT_CAM = { pos: [-9.852, 18.1, 15.68], target: [-0.928, 0.947, 1.072] };
+const DEFAULT_CAM = { pos: [-11.962, 18.664, 17.842], target: [-0.621, 1.826, 0.268] };
 function applyDefaultCamera() {
   camera.position.set(DEFAULT_CAM.pos[0], DEFAULT_CAM.pos[1], DEFAULT_CAM.pos[2]);
   controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
@@ -60,33 +60,33 @@ const tune = {
   ridgeSharp: 1.0,
   flowSpeed: 0.48,
   seamPoss: 0.46,
-  ownerDim: 0.54,   // tint floor for the passive team (it relaxes toward neutral clay, not black)
-  glow: 0.5,        // ember ceiling — gentle quadratic curve + tied to real match intensity
-  glowCol: '#fea858',
+  ownerDim: 0.64,   // tint floor for the passive team (it relaxes toward neutral clay, not black)
+  glow: 0.42,       // ember ceiling — gentle quadratic curve + tied to real match intensity
+  glowCol: '#f0d8c1',
   homeCol: '#396dc0',
   awayCol: '#99ffca',
   sat: 0.86,        // natural saturation (no neon boost)
-  tint: 0.44,       // how strongly the clay is tinted by the team colour
+  tint: 1.0,        // how strongly the clay is tinted by the team colour
   clay: '#6a6560',  // neutral clay/stone base the team colour tints
-  light: 0.35,
+  light: 0.7,
   lightCol: '#ffffff', // key-light colour
-  amb: 0.26,
+  amb: 0.16,
   tex: 0.86,
   wobble: 0.42,
   // SOLID BODY + SURFACE PATTERN (fine volumetric mesh)
-  thickness: 0.2,   // extruded block depth: skirt walls drop to y=-thickness, flat base cap
+  thickness: 0.4,   // extruded block depth: skirt walls drop to y=-thickness, flat base cap
   pattern: 4,       // surface pattern: 0 grid · 1 weave · 2 lines · 3 dots · 4 hex · 5 grain
   detail: 1.1,      // pattern depth/strength
-  detailScale: 2.62,// pattern density (frequency)
+  detailScale: 2.58,// pattern density (frequency)
   // material / render
-  rough: 0.18,
-  metal: 0.27,
+  rough: 1.0,
+  metal: 0.81,
   env: 1.24,
-  shadow: 0.42,
-  ao: 1.0,
+  shadow: 0.32,
+  ao: 0.42,
   // post
   bloomStr: 0.12,
-  bloomRad: 0.66,
+  bloomRad: 0.3,
   bloomThr: 0.52,
   vig: 1.28,
   expo: 1.72,
