@@ -81,7 +81,7 @@ const tune = {
   lines: 0.6,       // football PITCH MARKINGS strength on the top surface (0 = off)
   // GOAL-ENTRY RINGS (contracting, scoring-team colour, flat on the cloth)
   ringSize: 1.0,    // settled-ring size multiplier
-  ringStr: 1.0,     // ring emissive brightness multiplier
+  ringStr: 1.6,     // ring emissive brightness multiplier
   // material / render
   rough: 1.0,
   metal: 0.81,
@@ -106,8 +106,9 @@ let eruptionCursor = 0;
 // scoring team's colour, lying on the relief surface at the goal-line crossing.
 let goalRings = [];                       // [{ goal, mesh, mat, uPos, vPos }]
 const RING_GROW_LIFE = 5.0;               // match-minutes over which the ring contracts
-const RING_R_BIG = 1.7;                   // start radius (world units)
-const RING_R_SMALL = 0.34;                // settled radius (world units)
+const RING_R_BIG = 2.6;                   // start radius (world units)
+const RING_R_SMALL = 0.6;                 // settled radius (world units)
+const RING_LIFT = 0.7;                    // float this far ABOVE the relief peak so it never buries
 
 // ---- boot -------------------------------------------------------------------
 init().catch((e) => fail(e.message || String(e)));
@@ -740,7 +741,7 @@ function buildGoalRings() {
       depthWrite: false,
     });
     // unit ring; we re-scale per frame to animate the contraction.
-    const geo = new THREE.RingGeometry(0.78, 1.0, 96);
+    const geo = new THREE.RingGeometry(0.7, 1.0, 96);
     geo.rotateX(-Math.PI / 2);                        // lie flat on XZ
     const m = new THREE.Mesh(geo, mat);
     m.renderOrder = 5;
@@ -763,11 +764,11 @@ function updateGoalRings(settled) {
     else p = clamp(age / RING_GROW_LIFE, 0, 1);
     const ease = p * p * (3 - 2 * p);                 // smoothstep contraction
     const radius = lerp(RING_R_BIG, RING_R_SMALL, ease) * tune.ringSize;
-    // brightness: bright on spawn, easing to a faint-but-visible settled glow.
-    const bright = lerp(3.6, 1.3, ease) * tune.ringStr;
-    const opacity = lerp(0.96, 0.7, ease);
+    // brightness: bright on spawn, easing to a clear settled glow.
+    const bright = lerp(5.0, 2.2, ease) * tune.ringStr;
+    const opacity = lerp(0.98, 0.82, ease);
     r.mesh.scale.set(radius, 1, radius);
-    const y = reliefHeightAt(r.u, r.v) + 0.08;        // sit just above the cloth/eruption
+    const y = reliefHeightAt(r.u, r.v) + RING_LIFT;   // float above the cloth/eruption peak
     r.mesh.position.set(worldX(r.u), y, worldZ(r.v));
     r.mat.emissiveIntensity = bright;
     r.mat.opacity = opacity;
