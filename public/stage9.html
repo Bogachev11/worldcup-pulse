@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>STAGE 9 · PRESSURE — 3D</title>
+  <title>STAGE 9 · 7 VARIANTS — 3D</title>
   <link rel="stylesheet" href="style.css" />
   <!-- Barlow (Google Fonts) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -79,10 +79,36 @@
     .btn { cursor: pointer; border: 1px solid var(--stroke); background: rgba(255,255,255,0.05);
       color: var(--ink); border-radius: 7px; padding: 5px 10px; font-size: 11px; }
     .btn:hover { border-color: rgba(255,255,255,0.3); }
+    /* TAB BAR — top-centre, switches the active visualization variant */
+    #tabbar {
+      position: fixed; z-index: 40; top: 12px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 4px; padding: 4px;
+      background: rgba(10,12,20,0.66); border: 1px solid var(--stroke); border-radius: 11px;
+      backdrop-filter: blur(6px);
+    }
+    #tabbar .tab {
+      cursor: pointer; border: 1px solid transparent; background: transparent;
+      color: var(--ink-dim); border-radius: 7px; padding: 6px 12px;
+      font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 500;
+      transition: background 0.12s, color 0.12s, border-color 0.12s;
+    }
+    #tabbar .tab:hover { color: var(--ink); background: rgba(255,255,255,0.05); }
+    #tabbar .tab.active { color: #04060c; background: #9fd; border-color: #9fd; font-weight: 700; }
   </style>
 </head>
 <body>
   <canvas id="stage"></canvas>
+
+  <!-- TAB BAR — 7 switchable visualization variants of the same match -->
+  <div id="tabbar">
+    <button class="tab" data-mode="comet">Comet</button>
+    <button class="tab" data-mode="peak">Peak</button>
+    <button class="tab" data-mode="wake">Wake</button>
+    <button class="tab" data-mode="pulse">Pulse</button>
+    <button class="tab" data-mode="arcs">Arcs</button>
+    <button class="tab" data-mode="duel">Duel</button>
+    <button class="tab" data-mode="pressure">Pressure</button>
+  </div>
 
   <!-- data / playback / tuning -->
   <div id="panel" class="pnl">
@@ -94,7 +120,7 @@
     <div class="row"><label>clock</label><input id="clock" type="range" min="0" max="100" step="0.1" value="0"><span class="val" id="clockV">0'</span></div>
 
     <div class="sec">simulation · данные</div>
-    <div class="row"><label>speed</label><input id="speed" type="range" min="0.3" max="10" step="0.1" value="3.7"><span class="val" id="speedV">3.7×</span></div>
+    <div class="row"><label>speed</label><input id="speed" type="range" min="0.2" max="10" step="0.1" value="0.9"><span class="val" id="speedV">0.9×</span></div>
     <div class="row"><label>height</label><input id="hscale" type="range" min="0.2" max="3" step="0.02" value="2.2"><span class="val" id="hscaleV">2.20</span></div>
     <div class="row"><label>turbulence</label><input id="turb" type="range" min="0" max="3" step="0.02" value="3"><span class="val" id="turbV">3.00</span></div>
     <div class="row"><label>ridge</label><input id="ridge" type="range" min="0.4" max="3" step="0.02" value="1"><span class="val" id="ridgeV">1.00</span></div>

@@ -70,8 +70,8 @@ let waveDispH = 0, waveDispA = 0;
 
 // tuning (bound to sliders) — stage6 defaults preserved + cinematic additions
 const tune = {
-  // sim / data (identical to stage6)
-  speed: 3.7,
+  // sim / data — default ~4× slower than the old 3.7× so the locus reads clearly
+  speed: 0.9,
   heightScale: 2.2,
   turbulence: 3.0,
   ridgeSharp: 1.0,
@@ -166,6 +166,20 @@ let shotDots = [];
 const SHOT_FADE_LIFE = 0.6;               // match-minutes to fade in after the shot
 const SHOT_R = 0.16;                       // base dot radius (world units)
 let clothShots = [];                       // small cone "подъёмчик" per shot, on the cloth at the shot spot
+
+// ============================================================================
+// MULTI-VARIANT TAB SYSTEM — see modeRegistry below. The PRESSURE heightfield
+// above is ONLY shown in mode 'pressure'. The other 6 modes render the shared
+// "single moving locus / real event stream" engine (timeline + ballAt).
+// ============================================================================
+const MODES = ['comet', 'peak', 'wake', 'pulse', 'arcs', 'duel', 'pressure'];
+let currentMode = 'comet';
+let timeline = null;       // merged, mirrored, fractional-t event stream (built once)
+let ballLocus = null;      // ordered locus anchor points {t,x,y,team} for ballAt()
+let modeRegistry = {};     // mode -> { group, enter, exit, update(t,dt), setClock(t) }
+const COL_HOME = new THREE.Color('#387ef0');   // FRA
+const COL_AWAY = new THREE.Color('#0c954e');   // SEN
+const COL_NEUTRAL = new THREE.Color('#8aa0c0');
 const BUMP_R = 0.22;                        // base cone radius (world units)
 const BUMP_H = 0.55;                        // base cone height (world units)
 
@@ -184,19 +198,27 @@ async function init() {
   attachGoalMouth(raw);   // carry onGoalX/onGoalY from the raw shots onto model goals
   pm = computePressureModel(raw);   // THE PRESSURE MODEL — decaying-window series
 
+  // shared engine: merged/mirrored/fractional-t timeline + the moving locus
+  timeline = buildTimeline(raw);
+  ballLocus = buildBallLocus(timeline);
+
   setupThree();
   buildHeightfield();
   setupComposer();
+  setupModes();         // build all 7 mode groups (must follow buildHeightfield)
   bindUI();
+  bindTabs();
   setupHudLayout();
   setupSectionCopy();
   applyTeamColors();
   applyLookUniforms();
 
-  el('title2').textContent =
-    `STAGE 9 · PRESSURE · ${model.home.abbr || 'HOME'} ${model.home.score}–${model.away.score} ${model.away.abbr || 'AWAY'}`;
   el('hAbbr').textContent = model.home.abbr || 'HOME';
   el('aAbbr').textContent = model.away.abbr || 'AWAY';
+
+  // initial mode from ?mode= (default comet)
+  const wanted = (new URLSearchParams(location.search).get('mode') || 'comet').toLowerCase();
+  activateMode(MODES.includes(wanted) ? wanted : 'comet', { skipRender: true });
 
   window.addEventListener('resize', onResize);
   onResize();
@@ -882,6 +904,753 @@ function updateClothShots(settled) {
   }
 }
 
+// ============================================================================
+// SHARED ENGINE — the merged real event stream as a SINGLE moving locus of play.
+// ============================================================================
+
+// Mirror a coordinate (0..100, own-attacking frame) into the COMMON pitch frame
+// where home attacks u→1 (right) and away attacks u→0 (left). Returns {u,v} in
+// [0,1]: u = length (0 home goal, 1 away goal), v = width.
+function toUV(team, x, y) {
+  let X = (Number(x) || 0) / 100, Y = (Number(y) || 0) / 100;
+  if (team === 'away') { X = 1 - X; Y = 1 - Y; }
+  return { u: clamp(X, 0, 1), v: clamp(Y, 0, 1) };
+}
+
+// Build the merged, mirrored, fractional-t timeline. Data granularity is per-MINUTE
+// integer, but each array is chronological — so within a minute we spread items
+// evenly across [minute, minute+1) by their order to reconstruct sub-minute flow.
+function buildTimeline(raw) {
+  const items = [];
+  const push = (arr, kind) => {
+    if (!Array.isArray(arr)) return;
+    for (const r of arr) {
+      if (!Number.isFinite(r.x)) continue;
+      const team = r.team === 'home' || r.team === 'away' ? r.team : 'home';
+      const a = toUV(team, r.x, r.y);
+      const it = { minute: Number(r.minute) || 0, team, kind, u: a.u, v: a.v,
+        type: r.type || kind, outcome: r.outcome || '', _ord: items.length };
+      if (Number.isFinite(r.endX)) { const e = toUV(team, r.endX, r.endY); it.eu = e.u; it.ev = e.v; }
+      if (kind === 'shot') {
+        it.xg = Number.isFinite(r.xg) ? r.xg : 0;
+        it.isGoal = !!r.isGoal;
+        it.onGoalX = Number.isFinite(r.onGoalX) ? r.onGoalX : 1;
+        it.onGoalY = Number.isFinite(r.onGoalY) ? r.onGoalY : 0;
+      }
+      items.push(it);
+    }
+  };
+  push(raw.passes, 'pass');
+  push(raw.events, 'event');
+  push(raw.shots, 'shot');
+
+  // group by minute, spread within the minute by stable order (kind+_ord)
+  const byMin = new Map();
+  for (const it of items) {
+    if (!byMin.has(it.minute)) byMin.set(it.minute, []);
+    byMin.get(it.minute).push(it);
+  }
+  const out = [];
+  for (const [m, group] of byMin) {
+    group.sort((a, b) => a._ord - b._ord);
+    const n = group.length;
+    for (let i = 0; i < n; i++) {
+      group[i].t = m + (n > 1 ? i / n : 0.0);   // fractional within [m, m+1)
+      out.push(group[i]);
+    }
+  }
+  out.sort((a, b) => a.t - b.t);
+  return out;
+}
+
+// Build the locus anchor list from the timeline's PASSES (the ball moves along
+// passes: start→end→next start). Each pass contributes two anchors so the locus
+// glides start→end then drifts to the next pass's start.
+function buildBallLocus(tl) {
+  const anchors = [];
+  const passes = tl.filter((it) => it.kind === 'pass');
+  for (let i = 0; i < passes.length; i++) {
+    const p = passes[i];
+    const next = passes[i + 1];
+    const gap = next ? Math.max(0.001, next.t - p.t) : 0.02;
+    anchors.push({ t: p.t, u: p.u, v: p.v, team: p.team });
+    if (Number.isFinite(p.eu)) {
+      // place the end anchor ~60% through the gap so the ball "travels" the pass
+      anchors.push({ t: p.t + gap * 0.6, u: p.eu, v: p.ev, team: p.team });
+    }
+  }
+  anchors.sort((a, b) => a.t - b.t);
+  return anchors;
+}
+
+// The single moving locus: interpolate position (and team) along the anchors.
+let _ballCursor = 0;
+function ballAt(t) {
+  const A = ballLocus;
+  if (!A || !A.length) return { u: 0.5, v: 0.5, team: 'home' };
+  if (t <= A[0].t) return { u: A[0].u, v: A[0].v, team: A[0].team };
+  const last = A[A.length - 1];
+  if (t >= last.t) return { u: last.u, v: last.v, team: last.team };
+  // resync cursor if we jumped backward (scrub)
+  if (_ballCursor >= A.length - 1 || A[_ballCursor].t > t) _ballCursor = 0;
+  while (_ballCursor < A.length - 2 && A[_ballCursor + 1].t <= t) _ballCursor++;
+  const a = A[_ballCursor], b = A[_ballCursor + 1];
+  const f = clamp((t - a.t) / Math.max(1e-4, b.t - a.t), 0, 1);
+  const e = f * f * (3 - 2 * f);   // ease
+  return { u: lerp(a.u, b.u, e), v: lerp(a.v, b.v, e), team: f < 0.5 ? a.team : b.team };
+}
+
+// Recent timeline events in [t-window, t]. Returns a slice (chronological).
+function eventsNear(t, window) {
+  if (!timeline) return [];
+  const lo = t - window;
+  const out = [];
+  for (const it of timeline) {
+    if (it.t > t) break;
+    if (it.t >= lo) out.push(it);
+  }
+  return out;
+}
+
+const teamColor = (team) => (team === 'away' ? COL_AWAY : COL_HOME);
+
+// World Y baseline for the locus modes (flat pitch at y=0; small lift to avoid z-fight).
+const LOCUS_Y = 0.02;
+
+// ============================================================================
+// MODE INFRASTRUCTURE
+// ============================================================================
+// Generic additive-sprite pool helper: a THREE.Points with per-vertex colour +
+// size + alpha, recycled. Used by COMET trail, PULSE rings(as points), DUEL etc.
+function makeDiscTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0.0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.85)');
+  grad.addColorStop(1.0, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c);
+  return t;
+}
+function makeRingTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, 128, 128);
+  g.strokeStyle = 'rgba(255,255,255,1)';
+  g.lineWidth = 9;
+  g.beginPath(); g.arc(64, 64, 50, 0, Math.PI * 2); g.stroke();
+  const t = new THREE.CanvasTexture(c);
+  return t;
+}
+let _discTex = null, _ringTex = null;
+function discTex() { return _discTex || (_discTex = makeDiscTexture()); }
+function ringTex() { return _ringTex || (_ringTex = makeRingTexture()); }
+
+// Build all the per-mode groups & their updaters. Called once after the scene is up.
+function setupModes() {
+  modeRegistry = {
+    comet: buildCometMode(),
+    peak: buildPeakMode(),
+    wake: buildWakeMode(),
+    pulse: buildPulseMode(),
+    arcs: buildArcsMode(),
+    duel: buildDuelMode(),
+    pressure: buildPressureMode(),
+  };
+}
+
+// Hide every mode's content, show the active one. Cheap: toggles visibility only.
+function activateMode(mode, opts = {}) {
+  if (!MODES.includes(mode)) mode = 'comet';
+  currentMode = mode;
+  for (const m of MODES) {
+    const r = modeRegistry[m];
+    if (!r) continue;
+    if (m === mode) { if (r.enter) r.enter(); }
+    else { if (r.exit) r.exit(); }
+  }
+  // tab bar highlight
+  document.querySelectorAll('#tabbar .tab').forEach((b) => {
+    b.classList.toggle('active', b.dataset.mode === mode);
+  });
+  // panels: PRESSURE uses the MODEL panel; others hide it. Left art panel stays.
+  const mp = el('modelpanel');
+  if (mp) mp.style.display = (mode === 'pressure') ? '' : 'none';
+  // title
+  const t = el('title2');
+  if (t && model) t.textContent =
+    `STAGE 9 · ${mode.toUpperCase()} · ${model.home.abbr} ${model.home.score}–${model.away.score} ${model.away.abbr}`;
+  // deep-link (no history spam)
+  try {
+    const url = new URL(location.href); url.searchParams.set('mode', mode);
+    history.replaceState(null, '', url);
+  } catch {}
+  // re-render the current frame so a switch is instant even when paused/scrubbed
+  if (!opts.skipRender) renderCurrentFrame();
+}
+
+// One-frame render dispatch for the active mode (used by scrub + __setClock).
+function renderCurrentFrame() {
+  const r = modeRegistry[currentMode];
+  if (r && r.setClock) r.setClock(clock);
+  if (composer) composer.render();
+}
+
+// ============================================================================
+// 1) COMET — bright orb at ballAt(t) in the on-ball team colour + fading trail.
+//    Shots = burst + beam to the goal mouth. Duels = small spark.
+// ============================================================================
+function buildCometMode() {
+  const group = new THREE.Group();
+  group.visible = false;
+  scene.add(group);
+
+  // ORB — a bright additive sprite that sits on the locus.
+  const orbMat = new THREE.SpriteMaterial({ map: discTex(), color: 0xffffff,
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+  const orb = new THREE.Sprite(orbMat);
+  orb.scale.setScalar(1.6);
+  group.add(orb);
+  // core (smaller, white-hot)
+  const coreMat = new THREE.SpriteMaterial({ map: discTex(), color: 0xffffff,
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+  const core = new THREE.Sprite(coreMat);
+  core.scale.setScalar(0.6);
+  group.add(core);
+
+  // TRAIL — a points cloud sampling the locus over the last ~12s of play.
+  const TRAIL_N = 120;
+  const TRAIL_SPAN = 0.5;   // match-minutes of history (~12s at ~0.9x but reads as path)
+  const tg = new THREE.BufferGeometry();
+  const tpos = new Float32Array(TRAIL_N * 3);
+  const tcol = new Float32Array(TRAIL_N * 3);
+  const tsize = new Float32Array(TRAIL_N);
+  tg.setAttribute('position', new THREE.BufferAttribute(tpos, 3));
+  tg.setAttribute('color', new THREE.BufferAttribute(tcol, 3));
+  tg.setAttribute('aSize', new THREE.BufferAttribute(tsize, 1));
+  const trailMat = new THREE.PointsMaterial({ size: 0.85, map: discTex(),
+    vertexColors: true, transparent: true, blending: THREE.AdditiveBlending,
+    depthWrite: false, sizeAttenuation: true });
+  const trail = new THREE.Points(tg, trailMat);
+  group.add(trail);
+
+  // SHOT BEAMS — short-lived line per recent shot toward its goal mouth.
+  const flashGroup = new THREE.Group();
+  group.add(flashGroup);
+
+  function drawTrail(t) {
+    const c = new THREE.Color();
+    for (let i = 0; i < TRAIL_N; i++) {
+      const tt = t - (i / TRAIL_N) * TRAIL_SPAN;
+      const b = ballAt(tt);
+      tpos[i * 3] = worldX(b.u); tpos[i * 3 + 1] = LOCUS_Y; tpos[i * 3 + 2] = worldZ(b.v);
+      const fade = 1 - i / TRAIL_N;
+      c.copy(teamColor(b.team));
+      tcol[i * 3] = c.r * fade; tcol[i * 3 + 1] = c.g * fade; tcol[i * 3 + 2] = c.b * fade;
+      tsize[i] = fade;
+    }
+    tg.attributes.position.needsUpdate = true;
+    tg.attributes.color.needsUpdate = true;
+  }
+
+  function drawFlashes(t) {
+    // rebuild small set each frame (cheap; only a handful are recent)
+    while (flashGroup.children.length) {
+      const m = flashGroup.children.pop();
+      m.geometry.dispose(); m.material.dispose();
+    }
+    const recent = eventsNear(t, 0.5);
+    for (const it of recent) {
+      const age = t - it.t;
+      if (it.kind === 'shot') {
+        const life = clamp(1 - age / 0.4, 0, 1);
+        if (life <= 0) continue;
+        // beam from shot spot toward goal mouth (use onGoalX/Y; home→away goal u=1)
+        const gu = it.team === 'home' ? 0.99 : 0.01;
+        const off = (it.onGoalX - 1) / 2;
+        const sign = it.team === 'home' ? 1 : -1;
+        const gv = clamp(0.5 + sign * off * (7.32 / 68), 0.04, 0.96);
+        const gy = clamp(it.onGoalY, 0, 1.2) * CROSSBAR_M * M2W;
+        const g = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(worldX(it.u), LOCUS_Y + 0.1, worldZ(it.v)),
+          new THREE.Vector3(worldX(gu), gy + LOCUS_Y, worldZ(gv)),
+        ]);
+        const col = it.isGoal ? new THREE.Color('#fff1c0') : teamColor(it.team);
+        const m = new THREE.Line(g, new THREE.LineBasicMaterial({ color: col,
+          transparent: true, opacity: 0.85 * life, blending: THREE.AdditiveBlending, depthWrite: false }));
+        flashGroup.add(m);
+        // burst sprite at shot spot
+        const bg = new THREE.BufferGeometry();
+        bg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([worldX(it.u), LOCUS_Y + 0.15, worldZ(it.v)]), 3));
+        const bm = new THREE.PointsMaterial({ size: (it.isGoal ? 3.5 : 2.0) * life, map: discTex(),
+          color: col, transparent: true, opacity: life, blending: THREE.AdditiveBlending, depthWrite: false });
+        flashGroup.add(new THREE.Points(bg, bm));
+      } else if (it.kind === 'event' && DUEL_TYPES.has(it.type)) {
+        const life = clamp(1 - age / 0.25, 0, 1);
+        if (life <= 0) continue;
+        const sg = new THREE.BufferGeometry();
+        sg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([worldX(it.u), LOCUS_Y + 0.1, worldZ(it.v)]), 3));
+        const sm = new THREE.PointsMaterial({ size: 1.1 * life, map: discTex(),
+          color: 0xffd9a0, transparent: true, opacity: 0.9 * life, blending: THREE.AdditiveBlending, depthWrite: false });
+        flashGroup.add(new THREE.Points(sg, sm));
+      }
+    }
+  }
+
+  function update(t) {
+    const b = ballAt(t);
+    orb.position.set(worldX(b.u), LOCUS_Y + 0.12, worldZ(b.v));
+    core.position.copy(orb.position);
+    orbMat.color.copy(teamColor(b.team));
+    drawTrail(t);
+    drawFlashes(t);
+  }
+  return {
+    group,
+    enter() { group.visible = true; if (pitchPlane) pitchPlane.visible = true; },
+    exit() { group.visible = false; },
+    update: (t) => update(t),
+    setClock: (t) => update(t),
+  };
+}
+
+const DUEL_TYPES = new Set(['Tackle', 'Interception', 'Aerial', 'BallRecovery', 'Dispossessed', 'Foul', 'Challenge', 'BlockedPass', 'Clearance']);
+
+// ============================================================================
+// 2) PEAK — ONE clean bump glides to follow ballAt(t). Height = local recent
+//    event density around the locus. Colour = on-ball team. Exactly one summit.
+// ============================================================================
+function buildPeakMode() {
+  const SEG = 90;
+  const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, SEG, Math.round(SEG * WORLD_Z / WORLD_X));
+  geo.rotateX(-Math.PI / 2);
+  const mat = new THREE.MeshStandardMaterial({ color: 0x10151f, roughness: 0.85, metalness: 0.1,
+    emissive: 0x000000, flatShading: false, side: THREE.DoubleSide });
+  // inject a live moving-bump uniform set
+  const u = {
+    uPeakU: { value: 0.5 }, uPeakV: { value: 0.5 }, uPeakH: { value: 0.0 },
+    uPeakCol: { value: new THREE.Color('#387ef0') }, uSpike: { value: 0.0 },
+  };
+  mat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, u);
+    sh.vertexShader = `uniform float uPeakU; uniform float uPeakV; uniform float uPeakH; uniform float uSpike;
+      varying float vH;\n` + sh.vertexShader;
+    sh.vertexShader = sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+      float du = (uv.x - uPeakU);
+      float dv = (uv.y - (1.0 - uPeakV));
+      float w = 0.10;                       // crest width (clean, broad-ish)
+      float g = exp(-(du*du + dv*dv) / (2.0*w*w));
+      float spikeG = exp(-(du*du + dv*dv) / (2.0*0.035*0.035));
+      float h = uPeakH * g + uSpike * spikeG;
+      vH = h;
+      transformed.y += h;`);
+    sh.fragmentShader = `varying float vH; uniform vec3 uPeakCol;\n` + sh.fragmentShader;
+    sh.fragmentShader = sh.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+      float k = clamp(vH / 2.2, 0.0, 1.0);
+      diffuseColor.rgb = mix(vec3(0.05,0.07,0.10), uPeakCol, k);`);
+    sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      float k2 = smoothstep(0.4, 2.0, vH);
+      totalEmissiveRadiance += uPeakCol * k2 * 0.8;`);
+  };
+  mat.userData.u = u;
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.visible = false;
+  scene.add(mesh);
+
+  // smoothed locus + height so the bump GLIDES (never teleports / never two ends)
+  let sU = 0.5, sV = 0.5, sH = 0, sSpike = 0;
+  const colCur = new THREE.Color('#387ef0');
+
+  function update(t, dt, snap) {
+    const b = ballAt(t);
+    const k = snap ? 1 : clamp((dt || 0.016) * 6, 0, 1);
+    sU += (b.u - sU) * k; sV += (b.v - sV) * k;
+    // local density = recent events near the locus → bump height
+    const recent = eventsNear(t, 0.35);
+    let dens = 0, spike = 0;
+    for (const it of recent) {
+      const d2 = (it.u - b.u) * (it.u - b.u) + (it.v - b.v) * (it.v - b.v);
+      const near = Math.exp(-d2 / (2 * 0.12 * 0.12));
+      const age = t - it.t;
+      const w = it.kind === 'shot' ? (1.2 + (it.xg || 0) * 4) : it.kind === 'pass' ? 0.18 : 0.4;
+      dens += w * near * (1 - age / 0.35);
+      if (it.kind === 'shot') spike = Math.max(spike, (1.5 + (it.xg || 0) * 4) * Math.exp(-age / 0.15));
+    }
+    const targetH = clamp(0.6 + dens * 0.55, 0.4, 2.6);
+    const kh = snap ? 1 : clamp((dt || 0.016) * 5, 0, 1);
+    sH += (targetH - sH) * kh;
+    sSpike += (spike - sSpike) * (spike > sSpike ? (snap ? 1 : 0.5) : (snap ? 1 : 0.12));
+    colCur.lerp(teamColor(b.team), snap ? 1 : k);
+    u.uPeakU.value = sU; u.uPeakV.value = sV; u.uPeakH.value = sH;
+    u.uSpike.value = sSpike; u.uPeakCol.value.copy(colCur);
+  }
+  return {
+    group: mesh,
+    enter() { mesh.visible = true; if (pitchPlane) pitchPlane.visible = true; },
+    exit() { mesh.visible = false; },
+    update: (t, dt) => update(t, dt, false),
+    setClock: (t) => { sU = ballAt(t).u; sV = ballAt(t).v; update(t, 0.5, true); },
+  };
+}
+
+// ============================================================================
+// 3) WAKE — like PEAK but the relief SINKS slowly behind the moving locus,
+//    drawing a fading "river of play". A shot leaves a tall spike that decays.
+// ============================================================================
+function buildWakeMode() {
+  const SEG = 110;
+  const SY = Math.round(SEG * WORLD_Z / WORLD_X);
+  const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, SEG, SY);
+  geo.rotateX(-Math.PI / 2);
+  const VXW = SEG + 1, VYW = SY + 1, NVW = VXW * VYW;
+  const hData = new Float32Array(NVW);     // persistent decaying relief
+  const cData = new Float32Array(NVW * 3); // per-vertex colour
+  const hTex = new THREE.DataTexture(hData, VXW, VYW, THREE.RedFormat, THREE.FloatType);
+  hTex.needsUpdate = true;
+  const cAttr = new THREE.BufferAttribute(cData, 3);
+  geo.setAttribute('color', cAttr);
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, color: 0xffffff,
+    roughness: 0.8, metalness: 0.1, side: THREE.DoubleSide });
+  const u = { uWake: { value: hTex }, uTexel: { value: new THREE.Vector2(1 / VXW, 1 / VYW) } };
+  mat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, u);
+    sh.vertexShader = `uniform sampler2D uWake; uniform vec2 uTexel; varying float vWh;\n` + sh.vertexShader;
+    sh.vertexShader = sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+      float h = texture2D(uWake, uv).r; vWh = h; transformed.y += h;`);
+    sh.fragmentShader = `varying float vWh;\n` + sh.fragmentShader;
+    sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      totalEmissiveRadiance += diffuse * smoothstep(0.3, 1.8, vWh) * 0.9;`);
+  };
+  mat.userData.u = u;
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.visible = false;
+  scene.add(mesh);
+
+  let lastT = -1;
+  const SINK_TAU = 1.6;          // half-life (min) the river relief sinks behind the locus
+  const RIVER_RAD = 5;           // deposit radius in cells (broad → connected ribbon)
+  // stamp a soft gaussian blob of height `amt` (colour `col`) at (u,v).
+  function deposit(u01, v01, amt, col, radCells) {
+    const ci = clamp(u01, 0, 1) * (VXW - 1);
+    const cj = clamp(1 - v01, 0, 1) * (VYW - 1);
+    const R = radCells, sig = R * 0.5;
+    for (let dj = -R; dj <= R; dj++) for (let di = -R; di <= R; di++) {
+      const i = Math.round(ci + di), j = Math.round(cj + dj);
+      if (i < 0 || i >= VXW || j < 0 || j >= VYW) continue;
+      const g = Math.exp(-(di * di + dj * dj) / (2 * sig * sig));
+      const k = j * VXW + i;
+      const add = amt * g;
+      if (add > hData[k]) {
+        const f = clamp((add - hData[k]) / Math.max(0.001, add), 0, 1);
+        cData[k * 3] = lerp(cData[k * 3], col.r, f);
+        cData[k * 3 + 1] = lerp(cData[k * 3 + 1], col.g, f);
+        cData[k * 3 + 2] = lerp(cData[k * 3 + 2], col.b, f);
+        hData[k] = add;
+      }
+    }
+  }
+  // deposit CONTINUOUSLY along the locus segment a→b so the trail is a connected
+  // ribbon (not dotty), with a small backward sink so older parts are lower.
+  function depositSegment(ta, tb, baseAmt) {
+    const a = ballAt(ta), b = ballAt(tb);
+    const seg = Math.hypot(b.u - a.u, b.v - a.v);
+    const n = Math.max(1, Math.ceil(seg * 60));
+    for (let s = 0; s <= n; s++) {
+      const f = s / n;
+      const u = lerp(a.u, b.u, f), v = lerp(a.v, b.v, f);
+      deposit(u, v, baseAmt, teamColor(f < 0.5 ? a.team : b.team), RIVER_RAD);
+    }
+  }
+  function decayAll(f) { for (let k = 0; k < NVW; k++) hData[k] *= f; }
+  function stampShots(t) {
+    for (const it of eventsNear(t, 5)) {
+      if (it.kind !== 'shot') continue;
+      const age = t - it.t;
+      const spike = (2.2 + (it.xg || 0) * 5) * Math.exp(-age / 1.6);
+      if (spike > 0.06) deposit(it.u, it.v, spike, it.isGoal ? new THREE.Color('#fff1c0') : teamColor(it.team), 3);
+    }
+  }
+  function rebuild(t) {
+    // full deterministic rebuild (scrub): integrate the locus over the last ~5 min,
+    // sinking between samples so the most recent stretch is tallest.
+    hData.fill(0); cData.fill(0);
+    const dtStep = 0.05, start = Math.max(0, t - 3.5);
+    let prev = start;
+    for (let tt = start + dtStep; tt <= t + 1e-6; tt += dtStep) {
+      decayAll(Math.exp(-dtStep / SINK_TAU));
+      depositSegment(prev, tt, 1.3);
+      prev = tt;
+    }
+    stampShots(t);
+    hTex.needsUpdate = true; cAttr.needsUpdate = true;
+  }
+  function step(t) {
+    if (lastT < 0 || t < lastT - 0.001 || t - lastT > 1.0) { rebuild(t); lastT = t; return; }
+    const dtm = Math.max(1e-4, t - lastT);
+    decayAll(Math.exp(-dtm / SINK_TAU));
+    depositSegment(lastT, t, 1.3);
+    for (const it of eventsNear(t, dtm + 0.001)) {
+      if (it.kind === 'shot' && it.t > lastT)
+        deposit(it.u, it.v, 2.6 + (it.xg || 0) * 5, it.isGoal ? new THREE.Color('#fff1c0') : teamColor(it.team), 3);
+    }
+    hTex.needsUpdate = true; cAttr.needsUpdate = true;
+    lastT = t;
+  }
+  return {
+    group: mesh,
+    enter() { mesh.visible = true; if (pitchPlane) pitchPlane.visible = true; },
+    exit() { mesh.visible = false; },
+    update: (t) => step(t),
+    setClock: (t) => { lastT = -1; rebuild(t); lastT = t; },
+  };
+}
+
+// ============================================================================
+// 4) PULSE — no terrain; every event POPS as an expanding ring/flash, then fades.
+//    pass=tiny dot, duel=ring, shot=big ring+beam, goal=full-pitch flash.
+// ============================================================================
+function buildPulseMode() {
+  const group = new THREE.Group();
+  group.visible = false;
+  scene.add(group);
+  const dynamic = new THREE.Group();
+  group.add(dynamic);
+  // full-pitch goal flash plane
+  const flashMat = new THREE.MeshBasicMaterial({ color: 0xfff1c0, transparent: true,
+    opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const flashGeo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z); flashGeo.rotateX(-Math.PI / 2);
+  const flash = new THREE.Mesh(flashGeo, flashMat);
+  flash.position.y = LOCUS_Y + 0.05;
+  group.add(flash);
+
+  function build(t) {
+    while (dynamic.children.length) {
+      const m = dynamic.children.pop();
+      m.geometry.dispose(); if (m.material.map) {} m.material.dispose();
+    }
+    const recent = eventsNear(t, 1.2);
+    let goalFlash = 0;
+    for (const it of recent) {
+      const age = t - it.t;
+      const x = worldX(it.u), z = worldZ(it.v);
+      if (it.kind === 'pass') {
+        const life = clamp(1 - age / 0.5, 0, 1);
+        if (life <= 0) continue;
+        addPoint(dynamic, x, z, 0.45, teamColor(it.team), 0.35 * life);
+      } else if (it.kind === 'shot') {
+        const life = clamp(1 - age / 1.0, 0, 1);
+        if (life <= 0) continue;
+        const r = lerp(0.4, 3.2, 1 - life) * (it.isGoal ? 1.4 : 1);
+        addRing(dynamic, x, z, r, it.isGoal ? new THREE.Color('#fff1c0') : teamColor(it.team), life);
+        // beam to goal
+        const gu = it.team === 'home' ? 0.99 : 0.01;
+        const sign = it.team === 'home' ? 1 : -1;
+        const gv = clamp(0.5 + sign * ((it.onGoalX - 1) / 2) * (7.32 / 68), 0.04, 0.96);
+        const gy = clamp(it.onGoalY, 0, 1.2) * CROSSBAR_M * M2W;
+        addBeam(dynamic, x, z, worldX(gu), gy, worldZ(gv), it.isGoal ? new THREE.Color('#fff1c0') : teamColor(it.team), life * 0.9);
+        if (it.isGoal) goalFlash = Math.max(goalFlash, clamp(1 - age / 0.8, 0, 1));
+      } else if (DUEL_TYPES.has(it.type)) {
+        const life = clamp(1 - age / 0.6, 0, 1);
+        if (life <= 0) continue;
+        const r = lerp(0.3, 1.3, 1 - life);
+        addRing(dynamic, x, z, r, new THREE.Color('#ffd9a0'), life * 0.85);
+      }
+    }
+    flashMat.opacity = goalFlash * 0.5;
+  }
+  return {
+    group,
+    enter() { group.visible = true; if (pitchPlane) pitchPlane.visible = true; },
+    exit() { group.visible = false; },
+    update: (t) => build(t),
+    setClock: (t) => build(t),
+  };
+}
+
+// helpers for ring/point/beam primitives (built per-frame, cheap counts)
+function addPoint(parent, x, z, size, col, alpha) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([x, LOCUS_Y + 0.08, z]), 3));
+  const m = new THREE.PointsMaterial({ size, map: discTex(), color: col, transparent: true,
+    opacity: alpha, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
+  parent.add(new THREE.Points(g, m));
+}
+function addRing(parent, x, z, r, col, alpha) {
+  const g = new THREE.RingGeometry(r * 0.82, r, 48);
+  g.rotateX(-Math.PI / 2);
+  const m = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: alpha,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(g, m);
+  mesh.position.set(x, LOCUS_Y + 0.06, z);
+  parent.add(mesh);
+}
+function addBeam(parent, x0, z0, x1, y1, z1, col, alpha) {
+  const g = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(x0, LOCUS_Y + 0.1, z0), new THREE.Vector3(x1, y1 + LOCUS_Y, z1)]);
+  const m = new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: alpha,
+    blending: THREE.AdditiveBlending, depthWrite: false });
+  parent.add(new THREE.Line(g, m));
+}
+
+// ============================================================================
+// 5) ARCS — each pass drawn as an animated arc (x,y)→(endX,endY) in team colour,
+//    fading over ~4s. Duels = sparks; shots = beams to goal.
+// ============================================================================
+function buildArcsMode() {
+  const group = new THREE.Group();
+  group.visible = false;
+  scene.add(group);
+  const dynamic = new THREE.Group();
+  group.add(dynamic);
+  const ARC_LIFE = 1.6;    // match-minutes a pass arc lingers (longer → flow accumulates)
+
+  function arcPoints(u0, v0, u1, v1, lift) {
+    const pts = [];
+    const N = 16;
+    for (let i = 0; i <= N; i++) {
+      const f = i / N;
+      const u = lerp(u0, u1, f), v = lerp(v0, v1, f);
+      const y = LOCUS_Y + Math.sin(f * Math.PI) * lift;
+      pts.push(new THREE.Vector3(worldX(u), y, worldZ(v)));
+    }
+    return pts;
+  }
+  function build(t) {
+    while (dynamic.children.length) {
+      const m = dynamic.children.pop();
+      m.geometry.dispose(); m.material.dispose();
+    }
+    for (const it of eventsNear(t, ARC_LIFE + 0.2)) {
+      const age = t - it.t;
+      if (it.kind === 'pass' && Number.isFinite(it.eu)) {
+        const life = clamp(1 - age / ARC_LIFE, 0, 1);
+        if (life <= 0) continue;
+        const dist = Math.hypot(it.eu - it.u, it.ev - it.v);
+        const g = new THREE.BufferGeometry().setFromPoints(arcPoints(it.u, it.v, it.eu, it.ev, 0.25 + dist * 1.2));
+        const ok = it.outcome !== 'Unsuccessful';
+        const col = teamColor(it.team).clone(); if (!ok) col.multiplyScalar(0.55);
+        const m = new THREE.Line(g, new THREE.LineBasicMaterial({ color: col,
+          transparent: true, opacity: (ok ? 0.95 : 0.5) * life, blending: THREE.AdditiveBlending, depthWrite: false }));
+        dynamic.add(m);
+        // glowing head at the pass destination so the marching flow reads clearly
+        addPoint(dynamic, worldX(it.eu), worldZ(it.ev), 0.55 * (0.5 + life * 0.5), col, (ok ? 0.7 : 0.35) * life);
+      } else if (it.kind === 'shot') {
+        const life = clamp(1 - age / 1.0, 0, 1);
+        if (life <= 0) continue;
+        const gu = it.team === 'home' ? 0.99 : 0.01;
+        const sign = it.team === 'home' ? 1 : -1;
+        const gv = clamp(0.5 + sign * ((it.onGoalX - 1) / 2) * (7.32 / 68), 0.04, 0.96);
+        const gy = clamp(it.onGoalY, 0, 1.2) * CROSSBAR_M * M2W;
+        addBeam(dynamic, worldX(it.u), worldZ(it.v), worldX(gu), gy, worldZ(gv),
+          it.isGoal ? new THREE.Color('#fff1c0') : teamColor(it.team), life);
+        addPoint(dynamic, worldX(it.u), worldZ(it.v), it.isGoal ? 3 : 1.8, it.isGoal ? new THREE.Color('#fff1c0') : teamColor(it.team), life);
+      } else if (DUEL_TYPES.has(it.type)) {
+        const life = clamp(1 - age / 0.3, 0, 1);
+        if (life <= 0) continue;
+        addPoint(dynamic, worldX(it.u), worldZ(it.v), 0.9 * life, new THREE.Color('#ffd9a0'), 0.85 * life);
+      }
+    }
+  }
+  return {
+    group,
+    enter() { group.visible = true; if (pitchPlane) pitchPlane.visible = true; },
+    exit() { group.visible = false; },
+    update: (t) => build(t),
+    setClock: (t) => build(t),
+  };
+}
+
+// ============================================================================
+// 6) DUEL — emphasise единоборства: Tackle/Aerial/Interception/etc. as sharp
+//    clashing spikes; passes faint background dots; shots big.
+// ============================================================================
+function buildDuelMode() {
+  const group = new THREE.Group();
+  group.visible = false;
+  scene.add(group);
+  const dynamic = new THREE.Group();
+  group.add(dynamic);
+
+  function spike(parent, x, z, h, col, alpha) {
+    const g = new THREE.ConeGeometry(0.22, h, 14);
+    const m = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: alpha,
+      blending: THREE.AdditiveBlending, depthWrite: false });
+    const mesh = new THREE.Mesh(g, m);
+    mesh.position.set(x, LOCUS_Y + h * 0.5, z);
+    parent.add(mesh);
+  }
+  function build(t) {
+    while (dynamic.children.length) {
+      const m = dynamic.children.pop();
+      m.geometry.dispose(); m.material.dispose();
+    }
+    for (const it of eventsNear(t, 1.4)) {
+      const age = t - it.t;
+      const x = worldX(it.u), z = worldZ(it.v);
+      if (it.kind === 'pass') {
+        const life = clamp(1 - age / 0.4, 0, 1);
+        if (life <= 0) continue;
+        addPoint(dynamic, x, z, 0.3, teamColor(it.team), 0.18 * life);   // faint bg dot
+      } else if (it.kind === 'shot') {
+        const life = clamp(1 - age / 1.2, 0, 1);
+        if (life <= 0) continue;
+        spike(dynamic, x, z, 1.6 + (it.xg || 0) * 4, it.isGoal ? new THREE.Color('#fff1c0') : teamColor(it.team), 0.9 * life);
+      } else if (DUEL_TYPES.has(it.type)) {
+        const life = clamp(1 - age / 0.9, 0, 1);
+        if (life <= 0) continue;
+        // clashing spike — colour by team, taller for harder duels
+        const h = (it.type === 'Aerial' || it.type === 'Tackle') ? 1.4 : 1.0;
+        spike(dynamic, x, z, h * (0.6 + life * 0.6), teamColor(it.team), 0.92 * life);
+        addPoint(dynamic, x, z, 0.7 * life, new THREE.Color('#ffe2b0'), 0.7 * life);
+      }
+    }
+  }
+  return {
+    group,
+    enter() { group.visible = true; if (pitchPlane) pitchPlane.visible = true; },
+    exit() { group.visible = false; },
+    update: (t) => build(t),
+    setClock: (t) => build(t),
+  };
+}
+
+// ============================================================================
+// 7) PRESSURE — the existing threat-wave heightfield model, kept as a reference
+//    tab. It owns mesh/material/goalRings/shotDots/clothShots.
+// ============================================================================
+function buildPressureMode() {
+  const objs = [mesh, ...goalRings.map((r) => r.mesh), ...shotDots.map((d) => d.mesh), ...clothShots.map((c) => c.mesh)];
+  function setVis(v) { for (const o of objs) if (o) o.visible = v; }
+  return {
+    group: mesh,
+    enter() { setVis(true); if (pitchPlane) pitchPlane.visible = true; pressureActive = true; },
+    exit() { setVis(false); pressureActive = false; },
+    update: (t, dt) => {
+      // driven by the existing pressure pipeline in loop(); just keep rings live
+      updateGoalRings(false); updateShotDots(false); updateClothShots(false);
+    },
+    setClock: (t) => {
+      lastSimT = -1;
+      waveDispH = at(pm.threatH, t, PM_STEP);
+      waveDispA = at(pm.threatA, t, PM_STEP);
+      computeHeight(t);
+      const u = material.userData.u;
+      u.uHScale.value = tune.heightScale;
+      u.uTime.value = t * 0.5 * tune.flowSpeed;
+      u.uFront.value = frontFromTilt(t);
+      const possHome = clamp(at(pm.poss, t, PM_STEP), 0, 1);
+      uPossCur = 1 - possHome; u.uPoss.value = uPossCur;
+      u.uIntensity.value = clamp(at(pm.tempo, t, PM_STEP), 0, 1);
+      applyLookUniforms();
+      updateGoalRings(true); updateShotDots(true); updateClothShots(true);
+    },
+  };
+}
+let pressureActive = false;
+
 // ---- post-processing composer ----------------------------------------------
 function setupComposer() {
   composer = new EffectComposer(renderer);
@@ -1333,24 +2102,25 @@ function loop(now) {
   if (model && clock < model.duration - 0.01) { ended = false; calm = 0; }
   if (ended && calm < 1) calm = Math.min(1, calm + dt / CALM_TIME);
 
-  simAccum += dt;
-  // keep simulating while settling so the surface visibly calms, not just when playing
-  if (model && (simAccum >= 1 / 30 || lastSimT < 0)) { simAccum = 0; computeHeight(clock); }
-
-  if (material && model) {
-    updateFrameUniforms(dt);
-    applyLookUniforms();
-    if (calm > 0) {                                  // ease the surface to a calm, flat, quiet end
-      const u = material.userData.u;
-      const k = calm * calm * (3 - 2 * calm);        // smoothstep
-      u.uHScale.value *= (1 - 0.92 * k);
-      u.uGlow.value *= (1 - 0.95 * k);
+  // PRESSURE mode runs the heavy heightfield pipeline; the other 6 modes just
+  // advance their own (cheap) updaters from the shared clock.
+  if (currentMode === 'pressure') {
+    simAccum += dt;
+    if (model && (simAccum >= 1 / 30 || lastSimT < 0)) { simAccum = 0; computeHeight(clock); }
+    if (material && model) {
+      updateFrameUniforms(dt);
+      applyLookUniforms();
+      if (calm > 0) {                                // ease the surface to a calm, flat, quiet end
+        const u = material.userData.u;
+        const k = calm * calm * (3 - 2 * calm);      // smoothstep
+        u.uHScale.value *= (1 - 0.92 * k);
+        u.uGlow.value *= (1 - 0.95 * k);
+      }
     }
   }
 
-  updateGoalRings(false);
-  updateShotDots(false);
-  updateClothShots(false);
+  const r = modeRegistry[currentMode];
+  if (r && r.update) r.update(clock, dt);
 
   controls.update();
   composer.render();
@@ -1391,31 +2161,21 @@ window.__setClock = (min) => {
   clock = clamp(+min || 0, 0, model.duration);
   playing = false;
   const playBtn = el('play'); if (playBtn) playBtn.textContent = '▶ play';
-  lastSimT = -1;
-  // snap the displayed wave heights to the instantaneous threat so a scrub shows
-  // the right wave immediately (no rise/decay lag on a manual jump).
-  waveDispH = at(pm.threatH, clock, PM_STEP);
-  waveDispA = at(pm.threatA, clock, PM_STEP);
-  computeHeight(clock);
-  if (material) {
-    const u = material.userData.u;
-    u.uHScale.value = tune.heightScale;
-    u.uTime.value = clock * 0.5 * tune.flowSpeed;
-    u.uFront.value = frontFromTilt(clock);
-    const possHome = clamp(at(pm.poss, clock, PM_STEP), 0, 1);
-    uPossCur = 1 - possHome;
-    u.uPoss.value = uPossCur;
-    u.uIntensity.value = clamp(at(pm.tempo, clock, PM_STEP), 0, 1);
-    applyLookUniforms();
-  }
-  updateGoalRings(true);   // scrub → show each past goal's ring in its settled small state
-  updateShotDots(true);    // scrub → show all shots up to this minute
-  updateClothShots(true);
+  // dispatch to the active mode's deterministic one-frame setClock (hidden-tab safe)
+  const r = modeRegistry[currentMode];
+  if (r && r.setClock) r.setClock(clock);
   controls.update();
   composer.render();
   updateHud();
   updateCamReadout();
 };
+
+// wire the 7 tab buttons
+function bindTabs() {
+  document.querySelectorAll('#tabbar .tab').forEach((b) => {
+    b.addEventListener('click', () => activateMode(b.dataset.mode));
+  });
+}
 
 // Push all the colour/lighting/effect/material/post tunables into uniforms.
 function applyLookUniforms() {
