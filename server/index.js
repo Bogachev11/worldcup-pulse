@@ -278,6 +278,24 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Per-match REAL per-second event TIMELINE (built by build_timeline.js). From disk.
+    if (p.startsWith('/api/timeline/')) {
+      const id = decodeURIComponent(p.slice('/api/timeline/'.length)).replace(/[^0-9]/g, '');
+      if (!id) { sendJson(res, { error: 'missing match id' }, 400); return; }
+      try {
+        const buf = await readFile(path.join(DATA, 'timeline', `${id}.json`), 'utf8');
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'access-control-allow-origin': '*',
+          'cache-control': 'public, max-age=300',
+        });
+        res.end(buf);
+      } catch {
+        sendJson(res, { error: `timeline match ${id} not found` }, 404);
+      }
+      return;
+    }
+
     // Full per-match fingerprint record. Served from disk (404 if absent).
     if (p.startsWith('/api/match/')) {
       const id = decodeURIComponent(p.slice('/api/match/'.length)).replace(/[^0-9A-Za-z_-]/g, '');

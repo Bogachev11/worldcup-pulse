@@ -198,8 +198,21 @@ async function init() {
   attachGoalMouth(raw);   // carry onGoalX/onGoalY from the raw shots onto model goals
   pm = computePressureModel(raw);   // THE PRESSURE MODEL — decaying-window series
 
-  // shared engine: merged/mirrored/fractional-t timeline + the moving locus
-  timeline = buildTimeline(raw);
+  // shared engine: REAL per-second timeline (from /api/timeline/{id}) → merged,
+  // mirrored event stream + the moving locus. Fetch it; fall back to the old
+  // per-minute reconstruction only if the timeline endpoint is unavailable.
+  let tlDoc = null;
+  try {
+    tlDoc = await fetch('/api/timeline/' + ID).then((r) => (r.ok ? r.json() : null));
+  } catch { tlDoc = null; }
+  if (tlDoc && Array.isArray(tlDoc.events) && tlDoc.events.length) {
+    timeline = buildTimelineFromDoc(tlDoc);
+    // clock spans the full REAL match (incl. stoppage) — override the rich-derived
+    // duration (which only sees integer minutes) with the timeline's fullT.
+    if (Number.isFinite(tlDoc.fullT) && tlDoc.fullT > model.duration) model.duration = tlDoc.fullT;
+  } else {
+    timeline = buildTimeline(raw);   // legacy fake-fractional fallback
+  }
   ballLocus = buildBallLocus(timeline);
 
   setupThree();
@@ -917,6 +930,39 @@ function toUV(team, x, y) {
   return { u: clamp(X, 0, 1), v: clamp(Y, 0, 1) };
 }
 
+// Build the engine stream from the REAL per-second timeline doc (/api/timeline).
+// Each event already carries a real master-clock t (match-minutes). We classify
+// it into the engine's three kinds (pass / shot / event), mirror coords into the
+// shared pitch frame, and carry pass ends + shot xG. Already time-sorted upstream,
+// but we re-sort to be safe.
+const SHOT_TYPES_TL = new Set(['SavedShot', 'MissedShots', 'ShotOnPost', 'Goal']);
+function buildTimelineFromDoc(doc) {
+  const out = [];
+  for (const e of doc.events) {
+    if (!Number.isFinite(e.x) || !Number.isFinite(e.y)) continue;
+    const team = e.team === 'home' || e.team === 'away' ? e.team : 'home';
+    const kind = SHOT_TYPES_TL.has(e.type) ? 'shot' : (e.type === 'Pass' ? 'pass' : 'event');
+    const a = toUV(team, e.x, e.y);
+    const it = {
+      t: Number(e.t) || 0, minute: Number(e.minute) || 0, team, kind,
+      u: a.u, v: a.v, type: e.type || kind, outcome: e.outcome || '',
+      isTouch: !!e.isTouch,
+    };
+    if (Number.isFinite(e.endX) && Number.isFinite(e.endY)) {
+      const en = toUV(team, e.endX, e.endY); it.eu = en.u; it.ev = en.v;
+    }
+    if (kind === 'shot') {
+      it.xg = Number.isFinite(e.xg) ? e.xg : 0;
+      it.isGoal = !!e.isGoal;
+      it.onGoalX = Number.isFinite(e.onGoalX) ? e.onGoalX : 1;
+      it.onGoalY = Number.isFinite(e.onGoalY) ? e.onGoalY : 0;
+    }
+    out.push(it);
+  }
+  out.sort((a, b) => a.t - b.t);
+  return out;
+}
+
 // Build the merged, mirrored, fractional-t timeline. Data granularity is per-MINUTE
 // integer, but each array is chronological — so within a minute we spread items
 // evenly across [minute, minute+1) by their order to reconstruct sub-minute flow.
@@ -963,15 +1009,24 @@ function buildTimeline(raw) {
   return out;
 }
 
-// Build the locus anchor list from the timeline's PASSES (the ball moves along
-// passes: start→end→next start). Each pass contributes two anchors so the locus
-// glides start→end then drifts to the next pass's start.
+// On-ball event types the locus rides (the ball is physically at these spots).
+const ONBALL_TYPES = new Set([
+  'Pass', 'BallTouch', 'TakeOn', 'BallRecovery', 'Clearance', 'Dispossessed',
+  'Tackle', 'Interception', 'Aerial', 'Challenge', 'BlockedPass', 'Foul',
+  'KeeperPickup', 'Save', 'CornerAwarded', 'ShieldBallOpp', 'Goal',
+  'SavedShot', 'MissedShots', 'ShotOnPost',
+]);
+
+// Build the locus anchor list from the timeline's ON-BALL events, using REAL t.
+// The ball sits at each event's (x,y); for a pass it travels toward (endX,endY)
+// part-way to the next event, then drifts to the next event's start. During gaps
+// with no events the locus simply holds at the last anchor (realistic dead time).
 function buildBallLocus(tl) {
   const anchors = [];
-  const passes = tl.filter((it) => it.kind === 'pass');
-  for (let i = 0; i < passes.length; i++) {
-    const p = passes[i];
-    const next = passes[i + 1];
+  const onball = tl.filter((it) => ONBALL_TYPES.has(it.type) || it.isTouch);
+  for (let i = 0; i < onball.length; i++) {
+    const p = onball[i];
+    const next = onball[i + 1];
     const gap = next ? Math.max(0.001, next.t - p.t) : 0.02;
     anchors.push({ t: p.t, u: p.u, v: p.v, team: p.team });
     if (Number.isFinite(p.eu)) {
@@ -983,8 +1038,13 @@ function buildBallLocus(tl) {
   return anchors;
 }
 
-// The single moving locus: interpolate position (and team) along the anchors.
+// The single moving locus: interpolate position (and team) along the anchors
+// using REAL t. The ball glides between consecutive on-ball anchors; but across a
+// DEAD-BALL gap (no events for a while) it HOLDS at the previous spot for most of
+// the gap and only slides into place near the next anchor (so it doesn't crawl
+// across the pitch during a stoppage).
 let _ballCursor = 0;
+const LOCUS_HOLD = 0.12;   // match-minutes (~7s): gaps longer than this are dead-ball holds
 function ballAt(t) {
   const A = ballLocus;
   if (!A || !A.length) return { u: 0.5, v: 0.5, team: 'home' };
@@ -995,7 +1055,13 @@ function ballAt(t) {
   if (_ballCursor >= A.length - 1 || A[_ballCursor].t > t) _ballCursor = 0;
   while (_ballCursor < A.length - 2 && A[_ballCursor + 1].t <= t) _ballCursor++;
   const a = A[_ballCursor], b = A[_ballCursor + 1];
-  const f = clamp((t - a.t) / Math.max(1e-4, b.t - a.t), 0, 1);
+  const span = Math.max(1e-4, b.t - a.t);
+  let f = clamp((t - a.t) / span, 0, 1);
+  if (span > LOCUS_HOLD) {
+    // dead-ball: hold at `a` through the gap, then slide into `b` over the final hold-window.
+    const slideStart = 1 - LOCUS_HOLD / span;
+    f = f <= slideStart ? 0 : clamp((f - slideStart) / (1 - slideStart), 0, 1);
+  }
   const e = f * f * (3 - 2 * f);   // ease
   return { u: lerp(a.u, b.u, e), v: lerp(a.v, b.v, e), team: f < 0.5 ? a.team : b.team };
 }
