@@ -35,6 +35,15 @@
     #panel { top: 14px; left: 14px; max-height: calc(100vh - 28px); overflow-y: auto; overflow-x: hidden; }
     #panel::-webkit-scrollbar { width: 8px; }
     #panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 4px; }
+    /* RIGHT-side MODEL panel — same look as the left art panel, scrollable.
+       Top-right so it never overlaps the camera panel (bottom-right). */
+    #modelpanel { top: 14px; right: 14px; max-height: calc(100vh - 220px); overflow-y: auto; overflow-x: hidden;
+      border-color: rgba(150,200,255,0.35); }
+    #modelpanel::-webkit-scrollbar { width: 8px; }
+    #modelpanel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 4px; }
+    #modelpanel .sec { color: #bcd6ff; border-top-color: rgba(150,200,255,0.25); }
+    #modelpanel .seccopy { color: #bcd6ff; }
+    #modelpanel #modeltitle { font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; color: #bcd6ff; }
     #campanel { bottom: 14px; right: 14px; }
     .pnl .row { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
     .pnl label { color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.12em; }
@@ -90,7 +99,6 @@
     <div class="row"><label>turbulence</label><input id="turb" type="range" min="0" max="3" step="0.02" value="3"><span class="val" id="turbV">3.00</span></div>
     <div class="row"><label>ridge</label><input id="ridge" type="range" min="0.4" max="3" step="0.02" value="1"><span class="val" id="ridgeV">1.00</span></div>
     <div class="row"><label>flow</label><input id="flow" type="range" min="0" max="3" step="0.02" value="0.48"><span class="val" id="flowV">0.48</span></div>
-    <div class="row"><label>seam ▸ владение</label><input id="seam" type="range" min="0" max="1" step="0.02" value="0.46"><span class="val" id="seamV">0.46</span></div>
     <div class="row"><label>wobble ▸ колбасит</label><input id="wobble" type="range" min="0" max="0.7" step="0.01" value="0.42"><span class="val" id="wobbleV">0.42</span></div>
 
     <div class="sec">colour · цвет</div>
@@ -153,6 +161,38 @@
 
     <div class="row" style="margin-top:6px"><button id="copyset" class="btn" style="flex:1;cursor:pointer">COPY SETTINGS</button></div>
     <textarea id="copysetDump" readonly style="display:none;width:100%;height:120px;margin-top:4px;font:10px/1.3 monospace;background:#0a0e16;color:#9fd;border:1px solid var(--stroke);border-radius:4px;padding:6px;box-sizing:border-box"></textarea>
+  </div>
+
+  <!-- RIGHT-side MODEL panel — all the model NUMBERS (live-wired) -->
+  <div id="modelpanel" class="pnl">
+    <div id="modeltitle">MODEL · логика</div>
+
+    <div class="sec">half-lives τ · полураспад</div>
+    <div class="row"><label>threat τ ▸ угроза</label><input id="tauThreat" type="range" min="0.5" max="8" step="0.1" value="2.5"><span class="val" id="tauThreatV">2.5</span></div>
+    <div class="row"><label>tilt τ ▸ территория</label><input id="tauTilt" type="range" min="0.5" max="10" step="0.1" value="3.5"><span class="val" id="tauTiltV">3.5</span></div>
+    <div class="row"><label>poss τ ▸ владение</label><input id="tauPoss" type="range" min="0.3" max="6" step="0.1" value="1.5"><span class="val" id="tauPossV">1.5</span></div>
+    <div class="row"><label>def τ ▸ оборона</label><input id="tauDef" type="range" min="0.5" max="8" step="0.1" value="2.0"><span class="val" id="tauDefV">2.0</span></div>
+    <div class="row"><label>tempo τ ▸ темп</label><input id="tauTempo" type="range" min="0.3" max="6" step="0.1" value="1.5"><span class="val" id="tauTempoV">1.5</span></div>
+
+    <div class="sec">threat weights · веса угрозы</div>
+    <div class="row"><label>on-target</label><input id="wOnTarget" type="range" min="0" max="1" step="0.02" value="0.30"><span class="val" id="wOnTargetV">0.30</span></div>
+    <div class="row"><label>big chance</label><input id="wBigChance" type="range" min="0" max="1" step="0.02" value="0.40"><span class="val" id="wBigChanceV">0.40</span></div>
+    <div class="row"><label>box entry</label><input id="wBoxEntry" type="range" min="0" max="0.6" step="0.01" value="0.15"><span class="val" id="wBoxEntryV">0.15</span></div>
+    <div class="row"><label>fast break ▸ контра</label><input id="wFastBreak" type="range" min="1" max="3" step="0.05" value="1.6"><span class="val" id="wFastBreakV">1.60</span></div>
+    <div class="row"><label>def strength kDef</label><input id="kDef" type="range" min="0" max="1" step="0.02" value="0.55"><span class="val" id="kDefV">0.55</span></div>
+
+    <div class="sec">visual scales · масштабы</div>
+    <div class="row"><label>threat → height</label><input id="threatHeight" type="range" min="0.2" max="4" step="0.02" value="1.5"><span class="val" id="threatHeightV">1.50</span></div>
+    <div class="row"><label>wave spread ▸ разгон</label><input id="waveSpread" type="range" min="0.1" max="0.55" step="0.01" value="0.30"><span class="val" id="waveSpreadV">0.30</span></div>
+    <div class="row"><label>wave width ▸ ширина</label><input id="waveWidth" type="range" min="0.15" max="1.2" step="0.02" value="0.55"><span class="val" id="waveWidthV">0.55</span></div>
+    <div class="row"><label>tilt → seam</label><input id="tiltSeam" type="range" min="0" max="1.6" step="0.02" value="1.0"><span class="val" id="tiltSeamV">1.00</span></div>
+    <div class="row"><label>tempo → ripple</label><input id="tempoRipple" type="range" min="0" max="0.6" step="0.01" value="0.18"><span class="val" id="tempoRippleV">0.18</span></div>
+    <div class="row"><label>chop ▸ волнорез</label><input id="chop" type="range" min="0" max="2.5" step="0.02" value="1.0"><span class="val" id="chopV">1.00</span></div>
+    <div class="row"><label>wave rise ▸ вверх</label><input id="waveRise" type="range" min="1" max="20" step="0.2" value="9.0"><span class="val" id="waveRiseV">9.0</span></div>
+    <div class="row"><label>wave decay ▸ спад</label><input id="waveDecay" type="range" min="0.3" max="10" step="0.1" value="2.2"><span class="val" id="waveDecayV">2.2</span></div>
+
+    <div class="row" style="margin-top:6px"><button id="copymodel" class="btn" style="flex:1;cursor:pointer">COPY MODEL</button></div>
+    <textarea id="copymodelDump" readonly style="display:none;width:100%;height:120px;margin-top:4px;font:10px/1.3 monospace;background:#0a0e16;color:#bcd6ff;border:1px solid var(--stroke);border-radius:4px;padding:6px;box-sizing:border-box"></textarea>
   </div>
 
   <!-- camera / ракурс (set it, then tell me the values) -->

@@ -20,7 +20,8 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { clamp, lerp, smoothstep, fbm, buildModel, at, rgb01, xgUpTo } from './claybattle.js';
+import { clamp, lerp, smoothstep, fbm, buildModel, at, rgb01, xgUpTo,
+  richDuration, normMomentum, sampleSeries } from './claybattle.js';
 
 const ID = new URLSearchParams(location.search).get('id') || '1953888';
 const el = (id) => document.getElementById(id);
@@ -57,10 +58,15 @@ let mesh, material, keyLight;
 let pitchPlane, pitchMat;                 // static flat markings plane at y=0
 let heightBaseline = 0;                   // CPU-computed mean height → cloth straddles y=0
 let injected = null;                     // ref to the compiled onBeforeCompile shader.uniforms
-let model = null;                        // built data model
+let model = null;                        // built data model (colours / shots / eruptions scaffolding)
+let rawMatch = null;                     // the raw rich record (for the pressure model)
+let pm = null;                           // the PRESSURE MODEL: per-step decaying series (see computePressureModel)
 let clock = 0, playing = true;
 let lastSimT = -1;                       // last match-time we recomputed H at
 let uPossCur = 0.5;                      // smoothed live away-possession share (0 home..1 away)
+// displayed (visual) wave heights — eased FAST up, SLOW down so a single counter
+// shot flashes a sharp wave instead of being smoothed away. Updated each frame.
+let waveDispH = 0, waveDispA = 0;
 
 // tuning (bound to sliders) — stage6 defaults preserved + cinematic additions
 const tune = {
@@ -71,6 +77,33 @@ const tune = {
   ridgeSharp: 1.0,
   flowSpeed: 0.48,
   seamPoss: 0.46,
+
+  // ============================================================================
+  // PRESSURE MODEL · логика — ALL the numbers behind the threat-wave model.
+  // Live-wired: changing a τ/weight recomputes the per-step series (recomputeModel).
+  // ============================================================================
+  // half-lives (match-minutes) for each exponentially-decaying window
+  tauThreat: 2.5,    // threat (wave height)
+  tauTilt:  3.5,     // territory / field tilt (colour seam)
+  tauPoss:  1.5,     // control / possession (colour brightness gate)
+  tauDef:   2.0,     // defence / breakwater (chops opponent wave)
+  tauTempo: 1.5,     // tempo (surface ripple)
+  // threat weights
+  wOnTarget: 0.30,   // + per on-target shot
+  wBigChance: 0.40,  // + per big chance (xg>0.3)
+  wBoxEntry: 0.15,   // + per pass ending in opponent box (×Σ↓ of those)
+  wFastBreak: 1.6,   // FastBreak shot multiplier (preserve counters)
+  kDef: 0.55,        // defence strength: amplitude *= (1 - kDef·def_opp), clamped
+  // visual scales (model → render)
+  threatHeight: 1.5, // threat → wave height (world units / unit-threat)
+  waveSpread: 0.30,  // how far up-pitch the swell builds (final-third width along u)
+  waveWidth:  0.55,  // crest spread across the goal mouth (v), broad-ish
+  tiltSeam:   1.0,   // tilt → seam displacement strength (1 = full)
+  tempoRipple: 0.18, // tempo → ripple amplitude on the cloth
+  waveRise:   9.0,   // displayed-wave rise speed (fast up)
+  waveDecay:  2.2,   // displayed-wave decay speed (slow down)
+  chop:       1.0,   // breakwater chop strength (high-freq jagged term scaled by def)
+
   ownerDim: 0.64,   // tint floor for the passive team (it relaxes toward neutral clay, not black)
   glow: 0.42,       // ember ceiling — gentle quadratic curve + tied to real match intensity
   glowCol: '#f0d8c1',
@@ -97,7 +130,7 @@ const tune = {
   shotSize: 1.0,    // shot-dot radius multiplier (goal-mouth torец)
   shotZ: 1.0,       // multiplier on shot dots' onGoalY→worldY mapping
   goalZ: 1.0,       // multiplier on the goal rings' onGoalY→worldY mapping
-  bumpSize: 1.0,    // cloth shot-marker (подъёмчик) size multiplier
+  bumpSize: 0,      // cloth shot-marker (подъёмчик) size — DEFAULT HIDDEN (cones read wrong); slider kept
   // material / render
   rough: 1.0,
   metal: 0.81,
@@ -146,8 +179,10 @@ async function init() {
     if (!r.ok) throw new Error('api ' + r.status);
     return r.json();
   });
+  rawMatch = raw;
   model = buildModel(raw);
   attachGoalMouth(raw);   // carry onGoalX/onGoalY from the raw shots onto model goals
+  pm = computePressureModel(raw);   // THE PRESSURE MODEL — decaying-window series
 
   setupThree();
   buildHeightfield();
@@ -934,121 +969,280 @@ function applyTeamColors() {
 }
 
 // ============================================================================
-// THE SIMULATION — identical to stage6 (real data only).
+// THE PRESSURE MODEL — "waves of threat rolling at each goal; defence is a
+// breakwater; the coloured field below = territory/control."
+//
+// CRITICAL DESIGN RULE: there is NO cumulative-over-the-whole-match metric here.
+// Every series is a SLIDING, EXPONENTIALLY-DECAYING window (the *current phase*),
+// computed per team, two-way. `Σ↓(τ)` = a decaying accumulation with half-life τ
+// minutes: contributions older than ~τ fade out, so the surface always shows the
+// pressure of the last minute or two, never the season-long average.
+//
+// Implementation: we precompute every series at STEP resolution by sweeping the
+// real events once and decaying a running accumulator from step to step
+// (multiplying by 2^(-STEP/τ) each step and adding the events that fall in the
+// step). Then we sample with the existing `at(series,t,STEP)` linear-interp
+// pattern so scrubbing is exact. recomputeModel() rebuilds them whenever a τ or a
+// weight slider changes.
 // ============================================================================
-const A_INSTANT = 0.27;   // live momentum push (gentler so swings aren't twitchy)
-const B_ACCUM = 0.22;
-const H_MAX = 0.9;
-const BASE_AMP = 0.05;
-const TURB_SCALE = 0.55;
-const RIDGE_H = 1.3;
-const RIDGE_W = 0.07;
-const SEAM_EASE = 1.8;    // how fast the seam's dynamic part glides to its target (lower = softer)
 
-let permFrontShove = 0;
-let seamDyn = 0;          // SMOOTHED dynamic seam offset (momentum + attack surge), eased per frame
+// All series share this resolution & length (independent of buildModel's STEP).
+const PM_STEP = 0.25;     // finer than buildModel's 0.5 so brief counters survive
 
-// A shot is an attack on a goal: away shots shove the seam toward the HOME goal
-// (x→0, green crashes onto the blue goal), home shots toward the away goal (x→1).
-// Swells in then recedes over a few match-minutes — softened so it's not abrupt.
-const PUSH_LIFE = 6;      // match-minutes
-function attackPushAt(t) {
-  let s = 0;
-  for (let i = 0; i < model.eruptions.length; i++) {
-    const e = model.eruptions[i];
-    if (e.t > t) break;                       // shots are time-sorted
-    const age = t - e.t;
-    if (age > PUSH_LIFE) continue;
-    const rise = smoothstep(0, 1.4, age);     // gentle swell (was a quick snap)
-    const fall = 1 - smoothstep(PUSH_LIFE * 0.5, PUSH_LIFE, age);
-    const w = (0.35 + (e.xg || 0) * 1.6) * (e.isGoal ? 1.7 : 1.0);
-    s += (e.team === 'away' ? -1 : 1) * w * rise * fall;
-  }
-  return clamp(s * 0.48, -0.55, 0.55);
+// half-life τ (min) → per-step decay multiplier 2^(-STEP/τ)
+function decK(tau) { return Math.pow(2, -PM_STEP / Math.max(0.05, tau)); }
+
+// Normalise an event/pass/shot coordinate (0..100) into a COMMON home-attacking
+// frame: x→1 = toward the AWAY goal (home's attacking direction). Away rows are
+// stored in their own attacking frame, so mirror them. Returns {x,y} in [0,1].
+function normXYHome(team, x, y) {
+  let X = (Number(x) || 0) / 100, Y = (Number(y) || 0) / 100;
+  if (team === 'away') { X = 1 - X; Y = 1 - Y; }
+  return { x: clamp(X, 0, 1), y: clamp(Y, 0, 1) };
 }
-// target for the dynamic seam offset (eased into seamDyn each frame)
-function seamDynTarget(t) {
-  return A_INSTANT * at(model.series.mom, t, model.STEP) + attackPushAt(t);
-}
+// "attacking final third" for a team in the COMMON home frame: home attacks → x>0.66,
+// away attacks → x<0.34. opponent box (home frame): home opp box x>0.83, |y-0.5|<0.21.
+const HOME_THIRD = 0.66, BOX_X = 0.83, BOX_HALF_Y = 0.21;
 
-function frontAt(yN, t) {
-  const possHomeLive = clamp(at(model.series.possHome, t, model.STEP), 0.05, 0.95);
-  const wave = (fbm(yN * 2.2, 0.0, t * 0.03, 3)) * 0.06;
-  const base = lerp(0.5, possHomeLive, clamp(tune.seamPoss, 0, 1));
-  // possession base (already smooth) + the EASED dynamic offset (momentum + attack
-  // surge). The easing makes the back-and-forth glide instead of snapping.
-  return clamp(base + seamDyn + wave, 0.06, 0.94);
-}
+// A small helper: bucket an event time into a PM step index.
+function pmIdx(t, N) { return clamp(Math.round((Number(t) || 0) / PM_STEP), 0, N - 1); }
 
-function syncEruptions(t) {
-  if (t < lastSimT - 0.001) {
-    activeEruptions = [];
-    eruptionCursor = 0;
-    permFrontShove = 0;
-  }
-  while (eruptionCursor < model.eruptions.length && model.eruptions[eruptionCursor].t <= t) {
-    const e = model.eruptions[eruptionCursor++];
-    if (e.isGoal) {
-      const ex = e.team === 'home' ? Math.max(e.x, 0.7) : Math.min(e.x, 0.3);
-      activeEruptions.push({ x: ex, y: e.y, amp0: 1.5, tStart: e.t, life: 6, perm: false });
-      activeEruptions.push({ x: ex, y: e.y, amp0: 0.5, tStart: e.t, life: 1e9, perm: true });
-      permFrontShove += (e.team === 'home' ? 0.05 : -0.05);
-    } else {
-      activeEruptions.push({ x: e.x, y: e.y, amp0: 0.3 + e.xg * 1.6, tStart: e.t, life: 3, perm: false });
+// Build ALL decaying series for the match. Pure of three/DOM. Reads the live
+// tune.* numbers so recompute on slider change is just re-calling this.
+function computePressureModel(raw) {
+  const duration = richDuration(raw);
+  const N = Math.max(2, Math.round(duration / PM_STEP) + 1);
+
+  const shots = (raw.shots || []).filter((s) => Number.isFinite(s.x));
+  const passes = (raw.passes || []).filter((p) => Number.isFinite(p.x));
+  const events = (raw.events || []).filter((e) => Number.isFinite(e.x));
+  const momentum = normMomentum(raw.momentum);
+
+  // --- per-step EVENT INJECTIONS (added at the step, then decayed forward) -----
+  // threat: one accumulator per team
+  const injThreatH = new Float64Array(N), injThreatA = new Float64Array(N);
+  // tilt (final-third end-locations): per team
+  const injTiltH = new Float64Array(N), injTiltA = new Float64Array(N);
+  // possession (on-ball actions): per team
+  const injPossH = new Float64Array(N), injPossA = new Float64Array(N);
+  // defence (own-third stops + opponent shots blocked/saved): per team
+  const injDefH = new Float64Array(N), injDefA = new Float64Array(N);
+  // tempo: all events/min
+  const injTempo = new Float64Array(N);
+  // spatial signatures for the wave shape: where (in v, the goal-mouth offset) the
+  // recent threat is concentrated. Decaying weighted mean of shot v per team.
+  const injThreatVwH = new Float64Array(N), injThreatVH = new Float64Array(N);
+  const injThreatVwA = new Float64Array(N), injThreatVA = new Float64Array(N);
+
+  const ON_TARGET = new Set(['AttemptSaved', 'Goal', 'SavedShot']);
+  const STOPPED = new Set(['AttemptSaved', 'SavedShot', 'Post', 'ShotOnPost']); // opponent shot the keeper/woodwork stopped
+
+  // SHOTS → threat (+ counter preservation) and defence (opponent shot stopped)
+  for (const s of shots) {
+    const team = s.team;                          // 'home' | 'away'
+    const i = pmIdx(s.minute, N);
+    const xg = Number.isFinite(s.xg) ? s.xg : 0;
+    const onT = ON_TARGET.has(s.type) || s.isGoal ? 1 : 0;
+    const big = xg > 0.3 ? 1 : 0;
+    let w = xg + tune.wOnTarget * onT + tune.wBigChance * big;
+    if (s.situation === 'FastBreak') w *= tune.wFastBreak;   // counters get full, boosted weight
+    const inj = team === 'home' ? injThreatH : injThreatA;
+    inj[i] += w;                                  // decaying SUM (never an average) — a lone counter keeps its full punch
+    // goal-mouth offset v (home frame), for shaping the crest across the mouth
+    const v = normXYHome(team, s.x, s.y).y;
+    if (team === 'home') { injThreatVwH[i] += w; injThreatVH[i] += w * v; }
+    else { injThreatVwA[i] += w; injThreatVA[i] += w * v; }
+    // opponent shot stopped → credit the DEFENDING team's breakwater
+    if (STOPPED.has(s.type)) {
+      const d = team === 'home' ? injDefA : injDefH;
+      d[i] += 1;
     }
   }
+
+  // PASSES → box-entry threat, tilt (final-third ends), possession
+  for (const p of passes) {
+    const team = p.team;
+    const i = pmIdx(p.minute, N);
+    const ok = p.outcome !== 'Unsuccessful';
+    // possession: an on-ball action regardless of outcome
+    (team === 'home' ? injPossH : injPossA)[i] += 1;
+    // box entry (successful pass ending in the opponent box) → threat
+    const end = normXYHome(team, p.endX, p.endY);
+    if (ok && end.x > BOX_X && Math.abs(end.y - 0.5) < BOX_HALF_Y) {
+      (team === 'home' ? injThreatH : injThreatA)[i] += tune.wBoxEntry;
+    }
+    // tilt: successful pass ENDING in the team's attacking final third
+    const inThird = team === 'home' ? end.x > HOME_THIRD : end.x < (1 - HOME_THIRD);
+    if (ok && inThird) (team === 'home' ? injTiltH : injTiltA)[i] += 1;
+  }
+  // SHOTS also count toward tilt (they happen in the final third by definition)
+  for (const s of shots) {
+    const team = s.team, i = pmIdx(s.minute, N);
+    (team === 'home' ? injTiltH : injTiltA)[i] += 1;
+  }
+
+  // EVENTS → defence (own-third stops), possession (recoveries), tempo (all)
+  const DEF_TYPES = new Set(['Tackle', 'Interception', 'Clearance', 'BallRecovery']);
+  for (const e of events) {
+    const i = pmIdx(e.minute, N);
+    injTempo[i] += 1;                             // every event feeds tempo
+    const team = e.team;
+    if (team !== 'home' && team !== 'away') continue;
+    if (e.type === 'BallRecovery') (team === 'home' ? injPossH : injPossA)[i] += 1; // recoveries = on-ball
+    if (DEF_TYPES.has(e.type)) {
+      // own third = defensive third in the COMMON home frame (home defends x<0.34)
+      const loc = normXYHome(team, e.x, e.y);
+      const ownThird = team === 'home' ? loc.x < (1 - HOME_THIRD) : loc.x > HOME_THIRD;
+      if (ownThird) (team === 'home' ? injDefH : injDefA)[i] += 1;
+    }
+  }
+  // passes also feed tempo
+  for (const p of passes) injTempo[pmIdx(p.minute, N)] += 1;
+  for (const s of shots) injTempo[pmIdx(s.minute, N)] += 1;
+
+  // --- DECAY SWEEP: turn injections into decaying accumulations Σ↓(τ) ----------
+  const sweep = (inj, tau) => {
+    const out = new Float32Array(N);
+    const k = decK(tau);
+    let acc = 0;
+    for (let i = 0; i < N; i++) { acc = acc * k + inj[i]; out[i] = acc; }
+    return out;
+  };
+  const threatH = sweep(injThreatH, tune.tauThreat);
+  const threatA = sweep(injThreatA, tune.tauThreat);
+  const fT_H = sweep(injTiltH, tune.tauTilt);     // field-tilt accumulation
+  const fT_A = sweep(injTiltA, tune.tauTilt);
+  const possHraw = sweep(injPossH, tune.tauPoss);
+  const possAraw = sweep(injPossA, tune.tauPoss);
+  const defH = sweep(injDefH, tune.tauDef);
+  const defA = sweep(injDefA, tune.tauDef);
+  const tempoRaw = sweep(injTempo, tune.tauTempo);
+  // crest-offset v: decaying weighted mean (weight & weighted-value decay together)
+  const tvwH = sweep(injThreatVwH, tune.tauThreat), tvH = sweep(injThreatVH, tune.tauThreat);
+  const tvwA = sweep(injThreatVwA, tune.tauThreat), tvA = sweep(injThreatVA, tune.tauThreat);
+
+  // --- DERIVED shares & normalisations ----------------------------------------
+  const tilt = new Float32Array(N);   // tilt_H = fT_H/(fT_H+fT_A)  (0.5 = balanced)
+  const poss = new Float32Array(N);   // poss_H share
+  const crestVH = new Float32Array(N), crestVA = new Float32Array(N); // mouth offset
+  for (let i = 0; i < N; i++) {
+    const ts = fT_H[i] + fT_A[i];
+    tilt[i] = ts > 1e-6 ? fT_H[i] / ts : 0.5;
+    const ps = possHraw[i] + possAraw[i];
+    poss[i] = ps > 1e-6 ? possHraw[i] / ps : 0.5;
+    crestVH[i] = tvwH[i] > 1e-4 ? tvH[i] / tvwH[i] : 0.5;
+    crestVA[i] = tvwA[i] > 1e-4 ? tvA[i] / tvwA[i] : 0.5;
+  }
+  // normalise tempo to its own match max (so ripple amplitude reads 0..1)
+  let tmax = 1e-6; for (let i = 0; i < N; i++) tmax = Math.max(tmax, tempoRaw[i]);
+  const tempo = new Float32Array(N);
+  for (let i = 0; i < N; i++) tempo[i] = clamp(tempoRaw[i] / tmax, 0, 1);
+  // normalise defence to its own max → kDef gate stays in a sane 0..1 range
+  let dmax = 1e-6; for (let i = 0; i < N; i++) dmax = Math.max(dmax, defH[i], defA[i]);
+  const defHN = new Float32Array(N), defAN = new Float32Array(N);
+  for (let i = 0; i < N; i++) { defHN[i] = clamp(defH[i] / dmax, 0, 1); defAN[i] = clamp(defA[i] / dmax, 0, 1); }
+  // momentum per step (FotMob valueNorm, already smooth) — a gentle global lean
+  const mom = new Float32Array(N);
+  for (let i = 0; i < N; i++) mom[i] = sampleSeries(momentum, i * PM_STEP);
+
+  return {
+    duration, N, STEP: PM_STEP,
+    threatH, threatA, tilt, poss, def_H: defHN, def_A: defAN, tempo, mom,
+    crestVH, crestVA,
+  };
 }
 
-function eruptionAt(xN, yN, t) {
-  let sum = 0;
-  for (let i = 0; i < activeEruptions.length; i++) {
-    const e = activeEruptions[i];
-    if (t < e.tStart) continue;
-    let amp = e.amp0;
-    if (!e.perm) {
-      const age = t - e.tStart;
-      if (age > e.life) continue;
-      const rise = smoothstep(0, 0.6, age);
-      const fall = 1 - smoothstep(e.life * 0.3, e.life, age);
-      amp *= rise * fall;
-    }
-    const dx = xN - e.x, dy = yN - e.y;
-    const r2 = dx * dx + dy * dy;
-    sum += amp * Math.exp(-r2 / (2 * 0.0045));
+// Recompute every series after a τ/weight slider change, then re-sim the frame.
+function recomputeModel() {
+  if (!rawMatch) return;
+  pm = computePressureModel(rawMatch);
+  lastSimT = -1;
+}
+
+// ============================================================================
+// HEIGHT/RELIEF = THREAT WAVES (replaces the old possession/ridge/turbulence).
+//   H(u,v) = wave(u→away-goal, threat_H, def_A) + wave(u→home-goal, threat_A, def_H)
+//            + tempo·ripple(u,v,t)
+// A wave is a swell that BUILDS from the attacking final third and CRESTS at the
+// opponent goal mouth; defence at that goal suppresses amplitude AND chops the
+// crest (a high-frequency jagged "breaking on the breakwater" term).
+// ============================================================================
+
+// home attacks u→1 (away goal at u≈0.95); away attacks u→0 (home goal at u≈0.05).
+const GOAL_U_HOME = 0.95, GOAL_U_AWAY = 0.05;
+
+// Longitudinal swell profile: ~0 in midfield, builds from the attacking final
+// third, crests at the goal mouth. `gu` = goal u (0.95 or 0.05), `dir` = +1 for
+// home (build as u rises), -1 for away.
+function swellProfileU(u, gu, dir) {
+  // start of the swell = final third edge; spread controlled by waveSpread.
+  const startU = dir > 0 ? (1 - tune.waveSpread - 0.34) : (tune.waveSpread + 0.34);
+  // normalised distance into the swell toward the goal (0 at start → 1 at goal)
+  const span = (gu - startU);
+  const f = clamp((u - startU) / (Math.abs(span) < 1e-3 ? 1e-3 : span), 0, 1);
+  // smooth build then a sharp crest right at the mouth
+  const build = f * f * (3 - 2 * f);
+  const crest = Math.exp(-Math.pow((u - gu) / 0.06, 2)); // tight peak at the mouth
+  return clamp(0.55 * build + 0.85 * crest, 0, 1.6);
+}
+
+// one team's wave height at (u,v,t). threat & defOpp are scalar series values.
+function teamWave(u, v, t, gu, dir, threat, defOpp, crestV) {
+  if (threat <= 1e-4) return 0;
+  const prof = swellProfileU(u, gu, dir);
+  if (prof <= 1e-4) return 0;
+  // across-width: broad-ish, stronger near the goal-mouth centre, biased toward
+  // where the recent threat actually came from (crestV).
+  const vc = clamp(crestV, 0.15, 0.85);
+  const dv = (v - vc) / Math.max(0.08, tune.waveWidth);
+  const across = 0.45 + 0.55 * Math.exp(-0.5 * dv * dv);
+  // amplitude: threat suppressed by the OPPOSING defence (breakwater holds it down)
+  const supp = clamp(1 - tune.kDef * defOpp, 0.15, 1);
+  let amp = threat * tune.threatHeight * supp * prof * across;
+  // CHOP: where defence is high, break the crest into high-frequency jagged teeth
+  // (only near the crest, where the wave meets the breakwater).
+  if (defOpp > 0.02) {
+    const nearGoal = Math.exp(-Math.pow((u - gu) / 0.10, 2));
+    const teeth = Math.sin(v * 70.0 + t * 3.0) * Math.sin(u * 120.0 - t * 2.0);
+    amp += amp * tune.chop * 0.6 * defOpp * nearGoal * teeth;
   }
-  return sum;
+  return amp;
 }
 
 function computeHeight(t) {
-  syncEruptions(t);
-  const S = model.series;
-  const intensity = at(S.intensity, t, model.STEP);
-  const cumPH = at(S.cumPossHome, t, model.STEP);
-  const cumPA = at(S.cumPossAway, t, model.STEP);
-  const stress = at(S.cumStress, t, model.STEP);
+  const S = pm;
+  const threatH = at(S.threatH, t, PM_STEP);
+  const threatA = at(S.threatA, t, PM_STEP);
+  const defH = at(S.def_H, t, PM_STEP);
+  const defA = at(S.def_A, t, PM_STEP);
+  const tempo = at(S.tempo, t, PM_STEP);
+  const cvH = at(S.crestVH, t, PM_STEP);
+  const cvA = at(S.crestVA, t, PM_STEP);
 
-  const homeBase = H_MAX * cumPH;
-  const awayBase = H_MAX * cumPA;
-  const turbAmp = (BASE_AMP + intensity * TURB_SCALE) * tune.turbulence;
+  // EASE the DISPLAYED wave heights: FAST up, SLOW down. A single counter shot
+  // jumps threat_A → the wave snaps up almost instantly and lingers, so it
+  // FLASHES a sharp wave instead of being averaged away. Stepped per resim call.
+  const dStep = (lastSimT >= 0 && t > lastSimT) ? (t - lastSimT) : PM_STEP;
+  const kUp = 1 - Math.exp(-dStep * tune.waveRise);
+  const kDn = 1 - Math.exp(-dStep * tune.waveDecay);
+  waveDispH += (threatH - waveDispH) * (threatH > waveDispH ? kUp : kDn);
+  waveDispA += (threatA - waveDispA) * (threatA > waveDispA ? kUp : kDn);
+
   const flowZ = t * 0.5 * tune.flowSpeed;
-  const ridgeW = RIDGE_W / Math.max(0.25, tune.ridgeSharp);
-  const ridgeHeight = RIDGE_H * stress;
-
-  const fronts = new Float32Array(VY);
-  for (let j = 0; j < VY; j++) fronts[j] = frontAt(j / (VY - 1), t);
+  const rippleAmp = tempo * tune.tempoRipple * tune.turbulence;
 
   let idx = 0;
   for (let j = 0; j < VY; j++) {
-    const yN = j / (VY - 1);
-    const front = fronts[j];
+    const vN = j / (VY - 1);
     for (let i = 0; i < VX; i++, idx++) {
-      const xN = i / (VX - 1);
-      const side = smoothstep(front - 0.10, front + 0.10, xN);
-      let h = lerp(homeBase, awayBase, side);
-      const dF = (xN - front) / ridgeW;
-      h += ridgeHeight * Math.exp(-0.5 * dF * dF);
-      h += turbAmp * fbm(xN * 6.0, yN * 4.0, flowZ, 4);
-      h += eruptionAt(xN, yN, t);
+      const uN = i / (VX - 1);
+      // HOME wave crashing the away goal (u→0.95); AWAY wave crashing home goal (u→0.05)
+      let h = teamWave(uN, vN, t, GOAL_U_HOME, +1, waveDispH, defA, cvH)
+            + teamWave(uN, vN, t, GOAL_U_AWAY, -1, waveDispA, defH, cvA);
+      // TEMPO ripple — small surface chop across the whole cloth (midfield stays low)
+      h += rippleAmp * fbm(uN * 6.0, vN * 4.0, flowZ, 3);
+      // GOAL ERUPTIONS: a brief tall wave breakthrough at the scoring goal.
+      h += goalBurstAt(uN, vN, t);
       heightData[idx] = h;                 // NO clamp: surface may dip below 0
     }
   }
@@ -1056,12 +1250,33 @@ function computeHeight(t) {
   lastSimT = t;
 
   // BASELINE so the sheet straddles y=0: subtract the mean displaced height so
-  // roughly half the surface sits below the markings plane. Computed in the same
-  // scaled units the vertex shader applies (× uHScale).
+  // roughly half the surface sits below the markings plane (same as before).
   let sum = 0;
   for (let k = 0; k < NV; k++) sum += heightData[k];
   heightBaseline = (sum / NV) * tune.heightScale;
   if (material) material.userData.u.uBaseline.value = heightBaseline;
+}
+
+// GOAL ERUPTION: a short, tall transient wave breakthrough at the goal that was
+// just scored (real isGoal shots only). Decays over a few match-minutes. This is
+// the ONE allowed transient bump — not a cumulative accumulation.
+const GOAL_BURST_LIFE = 4.0;   // match-minutes
+function goalBurstAt(uN, vN, t) {
+  if (!model || !model.eruptions) return 0;
+  let sum = 0;
+  for (let i = 0; i < model.eruptions.length; i++) {
+    const e = model.eruptions[i];
+    if (!e.isGoal) continue;
+    if (e.t > t) break;                          // time-sorted
+    const age = t - e.t;
+    if (age > GOAL_BURST_LIFE) continue;
+    const rise = smoothstep(0, 0.5, age);
+    const fall = 1 - smoothstep(GOAL_BURST_LIFE * 0.35, GOAL_BURST_LIFE, age);
+    const gu = e.team === 'home' ? GOAL_U_HOME : GOAL_U_AWAY;
+    const du = (uN - gu) / 0.07, dv = (vN - e.y) / 0.12;
+    sum += 1.7 * tune.threatHeight * rise * fall * Math.exp(-0.5 * (du * du + dv * dv));
+  }
+  return sum;
 }
 
 // World X/Z from normalised pitch (u,v) — same mapping the plane uses.
@@ -1118,12 +1333,6 @@ function loop(now) {
   if (model && clock < model.duration - 0.01) { ended = false; calm = 0; }
   if (ended && calm < 1) calm = Math.min(1, calm + dt / CALM_TIME);
 
-  // glide the seam's dynamic part toward its target (softens the back-and-forth)
-  if (model) {
-    const target = seamDynTarget(clock);
-    seamDyn += (target - seamDyn) * (1 - Math.exp(-dt * SEAM_EASE));
-  }
-
   simAccum += dt;
   // keep simulating while settling so the surface visibly calms, not just when playing
   if (model && (simAccum >= 1 / 30 || lastSimT < 0)) { simAccum = 0; computeHeight(clock); }
@@ -1150,17 +1359,28 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
-// per-frame data-driven uniform updates (live seam + possession gate)
+// COLOUR seam position from territory tilt. tilt_H 0.5 → seam at centre (0.5);
+// higher tilt_H (home owns territory) → seam pushed toward the AWAY goal (u→1),
+// so blue (home) covers more of the field. tiltSeam scales the displacement.
+function frontFromTilt(t) {
+  const tilt = clamp(at(pm.tilt, t, PM_STEP), 0, 1);
+  return clamp(0.5 + (tilt - 0.5) * tune.tiltSeam, 0.06, 0.94);
+}
+// per-frame data-driven uniform updates (seam ← tilt, brightness ← possession,
+// ember ← tempo). All sampled from the decaying-window pressure model.
 function updateFrameUniforms(dt) {
   const u = material.userData.u;
   u.uHScale.value = tune.heightScale;
   u.uTime.value = clock * 0.5 * tune.flowSpeed;
-  u.uFront.value = frontAt(0.5, clock);
-  const possHome = clamp(at(model.series.possHome, clock, model.STEP), 0, 1);
+  u.uFront.value = frontFromTilt(clock);
+  // brightness gate: uPoss is the AWAY share (shader mixes 1-uPoss/uPoss by side),
+  // eased so the live "who has the ball" gate glides.
+  const possHome = clamp(at(pm.poss, clock, PM_STEP), 0, 1);
   const targetAway = 1 - possHome;
   uPossCur += (targetAway - uPossCur) * Math.min(1, dt * 3.0);
   u.uPoss.value = uPossCur;
-  u.uIntensity.value = clamp(at(model.series.intensity, clock, model.STEP), 0, 1);
+  // ember intensity follows TEMPO (decaying event-rate), not a cumulative.
+  u.uIntensity.value = clamp(at(pm.tempo, clock, PM_STEP), 0, 1);
 }
 
 // ---- dev hook ---------------------------------------------------------------
@@ -1172,17 +1392,20 @@ window.__setClock = (min) => {
   playing = false;
   const playBtn = el('play'); if (playBtn) playBtn.textContent = '▶ play';
   lastSimT = -1;
-  seamDyn = seamDynTarget(clock);   // snap (scrub shows the right seam position immediately)
+  // snap the displayed wave heights to the instantaneous threat so a scrub shows
+  // the right wave immediately (no rise/decay lag on a manual jump).
+  waveDispH = at(pm.threatH, clock, PM_STEP);
+  waveDispA = at(pm.threatA, clock, PM_STEP);
   computeHeight(clock);
   if (material) {
     const u = material.userData.u;
     u.uHScale.value = tune.heightScale;
     u.uTime.value = clock * 0.5 * tune.flowSpeed;
-    u.uFront.value = frontAt(0.5, clock);
-    const possHome = clamp(at(model.series.possHome, clock, model.STEP), 0, 1);
+    u.uFront.value = frontFromTilt(clock);
+    const possHome = clamp(at(pm.poss, clock, PM_STEP), 0, 1);
     uPossCur = 1 - possHome;
     u.uPoss.value = uPossCur;
-    u.uIntensity.value = clamp(at(model.series.intensity, clock, model.STEP), 0, 1);
+    u.uIntensity.value = clamp(at(pm.tempo, clock, PM_STEP), 0, 1);
     applyLookUniforms();
   }
   updateGoalRings(true);   // scrub → show each past goal's ring in its settled small state
@@ -1294,8 +1517,30 @@ function bindUI() {
   bindSlider('turb', 'turbV', (v) => { tune.turbulence = v; return v.toFixed(2); });
   bindSlider('ridge', 'ridgeV', (v) => { tune.ridgeSharp = v; lastSimT = -1; return v.toFixed(2); });
   bindSlider('flow', 'flowV', (v) => { tune.flowSpeed = v; return v.toFixed(2); });
-  bindSlider('seam', 'seamV', (v) => { tune.seamPoss = v; lastSimT = -1; return v.toFixed(2); });
   bindSlider('wobble', 'wobbleV', (v) => { tune.wobble = v; return v.toFixed(2); });
+
+  // ---- MODEL panel (right) — half-lives & weights recompute the series; ------
+  // visual scales just resim the current frame. lastSimT=-1 forces a resim.
+  // half-lives & weights → recomputeModel()
+  bindSlider('tauThreat', 'tauThreatV', (v) => { tune.tauThreat = v; recomputeModel(); return v.toFixed(1); });
+  bindSlider('tauTilt', 'tauTiltV', (v) => { tune.tauTilt = v; recomputeModel(); return v.toFixed(1); });
+  bindSlider('tauPoss', 'tauPossV', (v) => { tune.tauPoss = v; recomputeModel(); return v.toFixed(1); });
+  bindSlider('tauDef', 'tauDefV', (v) => { tune.tauDef = v; recomputeModel(); return v.toFixed(1); });
+  bindSlider('tauTempo', 'tauTempoV', (v) => { tune.tauTempo = v; recomputeModel(); return v.toFixed(1); });
+  bindSlider('wOnTarget', 'wOnTargetV', (v) => { tune.wOnTarget = v; recomputeModel(); return v.toFixed(2); });
+  bindSlider('wBigChance', 'wBigChanceV', (v) => { tune.wBigChance = v; recomputeModel(); return v.toFixed(2); });
+  bindSlider('wBoxEntry', 'wBoxEntryV', (v) => { tune.wBoxEntry = v; recomputeModel(); return v.toFixed(2); });
+  bindSlider('wFastBreak', 'wFastBreakV', (v) => { tune.wFastBreak = v; recomputeModel(); return v.toFixed(2); });
+  // visual scales → just resim the current frame
+  bindSlider('kDef', 'kDefV', (v) => { tune.kDef = v; lastSimT = -1; return v.toFixed(2); });
+  bindSlider('threatHeight', 'threatHeightV', (v) => { tune.threatHeight = v; lastSimT = -1; return v.toFixed(2); });
+  bindSlider('waveSpread', 'waveSpreadV', (v) => { tune.waveSpread = v; lastSimT = -1; return v.toFixed(2); });
+  bindSlider('waveWidth', 'waveWidthV', (v) => { tune.waveWidth = v; lastSimT = -1; return v.toFixed(2); });
+  bindSlider('tiltSeam', 'tiltSeamV', (v) => { tune.tiltSeam = v; return v.toFixed(2); });
+  bindSlider('tempoRipple', 'tempoRippleV', (v) => { tune.tempoRipple = v; lastSimT = -1; return v.toFixed(2); });
+  bindSlider('chop', 'chopV', (v) => { tune.chop = v; lastSimT = -1; return v.toFixed(2); });
+  bindSlider('waveRise', 'waveRiseV', (v) => { tune.waveRise = v; return v.toFixed(1); });
+  bindSlider('waveDecay', 'waveDecayV', (v) => { tune.waveDecay = v; return v.toFixed(1); });
   // colour
   bindSlider('ownerdim', 'ownerdimV', (v) => { tune.ownerDim = v; return v.toFixed(2); });
   bindSlider('sat', 'satV', (v) => { tune.sat = v; return v.toFixed(2); });
@@ -1396,6 +1641,19 @@ function bindUI() {
     });
   }
 
+  // COPY MODEL → clipboard (just the right-panel model numbers)
+  const copyModelBtn = el('copymodel');
+  if (copyModelBtn) {
+    const dump = el('copymodelDump');
+    let flashT = 0;
+    copyModelBtn.addEventListener('click', async () => {
+      const json = JSON.stringify(modelBlob(), null, 2);
+      const flash = () => { copyModelBtn.textContent = 'copied ✓'; clearTimeout(flashT); flashT = setTimeout(() => { copyModelBtn.textContent = 'COPY MODEL'; }, 1400); };
+      try { await navigator.clipboard.writeText(json); if (dump) dump.style.display = 'none'; flash(); }
+      catch { if (dump) { dump.value = json; dump.style.display = 'block'; dump.focus(); dump.select(); } copyModelBtn.textContent = 'copy below ↓'; clearTimeout(flashT); flashT = setTimeout(() => { copyModelBtn.textContent = 'COPY MODEL'; }, 1800); }
+    });
+  }
+
   el('resetcam').addEventListener('click', () => { applyDefaultCamera(); });
   el('copycam').addEventListener('click', async () => {
     const s = `{ pos: [${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)}], ` +
@@ -1429,10 +1687,25 @@ function settingsBlob() {
       bloomStr: r2(tune.bloomStr), bloomRad: r2(tune.bloomRad), bloomThr: r2(tune.bloomThr),
       vig: r2(tune.vig), expo: r2(tune.expo), contr: r2(tune.contr), gsat: r2(tune.gsat),
     },
+    model: modelBlob(),
     camera: {
       pos: [r2(camera.position.x), r2(camera.position.y), r2(camera.position.z)],
       target: [r2(controls.target.x), r2(controls.target.y), r2(controls.target.z)],
     },
+  };
+}
+
+// Just the MODEL panel numbers (right panel) — shared by COPY MODEL + COPY SETTINGS.
+function modelBlob() {
+  const r2 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
+  return {
+    tauThreat: r2(tune.tauThreat), tauTilt: r2(tune.tauTilt), tauPoss: r2(tune.tauPoss),
+    tauDef: r2(tune.tauDef), tauTempo: r2(tune.tauTempo),
+    wOnTarget: r2(tune.wOnTarget), wBigChance: r2(tune.wBigChance), wBoxEntry: r2(tune.wBoxEntry),
+    wFastBreak: r2(tune.wFastBreak), kDef: r2(tune.kDef),
+    threatHeight: r2(tune.threatHeight), waveSpread: r2(tune.waveSpread), waveWidth: r2(tune.waveWidth),
+    tiltSeam: r2(tune.tiltSeam), tempoRipple: r2(tune.tempoRipple), chop: r2(tune.chop),
+    waveRise: r2(tune.waveRise), waveDecay: r2(tune.waveDecay),
   };
 }
 
@@ -1447,7 +1720,10 @@ function bindSlider(id, valId, fn) {
 // between this .sec header and the next) as JSON, so each block can be shared/baked
 // on its own. Walks the DOM so it always matches what's shown in the section.
 function setupSectionCopy() {
-  const panel = el('panel');
+  setupSectionCopyFor(el('panel'));
+  setupSectionCopyFor(el('modelpanel'));   // right MODEL panel gets per-section copy too
+}
+function setupSectionCopyFor(panel) {
   if (!panel) return;
   for (const sec of panel.querySelectorAll('.sec')) {
     const btn = document.createElement('button');
