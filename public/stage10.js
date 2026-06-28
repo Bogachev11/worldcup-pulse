@@ -1,0 +1,1144 @@
+// stage10.js — "LAYER CONSTRUCTOR" for France–Senegal (id 1953888).
+//
+// The user ASSEMBLES the visualization from independent, composable layers and
+// tunes each one. The scene = a shared CLOTH whose height+colour are the sum of
+// the enabled FIELD layers (A activity terrain, B pass relief), plus separate 3D
+// objects for the point/accent layers (C live comet, D event accents, ★ counter
+// jabs). Each layer is on/off with its own SPEED (decay half-life) + DETAIL knobs.
+//
+// Scaffolding (three setup, cloth + onBeforeCompile, pitch plane, camera, HUD,
+// post chain, colours, the REAL per-second timeline engine + ballAt/eventsNear)
+// is cloned from stage9.js. ONLY real data — no mock, no procedural decoration.
+
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { clamp, lerp, smoothstep } from './claybattle.js';
+
+const ID = new URLSearchParams(location.search).get('id') || '1953888';
+const el = (id) => document.getElementById(id);
+
+// FRA / SEN colours (per the brief).
+const FRA_HEX = '#387ef0';
+const SEN_HEX = '#0c954e';
+
+// baked-in default camera (reuse stage9's tuned ракурс)
+const DEFAULT_CAM = { pos: [-11.962, 18.664, 17.842], target: [-0.621, 1.826, 0.268] };
+function applyDefaultCamera() {
+  camera.position.set(DEFAULT_CAM.pos[0], DEFAULT_CAM.pos[1], DEFAULT_CAM.pos[2]);
+  controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
+  controls.update();
+}
+
+// ---- pitch / mesh dims ------------------------------------------------------
+const WORLD_X = 16, WORLD_Z = 9.6;       // pitch footprint
+const M2W = WORLD_Z / 68;                 // metres → world units
+const CROSSBAR_M = 2.44;
+// the displayed cloth mesh (smooth) — sampled from the low-res field grids.
+const GX = 160, GY = 96;
+const VX = GX + 1, VY = GY + 1, NV = VX * VY;
+
+const worldX = (u) => (u - 0.5) * WORLD_X;
+const worldZ = (v) => (0.5 - v) * WORLD_Z;
+const LOCUS_Y = 0.02;
+
+// ---- scene state ------------------------------------------------------------
+let renderer, scene, camera, controls, composer;
+let bloomPass, gradePass, smaaPass;
+let mesh, material, keyLight;
+let pitchPlane, pitchMat;
+let heightTex, heightData;                 // per-vertex displaced height (mesh res)
+let colTex, colData;                        // per-vertex RGB (mesh res)
+let heightBaseline = 0;
+let timeline = null;                        // merged, mirrored, real-t event stream
+let ballLocus = null;                       // locus anchors for ballAt()
+let counters = null;                        // detected counter jabs (precomputed)
+let teamMeta = { home: { abbr: 'FRA' }, away: { abbr: 'SEN' }, score: { home: 0, away: 0 }, duration: 100 };
+
+let clock = 0, playing = true;
+
+const COL_HOME = new THREE.Color(FRA_HEX);
+const COL_AWAY = new THREE.Color(SEN_HEX);
+const teamColor = (team) => (team === 'away' ? COL_AWAY : COL_HOME);
+
+// ============================================================================
+// CONFIG — every layer's enable flag + its own knobs. This whole object is what
+// gets serialised to the URL hash / COPY CONFIG and restored from a preset.
+// ============================================================================
+const DEFAULTS = () => ({
+  speed: 0.9,
+  // A · activity terrain (macro relief)
+  A: { on: true, open: false, tau: 1.6, grid: 0.45, height: 1.0, colour: 1.0 },
+  // B · pass relief (fine overlay)
+  B: { on: true, open: false, tau: 1.2, aggr: 0.5, height: 0.6, longw: 0 },
+  // C · live locus comet
+  C: { on: true, open: false, trail: 0.5, size: 1.0, bright: 1.0 },
+  // D · event accents
+  D: { on: true, open: false, size: 1.0, fade: 1.0, shots: true, duels: true, corners: true, fouls: true },
+  // ★ counters · coloured jabs
+  K: { on: false, open: false, pct: 0.35, secs: 12, height: 1.0, sharp: 1.0 },
+});
+let cfg = DEFAULTS();
+
+const PRESETS = {
+  min:     () => { const c = DEFAULTS(); c.B.on = false; c.D.on = false; c.K.on = false; return c; },
+  match:   () => { const c = DEFAULTS(); c.K.on = false; return c; },
+  counter: () => { const c = DEFAULTS(); c.B.on = false; c.D.on = false; c.K.on = true; return c; },
+};
+
+// ---- boot -------------------------------------------------------------------
+init().catch((e) => fail(e.message || String(e)));
+
+async function init() {
+  if (!window.WebGLRenderingContext) throw new Error('WebGL not available');
+
+  // load config from URL hash if present, else default to the "Матч" preset.
+  const fromHash = loadCfgFromHash();
+  cfg = fromHash || PRESETS.match();
+
+  let tlDoc = null;
+  try { tlDoc = await fetch('/api/timeline/' + ID).then((r) => (r.ok ? r.json() : null)); } catch { tlDoc = null; }
+  if (!tlDoc || !Array.isArray(tlDoc.events) || !tlDoc.events.length) {
+    throw new Error('timeline ' + ID + ' missing (need /api/timeline/' + ID + ')');
+  }
+  teamMeta.home = tlDoc.home || teamMeta.home;
+  teamMeta.away = tlDoc.away || teamMeta.away;
+  teamMeta.duration = Number.isFinite(tlDoc.fullT) ? tlDoc.fullT : 100;
+  timeline = buildTimelineFromDoc(tlDoc);
+  ballLocus = buildBallLocus(timeline);
+  countGoals();
+  counters = detectCounters();
+
+  setupThree();
+  buildCloth();
+  setupComposer();
+  bindGlobalUI();
+  buildLayerUI();
+  setupHudLayout();
+
+  el('hAbbr').textContent = teamMeta.home.abbr || 'FRA';
+  el('aAbbr').textContent = teamMeta.away.abbr || 'SEN';
+  document.documentElement.style.setProperty('--home-color', FRA_HEX);
+  document.documentElement.style.setProperty('--away-color', SEN_HEX);
+  el('title2').textContent =
+    `STAGE 10 · ${teamMeta.home.abbr} ${teamMeta.score.home}–${teamMeta.score.away} ${teamMeta.away.abbr}`;
+
+  syncCfgToUI();
+  window.addEventListener('resize', onResize);
+  onResize();
+  requestAnimationFrame(loop);
+}
+
+function fail(msg) {
+  const t = el('title2'); if (t) t.textContent = 'STAGE 10 · failed: ' + msg;
+  const o = document.createElement('div');
+  o.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;' +
+    'color:#f88;font:14px system-ui;text-align:center;padding:40px;z-index:99;background:#04050a;white-space:pre-wrap';
+  o.textContent = 'CONSTRUCTOR could not start: ' + msg;
+  document.body.appendChild(o);
+}
+
+// ============================================================================
+// THREE setup (cloned from stage9)
+// ============================================================================
+function setupThree() {
+  const canvas = el('stage');
+  renderer = new THREE.WebGLRenderer({
+    canvas, antialias: true, preserveDrawingBuffer: true, powerPreference: 'high-performance',
+  });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  scene = new THREE.Scene();
+  scene.background = makeGradientTexture();
+  scene.fog = new THREE.FogExp2(0x05070d, 0.035);
+
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  pmrem.dispose();
+
+  camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+  camera.position.set(DEFAULT_CAM.pos[0], DEFAULT_CAM.pos[1], DEFAULT_CAM.pos[2]);
+
+  controls = new OrbitControls(camera, canvas);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.minDistance = 4;
+  controls.maxDistance = 36;
+  controls.maxPolarAngle = Math.PI * 0.495;
+  controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
+
+  keyLight = new THREE.DirectionalLight(0xffffff, 3.0);
+  keyLight.position.set(-9, 14, 7);
+  keyLight.castShadow = true;
+  keyLight.shadow.mapSize.set(2048, 2048);
+  keyLight.shadow.camera.near = 1; keyLight.shadow.camera.far = 60;
+  const sc = keyLight.shadow.camera;
+  sc.left = -14; sc.right = 14; sc.top = 12; sc.bottom = -12; sc.updateProjectionMatrix();
+  keyLight.shadow.bias = -0.0008; keyLight.shadow.normalBias = 0.04; keyLight.shadow.radius = 6;
+  scene.add(keyLight, keyLight.target);
+
+  scene.add(new THREE.DirectionalLight(0x9fc0ff, 0.6).translateX(8).translateY(5).translateZ(-7));
+  const rim = scene.children[scene.children.length - 1]; rim.position.set(8, 5, -7);
+  scene.add(new THREE.HemisphereLight(0x6f86b0, 0x0a0d16, 0.55));
+}
+
+function makeGradientTexture() {
+  const c = document.createElement('canvas'); c.width = 16; c.height = 256;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0.0, '#0a1020'); grad.addColorStop(0.55, '#070a12'); grad.addColorStop(1.0, '#020308');
+  g.fillStyle = grad; g.fillRect(0, 0, 16, 256);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; return tex;
+}
+
+// ============================================================================
+// SHARED CLOTH — a single thin sheet displaced by heightTex, coloured by colTex.
+// Both textures are written every frame from the enabled FIELD layers (A + B).
+// ============================================================================
+function buildCloth() {
+  const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, GX, GY);
+  geo.rotateX(-Math.PI / 2);
+
+  heightData = new Float32Array(NV);
+  heightTex = new THREE.DataTexture(heightData, VX, VY, THREE.RedFormat, THREE.FloatType);
+  heightTex.magFilter = THREE.LinearFilter; heightTex.minFilter = THREE.LinearFilter;
+  heightTex.needsUpdate = true;
+
+  colData = new Float32Array(NV * 4);        // RGB + A(brightness gate)
+  colTex = new THREE.DataTexture(colData, VX, VY, THREE.RGBAFormat, THREE.FloatType);
+  colTex.magFilter = THREE.LinearFilter; colTex.minFilter = THREE.LinearFilter;
+  colTex.needsUpdate = true;
+
+  material = new THREE.MeshStandardMaterial({
+    color: 0xffffff, roughness: 0.95, metalness: 0.12, envMapIntensity: 1.1,
+  });
+  const u = {
+    uHeight: { value: heightTex },
+    uColTex: { value: colTex },
+    uTexel: { value: new THREE.Vector2(1 / VX, 1 / VY) },
+    uHScale: { value: 1.0 },
+    uBaseline: { value: 0 },
+    uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
+    uClay: { value: new THREE.Color('#2a2d34') },
+  };
+  material.userData.u = u;
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, u);
+    shader.vertexShader = `
+      uniform sampler2D uHeight; uniform vec2 uTexel; uniform float uHScale;
+      uniform float uBaseline; uniform vec2 uWorld;
+      varying float vHd; varying vec2 vUvN;
+      float H10(vec2 uv){ float h = texture2D(uHeight, uv).r * uHScale; if(!(h==h)) h=0.0; return h; }
+    ` + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace('#include <beginnormal_vertex>',
+      `#include <beginnormal_vertex>
+        vUvN = uv;
+        float hl = H10(uv - vec2(uTexel.x,0.0)); float hr = H10(uv + vec2(uTexel.x,0.0));
+        float hd = H10(uv - vec2(0.0,uTexel.y)); float hu = H10(uv + vec2(0.0,uTexel.y));
+        float dx = (uWorld.x*uTexel.x)*2.0; float dz = (uWorld.y*uTexel.y)*2.0;
+        objectNormal = normalize(vec3(-(hr-hl)/max(dx,1e-4), 1.0, -(hu-hd)/max(dz,1e-4)));`);
+    shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>',
+      `#include <begin_vertex>
+        float h10 = H10(uv); vHd = h10; transformed.y += (h10 - uBaseline);`);
+    shader.fragmentShader = `
+      uniform sampler2D uColTex; uniform vec3 uClay;
+      varying float vHd; varying vec2 vUvN;
+    ` + shader.fragmentShader;
+    shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>',
+      `#include <color_fragment>
+      {
+        vec4 cd = texture2D(uColTex, vUvN);
+        // cd.rgb = team-tinted colour already blended on the CPU; cd.a = brightness gate.
+        vec3 baseCol = mix(uClay, cd.rgb, clamp(length(cd.rgb)*1.2, 0.0, 1.0));
+        baseCol *= mix(0.55, 1.15, clamp(cd.a, 0.0, 1.0));   // possession brightness gate
+        // valley AO so the relief reads as volume
+        float lowAO = 1.0 - smoothstep(0.0, 0.6, vHd);
+        baseCol *= clamp(1.0 - 0.35*lowAO, 0.4, 1.0);
+        diffuseColor.rgb = baseCol;
+      }`);
+    shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>',
+      `#include <emissivemap_fragment>
+      {
+        vec4 cd = texture2D(uColTex, vUvN);
+        float hot = smoothstep(0.6, 2.2, vHd);
+        totalEmissiveRadiance += cd.rgb * hot * 0.35 * clamp(cd.a, 0.0, 1.0);
+      }`);
+  };
+  mesh = new THREE.Mesh(geo, material);
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  scene.add(mesh);
+
+  buildPitchPlane();
+  buildAccentLayer();
+  buildCometLayer();
+  buildCounterLayer();
+}
+
+// ---- STATIC PITCH-MARKINGS PLANE at y=0 (from stage9) -----------------------
+function buildPitchPlane() {
+  const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, 1, 1);
+  geo.rotateX(-Math.PI / 2);
+  pitchMat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: true, side: THREE.DoubleSide,
+    uniforms: { uLines: { value: 0.6 } },
+    vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    fragmentShader: PITCH_FRAG,
+  });
+  pitchPlane = new THREE.Mesh(geo, pitchMat);
+  pitchPlane.position.y = 0.0; pitchPlane.renderOrder = -1;
+  scene.add(pitchPlane);
+}
+
+const PITCH_FRAG = `
+  precision highp float; uniform float uLines; varying vec2 vUv;
+  const float PL = 105.0; const float PW = 68.0;
+  float seg7(vec2 puv, vec2 a, vec2 b, float halfW){
+    vec2 P = vec2(puv.x*PL, puv.y*PW); vec2 ab = b-a, ap = P-a;
+    float t = clamp(dot(ap,ab)/max(dot(ab,ab),1e-5),0.0,1.0); float d = length(P-(a+t*ab));
+    float aa = (fwidth(P.x)+fwidth(P.y))*0.5+1e-4; return 1.0 - smoothstep(halfW, halfW+aa, d); }
+  float rect7(vec2 puv, vec2 lo, vec2 hi, float halfW){ float c=0.0;
+    c=max(c,seg7(puv,vec2(lo.x,lo.y),vec2(hi.x,lo.y),halfW)); c=max(c,seg7(puv,vec2(hi.x,lo.y),vec2(hi.x,hi.y),halfW));
+    c=max(c,seg7(puv,vec2(hi.x,hi.y),vec2(lo.x,hi.y),halfW)); c=max(c,seg7(puv,vec2(lo.x,hi.y),vec2(lo.x,lo.y),halfW)); return c; }
+  float ring7(vec2 puv, vec2 cen, float r, float halfW){ vec2 P = vec2(puv.x*PL, puv.y*PW);
+    float d = abs(length(P-cen)-r); float aa = (fwidth(P.x)+fwidth(P.y))*0.5+1e-4; return 1.0 - smoothstep(halfW, halfW+aa, d); }
+  float dot7(vec2 puv, vec2 cen, float r){ vec2 P = vec2(puv.x*PL, puv.y*PW);
+    float d = length(P-cen); float aa = (fwidth(P.x)+fwidth(P.y))*0.5+1e-4; return 1.0 - smoothstep(r, r+aa, d); }
+  float pitchLines7(vec2 uv){ float hw=0.10; float inset=1.6; vec2 lo=vec2(inset,inset); vec2 hi=vec2(PL-inset,PW-inset);
+    float c=0.0; c=max(c,rect7(uv,lo,hi,hw)); c=max(c,seg7(uv,vec2(PL*0.5,lo.y),vec2(PL*0.5,hi.y),hw));
+    c=max(c,ring7(uv,vec2(PL*0.5,PW*0.5),9.15,hw)); c=max(c,dot7(uv,vec2(PL*0.5,PW*0.5),0.35));
+    for(int s=0;s<2;s++){ float dir=(s==0)?1.0:-1.0; float gx=(s==0)?inset:PL-inset; float pax=gx+dir*16.5;
+      c=max(c,rect7(uv,vec2(min(gx,pax),PW*0.5-20.16),vec2(max(gx,pax),PW*0.5+20.16),hw));
+      float gax=gx+dir*5.5; c=max(c,rect7(uv,vec2(min(gx,gax),PW*0.5-9.16),vec2(max(gx,gax),PW*0.5+9.16),hw));
+      vec2 pSpot=vec2(gx+dir*11.0,PW*0.5); c=max(c,dot7(uv,pSpot,0.35));
+      float arc=ring7(uv,pSpot,9.15,hw); vec2 P=vec2(uv.x*PL,uv.y*PW);
+      float outside=(dir>0.0)?step(pax,P.x):step(P.x,pax); c=max(c,arc*outside); }
+    return clamp(c,0.0,1.0); }
+  void main(){ float lines = pitchLines7(vUv) * clamp(uLines,0.0,1.0);
+    vec3 ground = vec3(0.02,0.03,0.05); vec3 lineCol = vec3(0.92,0.94,0.97);
+    vec3 col = mix(ground, lineCol, lines); float alpha = max(0.12*clamp(uLines,0.0,1.0), lines);
+    gl_FragColor = vec4(col, alpha); }
+`;
+
+// ============================================================================
+// TIMELINE ENGINE (cloned from stage9): mirror AWAY into the shared pitch frame,
+// classify events, build the moving locus + windowed-event helpers.
+// ============================================================================
+function toUV(team, x, y) {
+  let X = (Number(x) || 0) / 100, Y = (Number(y) || 0) / 100;
+  if (team === 'away') { X = 1 - X; Y = 1 - Y; }
+  return { u: clamp(X, 0, 1), v: clamp(Y, 0, 1) };
+}
+const SHOT_TYPES_TL = new Set(['SavedShot', 'MissedShots', 'ShotOnPost', 'Goal']);
+function buildTimelineFromDoc(doc) {
+  const out = [];
+  for (const e of doc.events) {
+    if (!Number.isFinite(e.x) || !Number.isFinite(e.y)) continue;
+    const team = e.team === 'home' || e.team === 'away' ? e.team : 'home';
+    const kind = SHOT_TYPES_TL.has(e.type) ? 'shot' : (e.type === 'Pass' ? 'pass' : 'event');
+    const a = toUV(team, e.x, e.y);
+    const it = {
+      t: Number(e.t) || 0, minute: Number(e.minute) || 0, team, kind,
+      u: a.u, v: a.v, type: e.type || kind, outcome: e.outcome || '',
+      isTouch: !!e.isTouch, situation: e.situation || '',
+      len: Number(e.len) || 0, long: !!e.long, cross: !!e.cross, corner: !!e.corner,
+    };
+    if (Number.isFinite(e.endX) && Number.isFinite(e.endY)) {
+      const en = toUV(team, e.endX, e.endY); it.eu = en.u; it.ev = en.v;
+    }
+    if (kind === 'shot') {
+      it.xg = Number.isFinite(e.xg) ? e.xg : 0;
+      it.isGoal = !!e.isGoal;
+      it.onGoalX = Number.isFinite(e.onGoalX) ? e.onGoalX : 1;
+      it.onGoalY = Number.isFinite(e.onGoalY) ? e.onGoalY : 0;
+    }
+    out.push(it);
+  }
+  out.sort((a, b) => a.t - b.t);
+  return out;
+}
+
+const ONBALL_TYPES = new Set([
+  'Pass', 'BallTouch', 'TakeOn', 'BallRecovery', 'Clearance', 'Dispossessed',
+  'Tackle', 'Interception', 'Aerial', 'Challenge', 'BlockedPass', 'Foul',
+  'KeeperPickup', 'Save', 'CornerAwarded', 'ShieldBallOpp', 'Goal',
+  'SavedShot', 'MissedShots', 'ShotOnPost',
+]);
+function buildBallLocus(tl) {
+  const anchors = [];
+  const onball = tl.filter((it) => ONBALL_TYPES.has(it.type) || it.isTouch);
+  for (let i = 0; i < onball.length; i++) {
+    const p = onball[i], next = onball[i + 1];
+    const gap = next ? Math.max(0.001, next.t - p.t) : 0.02;
+    anchors.push({ t: p.t, u: p.u, v: p.v, team: p.team });
+    if (Number.isFinite(p.eu)) anchors.push({ t: p.t + gap * 0.6, u: p.eu, v: p.ev, team: p.team });
+  }
+  anchors.sort((a, b) => a.t - b.t);
+  return anchors;
+}
+let _ballCursor = 0;
+const LOCUS_HOLD = 0.12;
+function ballAt(t) {
+  const A = ballLocus;
+  if (!A || !A.length) return { u: 0.5, v: 0.5, team: 'home' };
+  if (t <= A[0].t) return { u: A[0].u, v: A[0].v, team: A[0].team };
+  const last = A[A.length - 1];
+  if (t >= last.t) return { u: last.u, v: last.v, team: last.team };
+  if (_ballCursor >= A.length - 1 || A[_ballCursor].t > t) _ballCursor = 0;
+  while (_ballCursor < A.length - 2 && A[_ballCursor + 1].t <= t) _ballCursor++;
+  const a = A[_ballCursor], b = A[_ballCursor + 1];
+  const span = Math.max(1e-4, b.t - a.t);
+  let f = clamp((t - a.t) / span, 0, 1);
+  if (span > LOCUS_HOLD) {
+    const slideStart = 1 - LOCUS_HOLD / span;
+    f = f <= slideStart ? 0 : clamp((f - slideStart) / (1 - slideStart), 0, 1);
+  }
+  const e = f * f * (3 - 2 * f);
+  return { u: lerp(a.u, b.u, e), v: lerp(a.v, b.v, e), team: f < 0.5 ? a.team : b.team };
+}
+// events in [t-window, t] (chronological)
+function eventsInWindow(t, halfLifeMin) {
+  if (!timeline) return [];
+  const lo = t - halfLifeMin; const out = [];
+  for (const it of timeline) { if (it.t > t) break; if (it.t >= lo) out.push(it); }
+  return out;
+}
+
+// ============================================================================
+// ★ COUNTER DETECTION — precomputed jabs. Two sources:
+//   (a) any shot with situation==='FastBreak' → jab at the shot spot.
+//   (b) a turnover (BallRecovery / won Interception / won Tackle / opponent
+//       Dispossessed) followed within `secs` by the SAME team's locus advancing
+//       >= `pct` of pitch length toward the opponent goal → jab at the apex.
+// Each jab: { t, u, v, team }. Re-derivable when the sensitivity sliders change.
+// ============================================================================
+const TURNOVER_TYPES = new Set(['BallRecovery', 'Interception', 'Tackle', 'Dispossessed']);
+function detectCounters() {
+  const pctFrac = clamp(cfg.K.pct, 0.1, 0.9);
+  const secs = clamp(cfg.K.secs, 3, 30);
+  const winMin = secs / 60;
+  const jabs = [];
+
+  // (a) FastBreak shots
+  for (const it of timeline) {
+    if (it.kind === 'shot' && it.situation === 'FastBreak') {
+      jabs.push({ t: it.t, u: it.u, v: it.v, team: it.team, src: 'fastbreak' });
+    }
+  }
+
+  // (b) turnover → advance toward opponent goal. Opponent goal in shared frame:
+  //     home attacks u→1, away attacks u→0. "Advance" = locus u moves toward that
+  //     goal by >= pctFrac of pitch length within the window. Apex = furthest spot.
+  for (let i = 0; i < timeline.length; i++) {
+    const ev = timeline[i];
+    if (!TURNOVER_TYPES.has(ev.type)) continue;
+    // the team that GAINS possession on this turnover:
+    //  - Dispossessed: the losing team is ev.team → the OTHER team gains.
+    //  - BallRecovery / Interception / Tackle: ev.team is the winner (only count successful).
+    let gain;
+    if (ev.type === 'Dispossessed') gain = ev.team === 'home' ? 'away' : 'home';
+    else { if (ev.outcome === 'Unsuccessful') continue; gain = ev.team; }
+    const goalU = gain === 'home' ? 1 : 0;
+    const startU = ev.u;            // already mirrored into shared frame
+    const startTowardGoal = gain === 'home' ? startU : (1 - startU);
+    // scan locus forward over the window for the furthest advance toward goalU
+    let bestAdv = 0, apex = null;
+    const tEnd = ev.t + winMin;
+    for (let s = ev.t; s <= tEnd; s += 0.01) {
+      const b = ballAt(s);
+      if (b.team !== gain) continue;                 // must be the same team carrying
+      const toward = gain === 'home' ? b.u : (1 - b.u);
+      const adv = toward - startTowardGoal;
+      if (adv > bestAdv) { bestAdv = adv; apex = { u: b.u, v: b.v, t: s }; }
+    }
+    if (apex && bestAdv >= pctFrac) {
+      jabs.push({ t: apex.t, u: apex.u, v: apex.v, team: gain, src: 'turnover' });
+    }
+  }
+  jabs.sort((a, b) => a.t - b.t);
+  // de-dupe jabs that are very close in time + space (same break detected twice)
+  const merged = [];
+  for (const j of jabs) {
+    const prev = merged[merged.length - 1];
+    if (prev && prev.team === j.team && Math.abs(prev.t - j.t) < 0.15 &&
+        Math.hypot(prev.u - j.u, prev.v - j.v) < 0.12) continue;
+    merged.push(j);
+  }
+  return merged;
+}
+
+// ============================================================================
+// FIELD LAYER GRIDS — A (coarse activity) + B (fine pass relief). Each frame we
+// recompute cell values from events in the active window by exp-decay weight,
+// then bilinear-sample into the mesh's height/colour textures. Scrub-safe.
+// ============================================================================
+// Layer A grid resolution is driven by cfg.A.grid (0 coarse → 1 fine).
+function gridDims(t01, minC, maxC) {
+  const n = Math.round(lerp(minC, maxC, clamp(t01, 0, 1)));
+  return { gx: n, gy: Math.max(6, Math.round(n * WORLD_Z / WORLD_X)) };
+}
+
+// scratch buffers (reallocated only when a grid resolution changes)
+let A_gx = 0, A_gy = 0, A_h = null, A_hH = null, A_hA = null, A_poss = null;
+let B_gx = 0, B_gy = 0, B_h = null, B_hH = null, B_hA = null;
+
+function ensureA(gx, gy) {
+  if (gx === A_gx && gy === A_gy) return;
+  A_gx = gx; A_gy = gy; const n = gx * gy;
+  A_h = new Float32Array(n); A_hH = new Float32Array(n); A_hA = new Float32Array(n); A_poss = new Float32Array(n);
+}
+function ensureB(gx, gy) {
+  if (gx === B_gx && gy === B_gy) return;
+  B_gx = gx; B_gy = gy; const n = gx * gy;
+  B_h = new Float32Array(n); B_hH = new Float32Array(n); B_hA = new Float32Array(n);
+}
+
+// stamp a soft gaussian (radius radCells) into a grid at (u,v).
+function stamp(grid, gx, gy, u, v, amt, radCells) {
+  const ci = clamp(u, 0, 1) * (gx - 1), cj = clamp(1 - v, 0, 1) * (gy - 1);
+  const R = Math.max(1, Math.ceil(radCells)), sig = Math.max(0.5, radCells * 0.6);
+  const i0 = Math.max(0, Math.floor(ci - R)), i1 = Math.min(gx - 1, Math.ceil(ci + R));
+  const j0 = Math.max(0, Math.floor(cj - R)), j1 = Math.min(gy - 1, Math.ceil(cj + R));
+  for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+    const di = i - ci, dj = j - cj;
+    grid[j * gx + i] += amt * Math.exp(-(di * di + dj * dj) / (2 * sig * sig));
+  }
+}
+
+// Recompute layer A's grid for time t. Returns true if A contributed.
+function computeA(t) {
+  const tau = Math.max(0.1, cfg.A.tau);
+  // coarse → fine. grid 0 = ~14 cells long, grid 1 = ~34.
+  const { gx, gy } = gridDims(cfg.A.grid, 14, 34);
+  ensureA(gx, gy);
+  A_h.fill(0); A_hH.fill(0); A_hA.fill(0); A_poss.fill(0);
+  const radCells = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1));
+  const win = eventsInWindow(t, tau * 5);
+  for (const e of win) {
+    const w = Math.exp(-(t - e.t) / tau);
+    if (w < 0.02) continue;
+    stamp(A_h, gx, gy, e.u, e.v, w, radCells);
+    if (e.team === 'home') stamp(A_hH, gx, gy, e.u, e.v, w, radCells);
+    else if (e.team === 'away') stamp(A_hA, gx, gy, e.u, e.v, w, radCells);
+  }
+  return win.length > 0;
+}
+
+// Recompute layer B's grid (finer pass relief). aggr 0 = each pass a small sharp
+// bump; aggr 1 = broad smoothed density.
+function computeB(t) {
+  const tau = Math.max(0.1, cfg.B.tau);
+  const { gx, gy } = gridDims(1, 40, 40);     // B is always fine
+  ensureB(gx, gy);
+  B_h.fill(0); B_hH.fill(0); B_hA.fill(0);
+  // aggregation knob → stamp radius (sharp small bumps ↔ smoothed density)
+  const radCells = lerp(0.9, 4.2, clamp(cfg.B.aggr, 0, 1));
+  const amp = lerp(1.0, 0.55, clamp(cfg.B.aggr, 0, 1));   // keep total mass ~steady
+  const win = eventsInWindow(t, tau * 5);
+  for (const e of win) {
+    if (e.kind !== 'pass') continue;
+    let w = Math.exp(-(t - e.t) / tau) * amp;
+    if (w < 0.02) continue;
+    if (cfg.B.longw > 0) {                                  // optional long-pass weighting
+      const lenW = 1 + cfg.B.longw * (e.long ? 1.2 : clamp(e.len / 40, 0, 1));
+      w *= lenW;
+    }
+    stamp(B_h, gx, gy, e.u, e.v, w, radCells);
+    if (e.team === 'home') stamp(B_hH, gx, gy, e.u, e.v, w, radCells);
+    else stamp(B_hA, gx, gy, e.u, e.v, w, radCells);
+  }
+  return win.length > 0;
+}
+
+// bilinear sample a grid at normalized (u,v) (v already flipped by caller convention)
+function sampleGrid(grid, gx, gy, u, v) {
+  const fx = clamp(u, 0, 1) * (gx - 1), fy = clamp(1 - v, 0, 1) * (gy - 1);
+  const i0 = Math.floor(fx), j0 = Math.floor(fy);
+  const i1 = Math.min(i0 + 1, gx - 1), j1 = Math.min(j0 + 1, gy - 1);
+  const tx = fx - i0, ty = fy - j0;
+  const a = grid[j0 * gx + i0], b = grid[j0 * gx + i1];
+  const c = grid[j1 * gx + i0], d = grid[j1 * gx + i1];
+  return lerp(lerp(a, b, tx), lerp(c, d, tx), ty);
+}
+
+// Rebuild the mesh height+colour textures from the enabled field layers at time t.
+function computeField(t) {
+  const aOn = cfg.A.on, bOn = cfg.B.on;
+  let aMax = 1e-4, bMax = 1e-4;
+  if (aOn) { computeA(t); for (let k = 0; k < A_h.length; k++) aMax = Math.max(aMax, A_h[k]); }
+  if (bOn) { computeB(t); for (let k = 0; k < B_h.length; k++) bMax = Math.max(bMax, B_h[k]); }
+
+  // who is on the ball now → global possession brightness baseline
+  const ball = ballAt(t);
+  const cH = COL_HOME, cA = COL_AWAY;
+  let idx = 0, sumH = 0;
+  for (let j = 0; j < VY; j++) {
+    const v = j / (VY - 1);
+    for (let i = 0; i < VX; i++, idx++) {
+      const u = i / (VX - 1);
+      let h = 0;
+      let rr = 0, gg = 0, bb = 0, gate = 0.5;
+      if (aOn) {
+        const a = sampleGrid(A_h, A_gx, A_gy, u, v) / aMax;       // 0..1
+        h += a * 2.2 * cfg.A.height;
+        // LOCAL dominant team colour at this cell (decaying activity share)
+        const hh = sampleGrid(A_hH, A_gx, A_gy, u, v);
+        const ha = sampleGrid(A_hA, A_gx, A_gy, u, v);
+        const tot = hh + ha;
+        const awayShare = tot > 1e-5 ? ha / tot : 0.5;
+        const ci = clamp(cfg.A.colour, 0, 2);
+        const localR = lerp(cH.r, cA.r, awayShare), localG = lerp(cH.g, cA.g, awayShare), localB = lerp(cH.b, cA.b, awayShare);
+        const w = clamp(a * ci, 0, 1);                            // colour only where there is activity
+        rr += localR * w; gg += localG * w; bb += localB * w;
+      }
+      if (bOn) {
+        const b = sampleGrid(B_h, B_gx, B_gy, u, v) / bMax;
+        h += b * 1.4 * cfg.B.height;
+        // B tints toward its own local dominant team too, but weaker
+        const hh = sampleGrid(B_hH, B_gx, B_gy, u, v);
+        const ha = sampleGrid(B_hA, B_gx, B_gy, u, v);
+        const tot = hh + ha;
+        const awayShare = tot > 1e-5 ? ha / tot : 0.5;
+        const w = clamp(b * 0.6, 0, 1);
+        rr += lerp(cH.r, cA.r, awayShare) * w; gg += lerp(cH.g, cA.g, awayShare) * w; bb += lerp(cH.b, cA.b, awayShare) * w;
+      }
+      // brightness gate: the on-ball team's side glows a touch brighter near the locus
+      const dl = Math.hypot(u - ball.u, v - ball.v);
+      gate = 0.5 + 0.5 * Math.exp(-(dl * dl) / (2 * 0.18 * 0.18));
+      heightData[idx] = h; sumH += h;
+      colData[idx * 4] = rr; colData[idx * 4 + 1] = gg; colData[idx * 4 + 2] = bb; colData[idx * 4 + 3] = gate;
+    }
+  }
+  heightBaseline = (sumH / NV);
+  material.userData.u.uBaseline.value = heightBaseline;
+  material.userData.u.uHScale.value = 1.0;
+  heightTex.needsUpdate = true; colTex.needsUpdate = true;
+  mesh.visible = aOn || bOn;
+}
+
+// ============================================================================
+// C · LIVE LOCUS COMET — moving orb + fading trail, on-ball team colour.
+// ============================================================================
+let cometGroup, cometOrb, cometCore, cometTrail, cometTG, cometTPos, cometTCol;
+const TRAIL_N = 120;
+function buildCometLayer() {
+  cometGroup = new THREE.Group(); cometGroup.visible = false; scene.add(cometGroup);
+  const orbMat = new THREE.SpriteMaterial({ map: discTex(), color: 0xffffff, transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false });
+  cometOrb = new THREE.Sprite(orbMat); cometOrb.scale.setScalar(1.6); cometGroup.add(cometOrb);
+  const coreMat = new THREE.SpriteMaterial({ map: discTex(), color: 0xffffff, transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false });
+  cometCore = new THREE.Sprite(coreMat); cometCore.scale.setScalar(0.6); cometGroup.add(cometCore);
+  cometTG = new THREE.BufferGeometry();
+  cometTPos = new Float32Array(TRAIL_N * 3); cometTCol = new Float32Array(TRAIL_N * 3);
+  cometTG.setAttribute('position', new THREE.BufferAttribute(cometTPos, 3));
+  cometTG.setAttribute('color', new THREE.BufferAttribute(cometTCol, 3));
+  const trailMat = new THREE.PointsMaterial({ size: 0.85, map: discTex(), vertexColors: true,
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
+  cometTrail = new THREE.Points(cometTG, trailMat); cometGroup.add(cometTrail);
+}
+function updateComet(t) {
+  if (!cfg.C.on) { cometGroup.visible = false; return; }
+  cometGroup.visible = true;
+  const b = ballAt(t);
+  const yTop = cometY(b.u, b.v) + 0.12;
+  cometOrb.position.set(worldX(b.u), yTop, worldZ(b.v));
+  cometCore.position.copy(cometOrb.position);
+  cometOrb.material.color.copy(teamColor(b.team));
+  cometOrb.scale.setScalar(1.6 * cfg.C.size);
+  cometCore.scale.setScalar(0.6 * cfg.C.size);
+  cometOrb.material.opacity = clamp(cfg.C.bright, 0, 2);
+  cometCore.material.opacity = clamp(cfg.C.bright, 0, 2);
+  const span = Math.max(0.05, cfg.C.trail);
+  const c = new THREE.Color();
+  for (let i = 0; i < TRAIL_N; i++) {
+    const tt = t - (i / TRAIL_N) * span;
+    const bb = ballAt(tt);
+    cometTPos[i * 3] = worldX(bb.u); cometTPos[i * 3 + 1] = cometY(bb.u, bb.v) + 0.1; cometTPos[i * 3 + 2] = worldZ(bb.v);
+    const fade = (1 - i / TRAIL_N) * clamp(cfg.C.bright, 0, 2);
+    c.copy(teamColor(bb.team));
+    cometTCol[i * 3] = c.r * fade; cometTCol[i * 3 + 1] = c.g * fade; cometTCol[i * 3 + 2] = c.b * fade;
+  }
+  cometTG.attributes.position.needsUpdate = true; cometTG.attributes.color.needsUpdate = true;
+}
+// world Y of the cloth surface at (u,v) if field layers are on, else the flat plane.
+function cometY(u, v) {
+  if (!(cfg.A.on || cfg.B.on) || !heightData) return LOCUS_Y;
+  const fx = clamp(u, 0, 1) * (VX - 1), fy = clamp(1 - v, 0, 1) * (VY - 1);
+  const i0 = Math.floor(fx), j0 = Math.floor(fy);
+  const i1 = Math.min(i0 + 1, VX - 1), j1 = Math.min(j0 + 1, VY - 1);
+  const tx = fx - i0, ty = fy - j0;
+  const h00 = heightData[j0 * VX + i0], h10 = heightData[j0 * VX + i1];
+  const h01 = heightData[j1 * VX + i0], h11 = heightData[j1 * VX + i1];
+  const h = lerp(lerp(h00, h10, tx), lerp(h01, h11, tx), ty);
+  return (h - heightBaseline) + LOCUS_Y;
+}
+
+// ============================================================================
+// D · EVENT ACCENTS — instant pop + fast fade, rebuilt per frame (few in window).
+// Shots = spike + beam to goal mouth; duels = sparks; corners = marker; fouls = mark.
+// ============================================================================
+let accentGroup, accentDyn;
+const DUEL_TYPES = new Set(['Tackle', 'Interception', 'Aerial', 'Challenge']);
+function buildAccentLayer() {
+  accentGroup = new THREE.Group(); accentGroup.visible = false; scene.add(accentGroup);
+  accentDyn = new THREE.Group(); accentGroup.add(accentDyn);
+}
+function clearGroup(g) { while (g.children.length) { const m = g.children.pop(); m.geometry && m.geometry.dispose(); m.material && m.material.dispose(); } }
+function updateAccents(t) {
+  if (!cfg.D.on) { accentGroup.visible = false; clearGroup(accentDyn); return; }
+  accentGroup.visible = true;
+  clearGroup(accentDyn);
+  const fade = Math.max(0.2, cfg.D.fade);
+  const sz = cfg.D.size;
+  const win = eventsInWindow(t, 0.6 / fade + 0.2);
+  for (const it of win) {
+    const age = t - it.t;
+    if (it.kind === 'shot' && cfg.D.shots) {
+      const life = clamp(1 - age / (0.45 / fade), 0, 1); if (life <= 0) continue;
+      const gu = it.team === 'home' ? 0.99 : 0.01;
+      const sign = it.team === 'home' ? 1 : -1;
+      const gv = clamp(0.5 + sign * ((it.onGoalX - 1) / 2) * (7.32 / 68), 0.04, 0.96);
+      const gy = clamp(it.onGoalY, 0, 1.2) * CROSSBAR_M * M2W;
+      const y0 = cometY(it.u, it.v);
+      const col = it.isGoal ? new THREE.Color('#fff1c0') : teamColor(it.team);
+      addBeam(accentDyn, worldX(it.u), y0, worldZ(it.v), worldX(gu), gy, worldZ(gv), col, 0.85 * life);
+      addSpike(accentDyn, worldX(it.u), y0, worldZ(it.v), (1.0 + (it.xg || 0) * 3) * sz, col, 0.9 * life);
+      addPoint(accentDyn, worldX(it.u), y0 + 0.15, worldZ(it.v), (it.isGoal ? 3.2 : 2.0) * sz * life, col, life);
+    } else if (it.kind === 'event' && DUEL_TYPES.has(it.type) && cfg.D.duels) {
+      const life = clamp(1 - age / (0.28 / fade), 0, 1); if (life <= 0) continue;
+      addPoint(accentDyn, worldX(it.u), cometY(it.u, it.v) + 0.1, worldZ(it.v), 1.1 * sz * life, new THREE.Color('#ffd9a0'), 0.9 * life);
+    } else if (it.type === 'CornerAwarded' && cfg.D.corners) {
+      const life = clamp(1 - age / (0.7 / fade), 0, 1); if (life <= 0) continue;
+      addRing(accentDyn, worldX(it.u), cometY(it.u, it.v), worldZ(it.v), 0.6 * sz, teamColor(it.team), 0.8 * life);
+    } else if (it.type === 'Foul' && cfg.D.fouls) {
+      const life = clamp(1 - age / (0.5 / fade), 0, 1); if (life <= 0) continue;
+      addPoint(accentDyn, worldX(it.u), cometY(it.u, it.v) + 0.08, worldZ(it.v), 0.7 * sz * life, new THREE.Color('#ff9a8a'), 0.7 * life);
+    }
+  }
+}
+
+// ============================================================================
+// ★ COUNTERS · COLOURED JABS — thin tall spikes in the attacking team's colour,
+// snapping UP fast and falling fast at the break apex. Distinct coloured pricks.
+// ============================================================================
+let counterGroup, counterDyn;
+function buildCounterLayer() {
+  counterGroup = new THREE.Group(); counterGroup.visible = false; scene.add(counterGroup);
+  counterDyn = new THREE.Group(); counterGroup.add(counterDyn);
+}
+function updateCounters(t) {
+  if (!cfg.K.on) { counterGroup.visible = false; clearGroup(counterDyn); return; }
+  counterGroup.visible = true;
+  clearGroup(counterDyn);
+  // jab life: snaps up over ~0.15min then falls; sharpness shortens both.
+  const sharp = Math.max(0.3, cfg.K.sharp);
+  const riseLife = 0.12 / sharp, fallLife = 0.5 / sharp;
+  for (const j of counters) {
+    const age = t - j.t;
+    if (age < -0.02) continue;
+    if (age > fallLife) continue;
+    let env;
+    if (age < riseLife) env = smoothstep(0, riseLife, age);           // snap up
+    else env = 1 - smoothstep(riseLife, fallLife, age);               // fall fast
+    if (env <= 0.001) continue;
+    const h = (3.0 + 2.0) * cfg.K.height * env;                       // thin TALL spike
+    const col = teamColor(j.team);
+    const y0 = cometY(j.u, j.v);
+    addJab(counterDyn, worldX(j.u), y0, worldZ(j.v), h, col, env);
+  }
+}
+
+// ---- primitive helpers ------------------------------------------------------
+let _discTex = null;
+function makeDiscTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0.0, 'rgba(255,255,255,1)'); grad.addColorStop(0.35, 'rgba(255,255,255,0.85)');
+  grad.addColorStop(1.0, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+function discTex() { return _discTex || (_discTex = makeDiscTexture()); }
+function addPoint(parent, x, y, z, size, col, alpha) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([x, y, z]), 3));
+  const m = new THREE.PointsMaterial({ size, map: discTex(), color: col, transparent: true,
+    opacity: alpha, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
+  parent.add(new THREE.Points(g, m));
+}
+function addRing(parent, x, y, z, r, col, alpha) {
+  const g = new THREE.RingGeometry(r * 0.78, r, 40); g.rotateX(-Math.PI / 2);
+  const m = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: alpha,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(g, m); mesh.position.set(x, y + 0.05, z); parent.add(mesh);
+}
+function addBeam(parent, x0, y0, z0, x1, y1, z1, col, alpha) {
+  const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x0, y0 + 0.1, z0), new THREE.Vector3(x1, y1 + LOCUS_Y, z1)]);
+  const m = new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: alpha, blending: THREE.AdditiveBlending, depthWrite: false });
+  parent.add(new THREE.Line(g, m));
+}
+function addSpike(parent, x, y, z, h, col, alpha) {
+  const g = new THREE.ConeGeometry(0.18, h, 14);
+  const m = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: alpha, blending: THREE.AdditiveBlending, depthWrite: false });
+  const mesh = new THREE.Mesh(g, m); mesh.position.set(x, y + h * 0.5, z); parent.add(mesh);
+}
+// a counter jab = a thin tall coloured prick (sharper + a bright tip sprite)
+function addJab(parent, x, y, z, h, col, env) {
+  const g = new THREE.ConeGeometry(0.10, h, 12);
+  const m = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: clamp(0.55 + 0.45 * env, 0, 1),
+    blending: THREE.AdditiveBlending, depthWrite: false });
+  const mesh = new THREE.Mesh(g, m); mesh.position.set(x, y + h * 0.5, z); parent.add(mesh);
+  addPoint(parent, x, y + h + 0.05, z, 2.4 * env, col, env);   // bright tip
+}
+
+// ============================================================================
+// POST chain (cloned from stage9)
+// ============================================================================
+function setupComposer() {
+  composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.5, 0.4, 0.5);
+  composer.addPass(bloomPass);
+  gradePass = new ShaderPass(GradeShader);
+  gradePass.uniforms.uVig.value = 1.1; gradePass.uniforms.uExpo.value = 1.35;
+  gradePass.uniforms.uContr.value = 1.1; gradePass.uniforms.uGsat.value = 1.18;
+  composer.addPass(gradePass);
+  smaaPass = new SMAAPass(1, 1); composer.addPass(smaaPass);
+  composer.addPass(new OutputPass());
+}
+const GradeShader = {
+  uniforms: { tDiffuse: { value: null }, uVig: { value: 0.5 }, uExpo: { value: 1.0 }, uContr: { value: 1.06 }, uGsat: { value: 1.04 } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform float uVig; uniform float uExpo; uniform float uContr; uniform float uGsat; varying vec2 vUv;
+    void main(){ vec3 c = texture2D(tDiffuse, vUv).rgb; c *= uExpo;
+      float l = dot(c, vec3(0.2126,0.7152,0.0722)); c = mix(vec3(l), c, uGsat);
+      c = (c - 0.5) * uContr + 0.5;
+      vec2 d = vUv - 0.5; float vig = smoothstep(0.85, 0.25, length(d)*1.4); c *= mix(1.0, vig, clamp(uVig,0.0,1.5));
+      gl_FragColor = vec4(max(c,0.0), 1.0); }`,
+};
+
+// ============================================================================
+// FRAME COMPOSITION — recompute all enabled layers for time t, render one frame.
+// ============================================================================
+function renderFrame(t) {
+  if (cfg.A.on || cfg.B.on) computeField(t);
+  else mesh.visible = false;
+  updateComet(t);
+  updateAccents(t);
+  updateCounters(t);
+}
+
+// ---- resize -----------------------------------------------------------------
+function onResize() {
+  const w = Math.max(1, window.innerWidth), h = Math.max(1, window.innerHeight);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  renderer.setPixelRatio(dpr); renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  if (composer) {
+    composer.setPixelRatio(dpr); composer.setSize(w, h);
+    if (bloomPass) bloomPass.setSize(w * dpr, h * dpr);
+    if (smaaPass) smaaPass.setSize(w * dpr, h * dpr);
+  }
+}
+
+// ---- main loop --------------------------------------------------------------
+let lastNow = performance.now();
+function loop(now) {
+  const dt = Math.min(0.1, Math.max(0, (now - lastNow) / 1000));
+  lastNow = now;
+  if (playing) {
+    clock += dt * cfg.speed;
+    if (clock >= teamMeta.duration) { clock = teamMeta.duration; playing = false; el('play').textContent = '▶'; }
+  }
+  renderFrame(clock);
+  controls.update();
+  composer.render();
+  updateHud();
+  updateCamReadout();
+  requestAnimationFrame(loop);
+}
+
+// ---- dev hook (hidden-tab safe: render exactly one frame via composer) -------
+window.__setClock = (min) => {
+  clock = clamp(+min || 0, 0, teamMeta.duration);
+  playing = false; const pb = el('play'); if (pb) pb.textContent = '▶';
+  _ballCursor = 0;
+  renderFrame(clock);
+  controls.update();
+  composer.render();
+  updateHud();
+  updateCamReadout();
+};
+// dev: expose counter list for verification
+window.__counters = () => counters.map((j) => ({ t: +j.t.toFixed(2), team: j.team, u: +j.u.toFixed(2), src: j.src }));
+
+// ============================================================================
+// HUD / camera (cloned from stage9)
+// ============================================================================
+let goalsByTime = [];
+function countGoals() {
+  goalsByTime = timeline.filter((it) => it.kind === 'shot' && it.isGoal).map((g) => ({ t: g.t, team: g.team }));
+  teamMeta.score = { home: goalsByTime.filter((g) => g.team === 'home').length, away: goalsByTime.filter((g) => g.team === 'away').length };
+}
+function updateHud() {
+  const t = clock;
+  let gH = goalsByTime.filter((g) => g.team === 'home' && g.t <= t).length;
+  let gA = goalsByTime.filter((g) => g.team === 'away' && g.t <= t).length;
+  el('hScore').textContent = gH; el('aScore').textContent = gA;
+  const mm = Math.floor(t);
+  el('clk').textContent = mm + "'"; el('clk2').textContent = mm + "'";
+  if (document.activeElement !== el('clock')) el('clock').value = String((t / teamMeta.duration) * 100);
+}
+function updateCamReadout() {
+  if (!controls) return;
+  const az = THREE.MathUtils.radToDeg(controls.getAzimuthalAngle());
+  const pol = THREE.MathUtils.radToDeg(controls.getPolarAngle());
+  const dist = camera.position.distanceTo(controls.target);
+  el('camread').textContent = `az ${az.toFixed(0)}° · pol ${pol.toFixed(0)}° · d ${dist.toFixed(1)}`;
+}
+
+// ============================================================================
+// GLOBAL UI — play / restart / scrub / speed / camera / copy config / presets
+// ============================================================================
+function bindGlobalUI() {
+  const playBtn = el('play');
+  playBtn.addEventListener('click', () => {
+    if (!playing && clock >= teamMeta.duration) clock = 0;
+    playing = !playing; playBtn.textContent = playing ? '❚❚' : '▶';
+  });
+  el('restart').addEventListener('click', () => { clock = 0; playing = true; playBtn.textContent = '❚❚'; });
+  el('clock').addEventListener('input', () => {
+    clock = (+el('clock').value / 100) * teamMeta.duration; playing = false; playBtn.textContent = '▶'; _ballCursor = 0;
+  });
+  bindSlider('speed', 'speedV', (v) => { cfg.speed = v; writeHash(); return v.toFixed(1) + '×'; });
+
+  el('resetcam').addEventListener('click', () => applyDefaultCamera());
+  el('copycam').addEventListener('click', async () => {
+    const s = `{ pos: [${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)}], ` +
+      `target: [${controls.target.x.toFixed(2)}, ${controls.target.y.toFixed(2)}, ${controls.target.z.toFixed(2)}] }`;
+    try { await navigator.clipboard.writeText(s); el('camread').textContent = 'copied'; } catch { el('camread').textContent = s; }
+  });
+
+  // presets
+  document.querySelectorAll('.preset').forEach((b) => b.addEventListener('click', () => {
+    const p = PRESETS[b.dataset.preset]; if (!p) return;
+    cfg = p(); syncCfgToUI(); writeHash(); _ballCursor = 0; renderFrame(clock); composer.render();
+  }));
+
+  // COPY CONFIG
+  const copyBtn = el('copycfg'), dump = el('cfgDump');
+  let flashT = 0;
+  copyBtn.addEventListener('click', async () => {
+    const json = JSON.stringify(cfg, null, 2);
+    const flash = () => { copyBtn.textContent = 'copied ✓'; clearTimeout(flashT); flashT = setTimeout(() => copyBtn.textContent = 'COPY CONFIG', 1400); };
+    try { await navigator.clipboard.writeText(json); if (dump) dump.style.display = 'none'; flash(); }
+    catch { if (dump) { dump.value = json; dump.style.display = 'block'; dump.focus(); dump.select(); } copyBtn.textContent = 'copy below ↓'; }
+  });
+  el('resetcfg').addEventListener('click', () => { cfg = PRESETS.match(); syncCfgToUI(); writeHash(); _ballCursor = 0; renderFrame(clock); composer.render(); });
+}
+
+function bindSlider(id, valId, fn) {
+  const s = el(id), v = el(valId);
+  const apply = () => { v.textContent = fn(+s.value); };
+  s.addEventListener('input', apply); apply();
+}
+
+// ============================================================================
+// LAYER BUILDER UI — one row per layer (A,B,C,D,Counters) with an enable
+// checkbox + an expandable group of sliders. Changing anything updates live.
+// ============================================================================
+const LAYER_DEFS = [
+  { key: 'A', name: 'A · активность', controls: [
+    { id: 'tau', label: 'speed τ ▸ скорость', min: 0.5, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
+    { id: 'grid', label: 'detail ▸ грид', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
+    { id: 'height', label: 'height ▸ высота', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'colour', label: 'colour ▸ цвет', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  ] },
+  { key: 'B', name: 'B · пасы', controls: [
+    { id: 'tau', label: 'speed τ ▸ скорость', min: 0.3, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
+    { id: 'aggr', label: 'aggregation ▸ слитность', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
+    { id: 'height', label: 'height ▸ высота', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'longw', label: 'long-pass weight ▸ длина', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
+  ] },
+  { key: 'C', name: 'C · мяч', controls: [
+    { id: 'trail', label: 'trail ▸ хвост (мин)', min: 0.05, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'size', label: 'size ▸ размер', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'bright', label: 'brightness ▸ яркость', min: 0.2, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  ] },
+  { key: 'D', name: 'D · события', controls: [
+    { id: 'size', label: 'size ▸ размер', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'fade', label: 'fade ▸ скорость', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+  ], toggles: [
+    { id: 'shots', label: 'удары' }, { id: 'duels', label: 'единоборства' },
+    { id: 'corners', label: 'угловые' }, { id: 'fouls', label: 'фолы' },
+  ] },
+  { key: 'K', name: '★ контратаки', controls: [
+    { id: 'pct', label: 'sensitivity % ▸ порог', min: 0.15, max: 0.7, step: 0.01, fmt: (v) => Math.round(v * 100) + '%', recount: true },
+    { id: 'secs', label: 'window ▸ секунды', min: 4, max: 25, step: 1, fmt: (v) => v.toFixed(0) + 's', recount: true },
+    { id: 'height', label: 'jab height ▸ высота', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'sharp', label: 'sharpness ▸ резкость', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+  ] },
+];
+
+const layerUIRefs = {};
+function buildLayerUI() {
+  const host = el('layers');
+  for (const def of LAYER_DEFS) {
+    const wrap = document.createElement('div');
+    wrap.className = 'layer';
+    const head = document.createElement('div'); head.className = 'layer-head';
+    const ck = document.createElement('div'); ck.className = 'lck';
+    const nm = document.createElement('div'); nm.className = 'lname'; nm.textContent = def.name;
+    const chev = document.createElement('div'); chev.className = 'chev'; chev.textContent = '▸';
+    head.append(ck, nm, chev);
+    const body = document.createElement('div'); body.className = 'layer-body';
+
+    const refs = { wrap, sliders: {}, pills: {} };
+    layerUIRefs[def.key] = refs;
+
+    for (const c of (def.controls || [])) {
+      const row = document.createElement('div'); row.className = 'row';
+      const lab = document.createElement('label'); lab.textContent = c.label;
+      const inp = document.createElement('input'); inp.type = 'range';
+      inp.min = c.min; inp.max = c.max; inp.step = c.step;
+      const val = document.createElement('span'); val.className = 'val';
+      row.append(lab, inp, val); body.append(row);
+      refs.sliders[c.id] = { inp, val, fmt: c.fmt };
+      inp.addEventListener('input', () => {
+        cfg[def.key][c.id] = +inp.value; val.textContent = c.fmt(+inp.value);
+        if (c.recount) counters = detectCounters();
+        writeHash(); _ballCursor = 0; renderFrame(clock); composer.render();
+      });
+    }
+    if (def.toggles) {
+      const tg = document.createElement('div'); tg.className = 'subtoggle';
+      for (const t of def.toggles) {
+        const pill = document.createElement('div'); pill.className = 'pill'; pill.textContent = t.label;
+        tg.append(pill); refs.pills[t.id] = pill;
+        pill.addEventListener('click', () => {
+          cfg[def.key][t.id] = !cfg[def.key][t.id];
+          pill.classList.toggle('on', cfg[def.key][t.id]);
+          writeHash(); renderFrame(clock); composer.render();
+        });
+      }
+      body.append(tg);
+    }
+    wrap.append(head, body); host.append(wrap);
+
+    // enable checkbox (stops the expand toggle)
+    ck.addEventListener('click', (e) => {
+      e.stopPropagation();
+      cfg[def.key].on = !cfg[def.key].on;
+      wrap.classList.toggle('on', cfg[def.key].on);
+      writeHash(); renderFrame(clock); composer.render();
+    });
+    // expand/collapse
+    head.addEventListener('click', () => {
+      cfg[def.key].open = !cfg[def.key].open;
+      wrap.classList.toggle('open', cfg[def.key].open);
+      writeHash();
+    });
+  }
+}
+
+// push the current cfg into every UI control (after preset / hash load).
+function syncCfgToUI() {
+  el('speed').value = cfg.speed; el('speedV').textContent = cfg.speed.toFixed(1) + '×';
+  for (const def of LAYER_DEFS) {
+    const refs = layerUIRefs[def.key]; if (!refs) continue;
+    const L = cfg[def.key];
+    refs.wrap.classList.toggle('on', !!L.on);
+    refs.wrap.classList.toggle('open', !!L.open);
+    for (const id in refs.sliders) {
+      const s = refs.sliders[id]; s.inp.value = L[id]; s.val.textContent = s.fmt(+L[id]);
+    }
+    for (const id in refs.pills) refs.pills[id].classList.toggle('on', !!L[id]);
+  }
+  counters = detectCounters();
+}
+
+// ============================================================================
+// CONFIG SAVE/LOAD — URL hash (#cfg=<base64>) updated live + loaded on start.
+// ============================================================================
+function writeHash() {
+  try {
+    const json = JSON.stringify(cfg);
+    const b64 = btoa(unescape(encodeURIComponent(json)));
+    const url = new URL(location.href); url.hash = 'cfg=' + b64;
+    history.replaceState(null, '', url);
+  } catch {}
+}
+function loadCfgFromHash() {
+  try {
+    const m = (location.hash || '').match(/cfg=([^&]+)/);
+    if (!m) return null;
+    const json = decodeURIComponent(escape(atob(m[1])));
+    const parsed = JSON.parse(json);
+    // merge onto defaults so a partial/old hash still has every field
+    const base = DEFAULTS();
+    base.speed = Number.isFinite(parsed.speed) ? parsed.speed : base.speed;
+    for (const k of ['A', 'B', 'C', 'D', 'K']) if (parsed[k]) Object.assign(base[k], parsed[k]);
+    return base;
+  } catch { return null; }
+}
+
+// ============================================================================
+// DRAGGABLE HUD (cloned from stage9)
+// ============================================================================
+const HUD_KEYS = ['teams', 'score', 'clock'];
+const HUD_STORE = 'stage10_hud_v1';
+function setupHudLayout() {
+  const widget = (k) => el('w_' + k);
+  const defaults = () => ({
+    teams: { x: 558, y: 155, s: 5.213 }, score: { x: 572, y: 243, s: 1.827 }, clock: { x: 1385, y: 165, s: 2.537 },
+  });
+  let layout;
+  try { layout = JSON.parse(localStorage.getItem(HUD_STORE)) || defaults(); } catch { layout = defaults(); }
+  const curOf = (k) => { const w = widget(k); return { x: Math.round(parseFloat(w.style.left) || 0), y: Math.round(parseFloat(w.style.top) || 0), s: +(parseFloat(w.dataset.s) || 1).toFixed(3) }; };
+  const apply = () => {
+    for (const k of HUD_KEYS) { const w = widget(k); if (!w) continue; const p = layout[k] || { x: 20, y: 20, s: 1 };
+      w.style.left = p.x + 'px'; w.style.top = p.y + 'px'; w.style.transform = 'scale(' + (p.s || 1) + ')'; w.dataset.s = String(p.s || 1); }
+  };
+  apply();
+  const editing = () => document.body.classList.contains('hud-edit');
+  for (const k of HUD_KEYS) {
+    const w = widget(k); if (!w) continue; const handle = w.querySelector('.rsz');
+    w.addEventListener('pointerdown', (e) => {
+      if (!editing() || e.target === handle) return; e.preventDefault();
+      const sx = e.clientX, sy = e.clientY, ox = parseFloat(w.style.left) || 0, oy = parseFloat(w.style.top) || 0;
+      const mv = (ev) => { w.style.left = (ox + ev.clientX - sx) + 'px'; w.style.top = (oy + ev.clientY - sy) + 'px'; };
+      const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); layout[k] = curOf(k); };
+      window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
+    });
+    if (handle) handle.addEventListener('pointerdown', (e) => {
+      if (!editing()) return; e.preventDefault(); e.stopPropagation();
+      const sx = e.clientX, sy = e.clientY, os = parseFloat(w.dataset.s) || 1;
+      const mv = (ev) => { const s = clamp(os + ((ev.clientX - sx) + (ev.clientY - sy)) / 180, 0.3, 6); w.style.transform = 'scale(' + s + ')'; w.dataset.s = String(s); };
+      const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); layout[k] = curOf(k); };
+      window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
+    });
+  }
+  const editBtn = el('hudedit');
+  if (editBtn) editBtn.addEventListener('click', () => { document.body.classList.toggle('hud-edit'); editBtn.textContent = editing() ? '✓ готово' : '✥ двигать HUD'; });
+  const saveBtn = el('hudsave');
+  if (saveBtn) saveBtn.addEventListener('click', async () => {
+    for (const k of HUD_KEYS) layout[k] = curOf(k); const json = JSON.stringify(layout);
+    try { localStorage.setItem(HUD_STORE, json); } catch {} try { await navigator.clipboard.writeText(json); } catch {}
+    const o = saveBtn.textContent; saveBtn.textContent = 'saved ✓'; setTimeout(() => saveBtn.textContent = o, 1300);
+  });
+  const resetBtn = el('hudreset');
+  if (resetBtn) resetBtn.addEventListener('click', () => { try { localStorage.removeItem(HUD_STORE); } catch {} layout = defaults(); apply(); });
+}
