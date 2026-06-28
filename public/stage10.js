@@ -74,23 +74,30 @@ const teamColor = (team) => (team === 'away' ? COL_AWAY : COL_HOME);
 const DEFAULTS = () => ({
   speed: 0.9,
   // A · activity terrain (macro relief)
-  A: { on: true, open: false, tau: 1.6, grid: 0.45, height: 1.0, colour: 1.0 },
+  //  height=amplitude, tau=speed, grid=detail, blur=smoothing, colour=intensity,
+  //  sharp=hill contrast/gamma, floor=hide-low threshold.
+  A: { on: true, open: false, tau: 1.6, grid: 0.45, height: 1.0, colour: 1.0, blur: 0.5, sharp: 1.0, floor: 0.0 },
   // B · pass relief (fine overlay)
-  B: { on: true, open: false, tau: 1.2, aggr: 0.5, height: 0.6, longw: 0 },
+  //  height=amplitude, tau=speed, aggr=aggregation, longw=long-pass weight,
+  //  opacity=intensity, sharp=contrast/gamma.
+  B: { on: true, open: false, tau: 1.2, aggr: 0.5, height: 0.6, longw: 0, opacity: 1.0, sharp: 1.0 },
   // C · live locus comet
-  C: { on: true, open: false, trail: 0.5, size: 1.0, bright: 1.0 },
+  //  hop=amplitude (ride height), size=orb size, trail=trail length (min),
+  //  twidth=trail width, bright=brightness, fade=trail fade.
+  C: { on: true, open: false, trail: 0.5, size: 1.0, bright: 1.0, hop: 1.0, twidth: 1.0, fade: 1.0 },
   // D · event accents
-  D: { on: true, open: false, size: 1.0, fade: 1.0, shots: true, duels: true, corners: true, fouls: true },
+  //  amp=shot-spike amplitude, beam=beam length to goal, spark=duel spark size,
+  //  marker=corner/foul marker size, fade=lifetime, + per-type sub-toggles.
+  D: { on: true, open: false, amp: 1.0, beam: 1.0, spark: 1.0, marker: 1.0, fade: 1.0, shots: true, duels: true, corners: true, fouls: true },
   // ★ counters · coloured jabs
-  K: { on: false, open: false, pct: 0.35, secs: 12, height: 1.0, sharp: 1.0 },
+  //  height=jab amplitude, sharp=rise/fall snap, width=jab width, pct=sensitivity,
+  //  secs=detection window, fade=lifetime.
+  K: { on: false, open: false, pct: 0.35, secs: 12, height: 1.0, sharp: 1.0, width: 1.0, fade: 1.0 },
 });
 let cfg = DEFAULTS();
 
-const PRESETS = {
-  min:     () => { const c = DEFAULTS(); c.B.on = false; c.D.on = false; c.K.on = false; return c; },
-  match:   () => { const c = DEFAULTS(); c.K.on = false; return c; },
-  counter: () => { const c = DEFAULTS(); c.B.on = false; c.D.on = false; c.K.on = true; return c; },
-};
+// the old "Матч" combo is the default startup state (A+B+C+D on, counters off).
+const MATCH_DEFAULT = () => { const c = DEFAULTS(); c.K.on = false; return c; };
 
 // ---- boot -------------------------------------------------------------------
 init().catch((e) => fail(e.message || String(e)));
@@ -100,7 +107,7 @@ async function init() {
 
   // load config from URL hash if present, else default to the "Матч" preset.
   const fromHash = loadCfgFromHash();
-  cfg = fromHash || PRESETS.match();
+  cfg = fromHash || MATCH_DEFAULT();
 
   let tlDoc = null;
   try { tlDoc = await fetch('/api/timeline/' + ID).then((r) => (r.ok ? r.json() : null)); } catch { tlDoc = null; }
@@ -522,7 +529,8 @@ function computeA(t) {
   const { gx, gy } = gridDims(cfg.A.grid, 14, 34);
   ensureA(gx, gy);
   A_h.fill(0); A_hH.fill(0); A_hA.fill(0); A_poss.fill(0);
-  const radCells = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1));
+  // base radius from detail; smoothing (blur) widens the stamp on top.
+  const radCells = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1)) * lerp(0.6, 2.2, clamp(cfg.A.blur, 0, 1));
   const win = eventsInWindow(t, tau * 5);
   for (const e of win) {
     const w = Math.exp(-(t - e.t) / tau);
@@ -589,7 +597,12 @@ function computeField(t) {
       let h = 0;
       let rr = 0, gg = 0, bb = 0, gate = 0.5;
       if (aOn) {
-        const a = sampleGrid(A_h, A_gx, A_gy, u, v) / aMax;       // 0..1
+        let a = sampleGrid(A_h, A_gx, A_gy, u, v) / aMax;         // 0..1
+        // floor/threshold: hide low activity, then renormalise the remainder.
+        const flr = clamp(cfg.A.floor, 0, 0.9);
+        a = flr > 0 ? clamp((a - flr) / (1 - flr), 0, 1) : a;
+        // sharpness = gamma on the normalised activity (peaky >1 ↔ soft <1).
+        if (cfg.A.sharp !== 1) a = Math.pow(a, clamp(cfg.A.sharp, 0.3, 4));
         h += a * 2.2 * cfg.A.height;
         // LOCAL dominant team colour at this cell (decaying activity share)
         const hh = sampleGrid(A_hH, A_gx, A_gy, u, v);
@@ -602,14 +615,15 @@ function computeField(t) {
         rr += localR * w; gg += localG * w; bb += localB * w;
       }
       if (bOn) {
-        const b = sampleGrid(B_h, B_gx, B_gy, u, v) / bMax;
+        let b = sampleGrid(B_h, B_gx, B_gy, u, v) / bMax;
+        if (cfg.B.sharp !== 1) b = Math.pow(b, clamp(cfg.B.sharp, 0.3, 4));  // contrast/gamma
         h += b * 1.4 * cfg.B.height;
         // B tints toward its own local dominant team too, but weaker
         const hh = sampleGrid(B_hH, B_gx, B_gy, u, v);
         const ha = sampleGrid(B_hA, B_gx, B_gy, u, v);
         const tot = hh + ha;
         const awayShare = tot > 1e-5 ? ha / tot : 0.5;
-        const w = clamp(b * 0.6, 0, 1);
+        const w = clamp(b * 0.6 * clamp(cfg.B.opacity, 0, 2), 0, 1);        // opacity/intensity
         rr += lerp(cH.r, cA.r, awayShare) * w; gg += lerp(cH.g, cA.g, awayShare) * w; bb += lerp(cH.b, cA.b, awayShare) * w;
       }
       // brightness gate: the on-ball team's side glows a touch brighter near the locus
@@ -650,8 +664,9 @@ function buildCometLayer() {
 function updateComet(t) {
   if (!cfg.C.on) { cometGroup.visible = false; return; }
   cometGroup.visible = true;
+  const hop = clamp(cfg.C.hop, 0, 4);
   const b = ballAt(t);
-  const yTop = cometY(b.u, b.v) + 0.12;
+  const yTop = cometY(b.u, b.v) + 0.12 + 0.5 * hop;     // amplitude: how high the orb rides
   cometOrb.position.set(worldX(b.u), yTop, worldZ(b.v));
   cometCore.position.copy(cometOrb.position);
   cometOrb.material.color.copy(teamColor(b.team));
@@ -659,13 +674,15 @@ function updateComet(t) {
   cometCore.scale.setScalar(0.6 * cfg.C.size);
   cometOrb.material.opacity = clamp(cfg.C.bright, 0, 2);
   cometCore.material.opacity = clamp(cfg.C.bright, 0, 2);
+  cometTrail.material.size = 0.85 * clamp(cfg.C.twidth, 0.1, 4);   // trail width
+  const fadePow = clamp(cfg.C.fade, 0.2, 4);                       // trail fade rate
   const span = Math.max(0.05, cfg.C.trail);
   const c = new THREE.Color();
   for (let i = 0; i < TRAIL_N; i++) {
     const tt = t - (i / TRAIL_N) * span;
     const bb = ballAt(tt);
-    cometTPos[i * 3] = worldX(bb.u); cometTPos[i * 3 + 1] = cometY(bb.u, bb.v) + 0.1; cometTPos[i * 3 + 2] = worldZ(bb.v);
-    const fade = (1 - i / TRAIL_N) * clamp(cfg.C.bright, 0, 2);
+    cometTPos[i * 3] = worldX(bb.u); cometTPos[i * 3 + 1] = cometY(bb.u, bb.v) + 0.1 + 0.5 * hop; cometTPos[i * 3 + 2] = worldZ(bb.v);
+    const fade = Math.pow(1 - i / TRAIL_N, fadePow) * clamp(cfg.C.bright, 0, 2);
     c.copy(teamColor(bb.team));
     cometTCol[i * 3] = c.r * fade; cometTCol[i * 3 + 1] = c.g * fade; cometTCol[i * 3 + 2] = c.b * fade;
   }
@@ -700,7 +717,10 @@ function updateAccents(t) {
   accentGroup.visible = true;
   clearGroup(accentDyn);
   const fade = Math.max(0.2, cfg.D.fade);
-  const sz = cfg.D.size;
+  const amp = clamp(cfg.D.amp, 0, 4);        // shot-spike amplitude
+  const beamW = clamp(cfg.D.beam, 0, 2);     // beam length (fraction toward goal)
+  const spark = clamp(cfg.D.spark, 0.1, 4);  // duel spark size
+  const marker = clamp(cfg.D.marker, 0.1, 4);// corner/foul marker size
   const win = eventsInWindow(t, 0.6 / fade + 0.2);
   for (const it of win) {
     const age = t - it.t;
@@ -712,18 +732,20 @@ function updateAccents(t) {
       const gy = clamp(it.onGoalY, 0, 1.2) * CROSSBAR_M * M2W;
       const y0 = cometY(it.u, it.v);
       const col = it.isGoal ? new THREE.Color('#fff1c0') : teamColor(it.team);
-      addBeam(accentDyn, worldX(it.u), y0, worldZ(it.v), worldX(gu), gy, worldZ(gv), col, 0.85 * life);
-      addSpike(accentDyn, worldX(it.u), y0, worldZ(it.v), (1.0 + (it.xg || 0) * 3) * sz, col, 0.9 * life);
-      addPoint(accentDyn, worldX(it.u), y0 + 0.15, worldZ(it.v), (it.isGoal ? 3.2 : 2.0) * sz * life, col, life);
+      // beam length: interpolate the goal endpoint from the shot spot by beamW.
+      const bx = lerp(it.u, gu, beamW), bv = lerp(it.v, gv, beamW), by = lerp(y0, gy, beamW);
+      addBeam(accentDyn, worldX(it.u), y0, worldZ(it.v), worldX(bx), by, worldZ(bv), col, 0.85 * life);
+      addSpike(accentDyn, worldX(it.u), y0, worldZ(it.v), (1.0 + (it.xg || 0) * 3) * amp, col, 0.9 * life);
+      addPoint(accentDyn, worldX(it.u), y0 + 0.15, worldZ(it.v), (it.isGoal ? 3.2 : 2.0) * amp * life, col, life);
     } else if (it.kind === 'event' && DUEL_TYPES.has(it.type) && cfg.D.duels) {
       const life = clamp(1 - age / (0.28 / fade), 0, 1); if (life <= 0) continue;
-      addPoint(accentDyn, worldX(it.u), cometY(it.u, it.v) + 0.1, worldZ(it.v), 1.1 * sz * life, new THREE.Color('#ffd9a0'), 0.9 * life);
+      addPoint(accentDyn, worldX(it.u), cometY(it.u, it.v) + 0.1, worldZ(it.v), 1.1 * spark * life, new THREE.Color('#ffd9a0'), 0.9 * life);
     } else if (it.type === 'CornerAwarded' && cfg.D.corners) {
       const life = clamp(1 - age / (0.7 / fade), 0, 1); if (life <= 0) continue;
-      addRing(accentDyn, worldX(it.u), cometY(it.u, it.v), worldZ(it.v), 0.6 * sz, teamColor(it.team), 0.8 * life);
+      addRing(accentDyn, worldX(it.u), cometY(it.u, it.v), worldZ(it.v), 0.6 * marker, teamColor(it.team), 0.8 * life);
     } else if (it.type === 'Foul' && cfg.D.fouls) {
       const life = clamp(1 - age / (0.5 / fade), 0, 1); if (life <= 0) continue;
-      addPoint(accentDyn, worldX(it.u), cometY(it.u, it.v) + 0.08, worldZ(it.v), 0.7 * sz * life, new THREE.Color('#ff9a8a'), 0.7 * life);
+      addPoint(accentDyn, worldX(it.u), cometY(it.u, it.v) + 0.08, worldZ(it.v), 0.7 * marker * life, new THREE.Color('#ff9a8a'), 0.7 * life);
     }
   }
 }
@@ -741,9 +763,12 @@ function updateCounters(t) {
   if (!cfg.K.on) { counterGroup.visible = false; clearGroup(counterDyn); return; }
   counterGroup.visible = true;
   clearGroup(counterDyn);
-  // jab life: snaps up over ~0.15min then falls; sharpness shortens both.
+  // jab life: snaps up over ~0.15min then falls; sharpness shortens both,
+  // fade/lifetime stretches the fall tail.
   const sharp = Math.max(0.3, cfg.K.sharp);
-  const riseLife = 0.12 / sharp, fallLife = 0.5 / sharp;
+  const fade = clamp(cfg.K.fade, 0.2, 4);
+  const width = clamp(cfg.K.width, 0.2, 4);
+  const riseLife = 0.12 / sharp, fallLife = (0.5 / sharp) * fade;
   for (const j of counters) {
     const age = t - j.t;
     if (age < -0.02) continue;
@@ -755,7 +780,7 @@ function updateCounters(t) {
     const h = (3.0 + 2.0) * cfg.K.height * env;                       // thin TALL spike
     const col = teamColor(j.team);
     const y0 = cometY(j.u, j.v);
-    addJab(counterDyn, worldX(j.u), y0, worldZ(j.v), h, col, env);
+    addJab(counterDyn, worldX(j.u), y0, worldZ(j.v), h, col, env, width);
   }
 }
 
@@ -795,8 +820,8 @@ function addSpike(parent, x, y, z, h, col, alpha) {
   const mesh = new THREE.Mesh(g, m); mesh.position.set(x, y + h * 0.5, z); parent.add(mesh);
 }
 // a counter jab = a thin tall coloured prick (sharper + a bright tip sprite)
-function addJab(parent, x, y, z, h, col, env) {
-  const g = new THREE.ConeGeometry(0.10, h, 12);
+function addJab(parent, x, y, z, h, col, env, width = 1) {
+  const g = new THREE.ConeGeometry(0.10 * width, h, 12);
   const m = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: clamp(0.55 + 0.45 * env, 0, 1),
     blending: THREE.AdditiveBlending, depthWrite: false });
   const mesh = new THREE.Mesh(g, m); mesh.position.set(x, y + h * 0.5, z); parent.add(mesh);
@@ -931,23 +956,6 @@ function bindGlobalUI() {
       `target: [${controls.target.x.toFixed(2)}, ${controls.target.y.toFixed(2)}, ${controls.target.z.toFixed(2)}] }`;
     try { await navigator.clipboard.writeText(s); el('camread').textContent = 'copied'; } catch { el('camread').textContent = s; }
   });
-
-  // presets
-  document.querySelectorAll('.preset').forEach((b) => b.addEventListener('click', () => {
-    const p = PRESETS[b.dataset.preset]; if (!p) return;
-    cfg = p(); syncCfgToUI(); writeHash(); _ballCursor = 0; renderFrame(clock); composer.render();
-  }));
-
-  // COPY CONFIG
-  const copyBtn = el('copycfg'), dump = el('cfgDump');
-  let flashT = 0;
-  copyBtn.addEventListener('click', async () => {
-    const json = JSON.stringify(cfg, null, 2);
-    const flash = () => { copyBtn.textContent = 'copied ✓'; clearTimeout(flashT); flashT = setTimeout(() => copyBtn.textContent = 'COPY CONFIG', 1400); };
-    try { await navigator.clipboard.writeText(json); if (dump) dump.style.display = 'none'; flash(); }
-    catch { if (dump) { dump.value = json; dump.style.display = 'block'; dump.focus(); dump.select(); } copyBtn.textContent = 'copy below ↓'; }
-  });
-  el('resetcfg').addEventListener('click', () => { cfg = PRESETS.match(); syncCfgToUI(); writeHash(); _ballCursor = 0; renderFrame(clock); composer.render(); });
 }
 
 function bindSlider(id, valId, fn) {
@@ -962,34 +970,47 @@ function bindSlider(id, valId, fn) {
 // ============================================================================
 const LAYER_DEFS = [
   { key: 'A', name: 'A · активность', controls: [
-    { id: 'tau', label: 'speed τ ▸ скорость', min: 0.5, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
-    { id: 'grid', label: 'detail ▸ грид', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
-    { id: 'height', label: 'height ▸ высота', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'colour', label: 'colour ▸ цвет', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'height', label: 'амплитуда ▸ высота', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'tau', label: 'скорость τ ▸ затухание', min: 0.5, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
+    { id: 'grid', label: 'детализация ▸ грид', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
+    { id: 'blur', label: 'сглаживание ▸ размытие', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
+    { id: 'colour', label: 'насыщ. цвета ▸ цвет', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'sharp', label: 'резкость ▸ контраст', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'floor', label: 'порог ▸ скрыть низ', min: 0, max: 0.8, step: 0.02, fmt: (v) => v.toFixed(2) },
   ] },
   { key: 'B', name: 'B · пасы', controls: [
-    { id: 'tau', label: 'speed τ ▸ скорость', min: 0.3, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
-    { id: 'aggr', label: 'aggregation ▸ слитность', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
-    { id: 'height', label: 'height ▸ высота', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'longw', label: 'long-pass weight ▸ длина', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'height', label: 'амплитуда ▸ высота', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'tau', label: 'скорость τ ▸ затухание', min: 0.3, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
+    { id: 'aggr', label: 'слитность ▸ агрегация', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
+    { id: 'longw', label: 'вес длинных ▸ длина', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'opacity', label: 'интенсивность ▸ цвет', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'sharp', label: 'резкость ▸ контраст', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
   ] },
   { key: 'C', name: 'C · мяч', controls: [
-    { id: 'trail', label: 'trail ▸ хвост (мин)', min: 0.05, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'size', label: 'size ▸ размер', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'bright', label: 'brightness ▸ яркость', min: 0.2, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'hop', label: 'амплитуда ▸ подъём', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'size', label: 'размер шара ▸ орб', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'trail', label: 'длина хвоста ▸ сек', min: 0.05, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'twidth', label: 'толщина хвоста ▸ ширина', min: 0.1, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'bright', label: 'яркость ▸ свечение', min: 0.2, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'fade', label: 'затухание ▸ хвост', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
   ] },
   { key: 'D', name: 'D · события', controls: [
-    { id: 'size', label: 'size ▸ размер', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'fade', label: 'fade ▸ скорость', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'amp', label: 'амплитуда ▸ пик удара', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'beam', label: 'луч к воротам ▸ длина', min: 0, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'spark', label: 'искры ▸ единоборства', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'marker', label: 'маркеры ▸ угл./фолы', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'fade', label: 'затухание ▸ время жизни', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
   ], toggles: [
     { id: 'shots', label: 'удары' }, { id: 'duels', label: 'единоборства' },
     { id: 'corners', label: 'угловые' }, { id: 'fouls', label: 'фолы' },
   ] },
   { key: 'K', name: '★ контратаки', controls: [
-    { id: 'pct', label: 'sensitivity % ▸ порог', min: 0.15, max: 0.7, step: 0.01, fmt: (v) => Math.round(v * 100) + '%', recount: true },
-    { id: 'secs', label: 'window ▸ секунды', min: 4, max: 25, step: 1, fmt: (v) => v.toFixed(0) + 's', recount: true },
-    { id: 'height', label: 'jab height ▸ высота', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'sharp', label: 'sharpness ▸ резкость', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'height', label: 'амплитуда ▸ высота', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'sharp', label: 'резкость ▸ снап', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'width', label: 'ширина ▸ толщина', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'pct', label: 'чувствит. % ▸ порог', min: 0.15, max: 0.7, step: 0.01, fmt: (v) => Math.round(v * 100) + '%', recount: true },
+    { id: 'secs', label: 'окно ▸ секунды', min: 4, max: 25, step: 1, fmt: (v) => v.toFixed(0) + 's', recount: true },
+    { id: 'fade', label: 'затухание ▸ время жизни', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
   ] },
 ];
 
