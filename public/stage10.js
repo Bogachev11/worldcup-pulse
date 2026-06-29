@@ -3,8 +3,8 @@
 // The user ASSEMBLES the visualization from independent, composable layers and
 // tunes each one. The scene = a shared CLOTH whose height+colour are the sum of
 // the enabled FIELD layers (A activity terrain, B pass relief), plus separate 3D
-// objects for the point/accent layers (C live comet, D event accents, ★ counter
-// jabs). Each layer is on/off with its own SPEED (decay half-life) + DETAIL knobs.
+// objects for the point/accent layers (C live comet, D event accents). Each layer
+// is on/off with its own SPEED (decay half-life) + DETAIL knobs.
 //
 // Scaffolding (three setup, cloth + onBeforeCompile, pitch plane, camera, HUD,
 // post chain, colours, the REAL per-second timeline engine + ballAt/eventsNear)
@@ -19,7 +19,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { clamp, lerp, smoothstep } from './claybattle.js';
+import { clamp, lerp } from './claybattle.js';
 
 const ID = new URLSearchParams(location.search).get('id') || '1953888';
 const el = (id) => document.getElementById(id);
@@ -58,7 +58,6 @@ let colTex, colData;                        // per-vertex RGB (mesh res)
 let heightBaseline = 0;
 let timeline = null;                        // merged, mirrored, real-t event stream
 let ballLocus = null;                       // locus anchors for ballAt()
-let counters = null;                        // detected counter jabs (precomputed)
 let teamMeta = { home: { abbr: 'FRA' }, away: { abbr: 'SEN' }, score: { home: 0, away: 0 }, duration: 100 };
 
 let clock = 0, playing = true;
@@ -89,15 +88,11 @@ const DEFAULTS = () => ({
   //  amp=shot-spike amplitude, beam=beam length to goal, spark=duel spark size,
   //  marker=corner/foul marker size, fade=lifetime, + per-type sub-toggles.
   D: { on: true, open: false, amp: 1.0, beam: 1.0, spark: 1.0, marker: 1.0, fade: 1.0, shots: true, duels: true, corners: true, fouls: true },
-  // ★ counters · coloured jabs
-  //  height=jab amplitude, sharp=rise/fall snap, width=jab width, pct=sensitivity,
-  //  secs=detection window, fade=lifetime.
-  K: { on: false, open: false, pct: 0.35, secs: 12, height: 1.0, sharp: 1.0, width: 1.0, fade: 1.0 },
 });
 let cfg = DEFAULTS();
 
-// the old "Матч" combo is the default startup state (A+B+C+D on, counters off).
-const MATCH_DEFAULT = () => { const c = DEFAULTS(); c.K.on = false; return c; };
+// the "Матч" combo is the default startup state (A+B+C+D all on).
+const MATCH_DEFAULT = () => DEFAULTS();
 
 // ---- boot -------------------------------------------------------------------
 init().catch((e) => fail(e.message || String(e)));
@@ -120,7 +115,6 @@ async function init() {
   timeline = buildTimelineFromDoc(tlDoc);
   ballLocus = buildBallLocus(timeline);
   countGoals();
-  counters = detectCounters();
 
   setupThree();
   buildCloth();
@@ -292,7 +286,6 @@ function buildCloth() {
   buildPitchPlane();
   buildAccentLayer();
   buildCometLayer();
-  buildCounterLayer();
 }
 
 // ---- STATIC PITCH-MARKINGS PLANE at y=0 (from stage9) -----------------------
@@ -422,69 +415,6 @@ function eventsInWindow(t, halfLifeMin) {
   const lo = t - halfLifeMin; const out = [];
   for (const it of timeline) { if (it.t > t) break; if (it.t >= lo) out.push(it); }
   return out;
-}
-
-// ============================================================================
-// ★ COUNTER DETECTION — precomputed jabs. Two sources:
-//   (a) any shot with situation==='FastBreak' → jab at the shot spot.
-//   (b) a turnover (BallRecovery / won Interception / won Tackle / opponent
-//       Dispossessed) followed within `secs` by the SAME team's locus advancing
-//       >= `pct` of pitch length toward the opponent goal → jab at the apex.
-// Each jab: { t, u, v, team }. Re-derivable when the sensitivity sliders change.
-// ============================================================================
-const TURNOVER_TYPES = new Set(['BallRecovery', 'Interception', 'Tackle', 'Dispossessed']);
-function detectCounters() {
-  const pctFrac = clamp(cfg.K.pct, 0.1, 0.9);
-  const secs = clamp(cfg.K.secs, 3, 30);
-  const winMin = secs / 60;
-  const jabs = [];
-
-  // (a) FastBreak shots
-  for (const it of timeline) {
-    if (it.kind === 'shot' && it.situation === 'FastBreak') {
-      jabs.push({ t: it.t, u: it.u, v: it.v, team: it.team, src: 'fastbreak' });
-    }
-  }
-
-  // (b) turnover → advance toward opponent goal. Opponent goal in shared frame:
-  //     home attacks u→1, away attacks u→0. "Advance" = locus u moves toward that
-  //     goal by >= pctFrac of pitch length within the window. Apex = furthest spot.
-  for (let i = 0; i < timeline.length; i++) {
-    const ev = timeline[i];
-    if (!TURNOVER_TYPES.has(ev.type)) continue;
-    // the team that GAINS possession on this turnover:
-    //  - Dispossessed: the losing team is ev.team → the OTHER team gains.
-    //  - BallRecovery / Interception / Tackle: ev.team is the winner (only count successful).
-    let gain;
-    if (ev.type === 'Dispossessed') gain = ev.team === 'home' ? 'away' : 'home';
-    else { if (ev.outcome === 'Unsuccessful') continue; gain = ev.team; }
-    const goalU = gain === 'home' ? 1 : 0;
-    const startU = ev.u;            // already mirrored into shared frame
-    const startTowardGoal = gain === 'home' ? startU : (1 - startU);
-    // scan locus forward over the window for the furthest advance toward goalU
-    let bestAdv = 0, apex = null;
-    const tEnd = ev.t + winMin;
-    for (let s = ev.t; s <= tEnd; s += 0.01) {
-      const b = ballAt(s);
-      if (b.team !== gain) continue;                 // must be the same team carrying
-      const toward = gain === 'home' ? b.u : (1 - b.u);
-      const adv = toward - startTowardGoal;
-      if (adv > bestAdv) { bestAdv = adv; apex = { u: b.u, v: b.v, t: s }; }
-    }
-    if (apex && bestAdv >= pctFrac) {
-      jabs.push({ t: apex.t, u: apex.u, v: apex.v, team: gain, src: 'turnover' });
-    }
-  }
-  jabs.sort((a, b) => a.t - b.t);
-  // de-dupe jabs that are very close in time + space (same break detected twice)
-  const merged = [];
-  for (const j of jabs) {
-    const prev = merged[merged.length - 1];
-    if (prev && prev.team === j.team && Math.abs(prev.t - j.t) < 0.15 &&
-        Math.hypot(prev.u - j.u, prev.v - j.v) < 0.12) continue;
-    merged.push(j);
-  }
-  return merged;
 }
 
 // ============================================================================
@@ -785,40 +715,6 @@ function updateAccents(t) {
   }
 }
 
-// ============================================================================
-// ★ COUNTERS · COLOURED JABS — thin tall spikes in the attacking team's colour,
-// snapping UP fast and falling fast at the break apex. Distinct coloured pricks.
-// ============================================================================
-let counterGroup, counterDyn;
-function buildCounterLayer() {
-  counterGroup = new THREE.Group(); counterGroup.visible = false; scene.add(counterGroup);
-  counterDyn = new THREE.Group(); counterGroup.add(counterDyn);
-}
-function updateCounters(t) {
-  if (!cfg.K.on) { counterGroup.visible = false; clearGroup(counterDyn); return; }
-  counterGroup.visible = true;
-  clearGroup(counterDyn);
-  // jab life: snaps up over ~0.15min then falls; sharpness shortens both,
-  // fade/lifetime stretches the fall tail.
-  const sharp = Math.max(0.3, cfg.K.sharp);
-  const fade = clamp(cfg.K.fade, 0.2, 4);
-  const width = clamp(cfg.K.width, 0.2, 4);
-  const riseLife = 0.12 / sharp, fallLife = (0.5 / sharp) * fade;
-  for (const j of counters) {
-    const age = t - j.t;
-    if (age < -0.02) continue;
-    if (age > fallLife) continue;
-    let env;
-    if (age < riseLife) env = smoothstep(0, riseLife, age);           // snap up
-    else env = 1 - smoothstep(riseLife, fallLife, age);               // fall fast
-    if (env <= 0.001) continue;
-    const h = (3.0 + 2.0) * cfg.K.height * env;                       // thin TALL spike
-    const col = teamColor(j.team);
-    const y0 = cometY(j.u, j.v);
-    addJab(counterDyn, worldX(j.u), y0, worldZ(j.v), h, col, env, width);
-  }
-}
-
 // ---- primitive helpers ------------------------------------------------------
 let _discTex = null;
 function makeDiscTexture() {
@@ -854,15 +750,6 @@ function addSpike(parent, x, y, z, h, col, alpha) {
   const m = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: alpha, blending: THREE.AdditiveBlending, depthWrite: false });
   const mesh = new THREE.Mesh(g, m); mesh.position.set(x, y + h * 0.5, z); parent.add(mesh);
 }
-// a counter jab = a thin tall coloured prick (sharper + a bright tip sprite)
-function addJab(parent, x, y, z, h, col, env, width = 1) {
-  const g = new THREE.ConeGeometry(0.10 * width, h, 12);
-  const m = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: clamp(0.55 + 0.45 * env, 0, 1),
-    blending: THREE.AdditiveBlending, depthWrite: false });
-  const mesh = new THREE.Mesh(g, m); mesh.position.set(x, y + h * 0.5, z); parent.add(mesh);
-  addPoint(parent, x, y + h + 0.05, z, 2.4 * env, col, env);   // bright tip
-}
-
 // ============================================================================
 // POST chain (cloned from stage9)
 // ============================================================================
@@ -898,7 +785,6 @@ function renderFrame(t) {
   else mesh.visible = false;
   updateComet(t);
   updateAccents(t);
-  updateCounters(t);
 }
 
 // ---- resize -----------------------------------------------------------------
@@ -942,8 +828,6 @@ window.__setClock = (min) => {
   updateHud();
   updateCamReadout();
 };
-// dev: expose counter list for verification
-window.__counters = () => counters.map((j) => ({ t: +j.t.toFixed(2), team: j.team, u: +j.u.toFixed(2), src: j.src }));
 
 // ============================================================================
 // HUD / camera (cloned from stage9)
@@ -1043,7 +927,7 @@ function bindSlider(id, valId, fn) {
 }
 
 // ============================================================================
-// LAYER BUILDER UI — one row per layer (A,B,C,D,Counters) with an enable
+// LAYER BUILDER UI — one row per layer (A,B,C,D) with an enable
 // checkbox + an expandable group of sliders. Changing anything updates live.
 // ============================================================================
 const LAYER_DEFS = [
@@ -1084,14 +968,6 @@ const LAYER_DEFS = [
     { id: 'shots', label: 'удары' }, { id: 'duels', label: 'единоборства' },
     { id: 'corners', label: 'угловые' }, { id: 'fouls', label: 'фолы' },
   ] },
-  { key: 'K', name: '★ контратаки', controls: [
-    { id: 'height', label: 'амплитуда ▸ высота', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'sharp', label: 'скорость ▸ нарастание', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'fade', label: 'затухание ▸ спад', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'width', label: 'ширина ▸ толщина', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'pct', label: 'чувствит. % ▸ порог', min: 0.15, max: 0.7, step: 0.01, fmt: (v) => Math.round(v * 100) + '%', recount: true },
-    { id: 'secs', label: 'окно ▸ секунды', min: 4, max: 25, step: 1, fmt: (v) => v.toFixed(0) + 's', recount: true },
-  ] },
 ];
 
 const layerUIRefs = {};
@@ -1124,7 +1000,6 @@ function buildLayerUI() {
       refs.sliders[c.id] = { inp, val, fmt: c.fmt };
       inp.addEventListener('input', () => {
         cfg[def.key][c.id] = +inp.value; val.textContent = c.fmt(+inp.value);
-        if (c.recount) counters = detectCounters();
         writeHash(); _ballCursor = 0; renderFrame(clock); composer.render();
       });
     }
@@ -1172,7 +1047,6 @@ function syncCfgToUI() {
     }
     for (const id in refs.pills) refs.pills[id].classList.toggle('on', !!L[id]);
   }
-  counters = detectCounters();
 }
 
 // ============================================================================
@@ -1185,11 +1059,13 @@ function syncCfgToUI() {
 const STORE_KEY = 'wcp_stage10_cfg';
 
 // merge a parsed config object onto DEFAULTS so partial/old configs stay valid.
+// Only known layer keys are copied — an OLD cfg/#cfg= that still carries the
+// removed ★ counters (K) key is ignored gracefully (never throws).
 function cfgFromParsed(parsed) {
   if (!parsed || typeof parsed !== 'object') return null;
   const base = DEFAULTS();
   base.speed = Number.isFinite(parsed.speed) ? parsed.speed : base.speed;
-  for (const k of ['A', 'B', 'C', 'D', 'K']) if (parsed[k]) Object.assign(base[k], parsed[k]);
+  for (const k of ['A', 'B', 'C', 'D']) if (parsed[k]) Object.assign(base[k], parsed[k]);
   return base;
 }
 
