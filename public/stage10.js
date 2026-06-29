@@ -724,11 +724,12 @@ function computeField(t) {
   // fabric wobble phase — gentle undulation so each blanket drapes like cloth.
   const ph = (typeof performance !== 'undefined' ? performance.now() : Date.now()) * 0.00018;
   const amp = clamp(cfg.A.height, 0, 3);
-  // The unfocused base drape is kept LOW + nearly FLAT so quiet (covered) zones
-  // stay coloured but flat; the visible relief comes only from the FOCUS-gated
-  // swell at the live locus (see hH/hA below). A taller drape here would re-create
-  // the detached "second dome" the focus mask is meant to dissolve.
-  const A_BASE = 0.12 * amp;           // always-present low FLAT drape per team
+  // The unfocused base drape gives the blanket its BODY so the whole covered
+  // territory reads as a coloured draped sheet ("покрывало"), not a dark sheet
+  // pressed flat onto the pitch. It is UNIFORM across the covered zone, so it
+  // adds body WITHOUT creating a detached "second dome" — the islands came from
+  // the spread SWELL (rH·fm), which the focus mask now keeps to one hill.
+  const A_BASE = 0.5 * amp;            // always-present FLAT draped body per team
   const A_WOBBLE = 0.09 * amp;
   const flr = clamp(cfg.A.floor, 0, 0.9);
   const gamma = clamp(cfg.A.sharp, 0.3, 4);
