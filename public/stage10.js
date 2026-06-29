@@ -81,6 +81,11 @@ const DEFAULTS = () => ({
   A: {
     on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 1.0,
     colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0, lap: 0.08,
+    // ФОКУС ▸ зона игры — radius of the spatial focus mask that anchors the
+    // HEIGHT relief to the single live play locus (ballAt(t)). Tight = one
+    // coherent swell where play is; wide → approaches the old free-form field.
+    // Colour/coverage stay BROAD; only height is gated. 0..1 → σ in world units.
+    focus: 0.2,
     // contributors (☑ default = true): which signals RAISE a team's blanket
     cOwn: true,  wOwn: 1.0,   // Владение — on-ball control density
     cXg: true,   wXg: 1.0,    // Удары · xG — sharp tall crest at the shot, ×xg
@@ -679,12 +684,52 @@ function computeField(t) {
   if (bOn) { computeB(t); for (let k = 0; k < B_h.length; k++) bMax = Math.max(bMax, B_h[k]); }
 
   const ball = ballAt(t);
+  // ---- FOCUS: anchor HEIGHT to the single live play locus -------------------
+  // A smooth radial mask centred on ballAt(t) (plus a short memory tail along the
+  // recent locus path for body) multiplies each team's HEIGHT field, so detached
+  // far activity islands dissolve and the relief becomes ONE coherent swell where
+  // play actually is. COLOUR / coverage are NOT touched (territory stays painted).
+  // focus 0..1 → Gaussian σ in world units (tight → one region, wide → free-form).
+  const focusSig = lerp(1.4, 7.5, clamp(cfg.A.focus, 0, 1));
+  const focus2 = 2 * focusSig * focusSig;
+  // memory tail: a few recent locus samples give the swell natural body along the
+  // path. CRITICAL: a tail sample is kept ONLY if it is contiguous with the live
+  // locus (within tailReach of it); when the locus jumped far in the last instants
+  // the far sample is DROPPED so it can never anchor a detached second hill.
+  const lbX = worldX(ball.u), lbZ = worldZ(ball.v);
+  const tailReach = focusSig * 1.25;          // max gap that still counts as one path
+  const FOCUS_TAIL = [0, 0.12, 0.28, 0.45];   // seconds back along the locus
+  const focusPts = [{ fx: lbX, fz: lbZ, w: 1.0 }];
+  let prevX = lbX, prevZ = lbZ;
+  for (let k = 1; k < FOCUS_TAIL.length; k++) {
+    const b = ballAt(t - FOCUS_TAIL[k]);
+    const fx = worldX(b.u), fz = worldZ(b.v);
+    // keep only if contiguous with the PREVIOUS (more recent) kept sample.
+    if (Math.hypot(fx - prevX, fz - prevZ) > tailReach) break;
+    focusPts.push({ fx, fz, w: 0.8 - (k - 1) * 0.18 });
+    prevX = fx; prevZ = fz;
+  }
+  // wide focus (slider near max) lets the mask approach 1 everywhere (old field).
+  const focusFloor = clamp((cfg.A.focus - 0.82) / 0.18, 0, 1) * 0.6;
+  const focusMask = (wx, wz) => {
+    let m = 0;
+    for (const p of focusPts) {
+      const dx = wx - p.fx, dz = wz - p.fz;
+      const g = p.w * Math.exp(-(dx * dx + dz * dz) / focus2);
+      if (g > m) m = g;
+    }
+    return clamp(m + focusFloor, 0, 1);
+  };
   const cH = COL_HOME, cA = COL_AWAY;
   // fabric wobble phase — gentle undulation so each blanket drapes like cloth.
   const ph = (typeof performance !== 'undefined' ? performance.now() : Date.now()) * 0.00018;
   const amp = clamp(cfg.A.height, 0, 3);
-  const A_BASE = 0.5 * amp;            // always-present low drape per team
-  const A_WOBBLE = 0.16 * amp;
+  // The unfocused base drape is kept LOW + nearly FLAT so quiet (covered) zones
+  // stay coloured but flat; the visible relief comes only from the FOCUS-gated
+  // swell at the live locus (see hH/hA below). A taller drape here would re-create
+  // the detached "second dome" the focus mask is meant to dissolve.
+  const A_BASE = 0.12 * amp;           // always-present low FLAT drape per team
+  const A_WOBBLE = 0.09 * amp;
   const flr = clamp(cfg.A.floor, 0, 0.9);
   const gamma = clamp(cfg.A.sharp, 0.3, 4);
   const lap = clamp(cfg.A.lap, 0, 0.45);    // НАХЛЁСТ: extend coverage past the 50% front
@@ -718,8 +763,18 @@ function computeField(t) {
         // are kept low (×1.5) and the crest towers (×2.6, uncapped by xg).
         const xH = sampleGrid(A_xH, A_gx, A_gy, u, v);
         const xA = sampleGrid(A_xA, A_gx, A_gy, u, v);
-        hH = A_BASE + A_WOBBLE * wob + rH * 1.5 * amp + xH * 2.6 * amp;
-        hA = A_BASE + A_WOBBLE * wob + rA * 1.5 * amp + xA * 2.6 * amp;
+        // FOCUS mask: dissolve detached far swells, keep ONE coherent hill at the
+        // locus. Gates BOTH teams' swells (both cluster around the ball; the
+        // possessing team rises higher via the Владение contributor). The xG crest
+        // uses a SOFTENED mask (√, lifted) so a shot near the locus stays a tall
+        // spire and is never flattened away.
+        const wx = worldX(u), wz = worldZ(v);
+        const fm = focusMask(wx, wz);
+        // crest uses a SOFTENED (√) mask so a chance AT the locus stays a tall
+        // spire (fm≈1 → 1), while a crest FAR from play dissolves like the swell.
+        const fmCrest = clamp(Math.sqrt(fm), 0, 1);
+        hH = A_BASE + A_WOBBLE * wob + rH * 2.0 * amp * fm + xH * 2.6 * amp * fmCrest;
+        hA = A_BASE + A_WOBBLE * wob + rA * 2.0 * amp * fm + xA * 2.6 * amp * fmCrest;
         // coverage from PRESENCE share — CRISP front (steep), extended by lap.
         const pH = sampleGrid(A_pH, A_gx, A_gy, u, v);
         const pA = sampleGrid(A_pA, A_gx, A_gy, u, v);
@@ -1121,6 +1176,7 @@ const LAYER_DEFS = [
     { id: 'atk', label: 'скорость ▸ нарастание', min: 0.02, max: 2, step: 0.02, fmt: (v) => v.toFixed(2) },
     { id: 'rel', label: 'затухание ▸ спад', min: 0.3, max: 5, step: 0.1, fmt: (v) => v.toFixed(1) },
     { id: 'grid', label: 'детализация ▸ грид', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
+    { id: 'focus', label: 'фокус ▸ зона игры', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
     { id: 'blur', label: 'сглаживание ▸ размытие', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
     { id: 'colour', label: 'насыщ. цвета ▸ цвет', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'sharp', label: 'резкость ▸ контраст', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
