@@ -76,7 +76,7 @@ const DEFAULTS = () => ({
   // A · activity terrain (macro relief)
   //  height=amplitude, tau=speed, grid=detail, blur=smoothing, colour=intensity,
   //  sharp=hill contrast/gamma, floor=hide-low threshold.
-  A: { on: true, open: false, tau: 1.6, grid: 0.45, height: 1.0, colour: 1.0, blur: 0.5, sharp: 1.0, floor: 0.0 },
+  A: { on: true, open: false, tau: 1.6, grid: 0.45, height: 1.0, colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0 },
   // B · pass relief (fine overlay)
   //  height=amplitude, tau=speed, aggr=aggregation, longw=long-pass weight,
   //  opacity=intensity, sharp=contrast/gamma.
@@ -237,7 +237,7 @@ function buildCloth() {
     uHScale: { value: 1.0 },
     uBaseline: { value: 0 },
     uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
-    uClay: { value: new THREE.Color('#2a2d34') },
+    uClay: { value: new THREE.Color('#3a3f4a') },
   };
   material.userData.u = u;
   material.onBeforeCompile = (shader) => {
@@ -267,11 +267,14 @@ function buildCloth() {
       {
         vec4 cd = texture2D(uColTex, vUvN);
         // cd.rgb = team-tinted colour already blended on the CPU; cd.a = brightness gate.
-        vec3 baseCol = mix(uClay, cd.rgb, clamp(length(cd.rgb)*1.2, 0.0, 1.0));
-        baseCol *= mix(0.55, 1.15, clamp(cd.a, 0.0, 1.0));   // possession brightness gate
+        // The whole sheet is a draped BLANKET: clay where unowned, tinted toward the
+        // owning team where territory leans. Keep clay visible (never bare black) so
+        // the full drape reads as fabric across the entire pitch.
+        vec3 baseCol = mix(uClay, cd.rgb, clamp(length(cd.rgb)*1.6, 0.0, 1.0));
+        baseCol *= mix(0.78, 1.18, clamp(cd.a, 0.0, 1.0));   // gentle possession brightness gate
         // valley AO so the relief reads as volume
         float lowAO = 1.0 - smoothstep(0.0, 0.6, vHd);
-        baseCol *= clamp(1.0 - 0.35*lowAO, 0.4, 1.0);
+        baseCol *= clamp(1.0 - 0.3*lowAO, 0.5, 1.0);
         diffuseColor.rgb = baseCol;
       }`);
     shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>',
@@ -589,6 +592,13 @@ function computeField(t) {
   // who is on the ball now → global possession brightness baseline
   const ball = ballAt(t);
   const cH = COL_HOME, cA = COL_AWAY;
+  // fabric wobble phase — gentle undulation so the blanket drapes/breathes like
+  // cloth (stage7/stage9 feel). Wall-clock based; scrub-safe (no data dependence).
+  const ph = (typeof performance !== 'undefined' ? performance.now() : Date.now()) * 0.00018;
+  // A's always-present base sheet: a low blanket the whole pitch sits on, scaled
+  // by amplitude so relief rides ON TOP of an ever-present drape (never bare pitch).
+  const A_BASE = 0.55 * clamp(cfg.A.height, 0, 3);
+  const A_WOBBLE = 0.18 * clamp(cfg.A.height, 0, 3);
   let idx = 0, sumH = 0;
   for (let j = 0; j < VY; j++) {
     const v = j / (VY - 1);
@@ -597,6 +607,11 @@ function computeField(t) {
       let h = 0;
       let rr = 0, gg = 0, bb = 0, gate = 0.5;
       if (aOn) {
+        // --- ALWAYS-PRESENT DRAPE: base blanket + soft fabric wobble everywhere ---
+        const wob = Math.sin(u * 6.1 + ph) * Math.cos(v * 5.3 - ph * 0.8)
+                  + 0.5 * Math.sin((u + v) * 9.7 - ph * 1.3);
+        h += A_BASE + A_WOBBLE * wob;
+        // --- RELIEF on top: normalised activity ---
         let a = sampleGrid(A_h, A_gx, A_gy, u, v) / aMax;         // 0..1
         // floor/threshold: hide low activity, then renormalise the remainder.
         const flr = clamp(cfg.A.floor, 0, 0.9);
@@ -604,14 +619,20 @@ function computeField(t) {
         // sharpness = gamma on the normalised activity (peaky >1 ↔ soft <1).
         if (cfg.A.sharp !== 1) a = Math.pow(a, clamp(cfg.A.sharp, 0.3, 4));
         h += a * 2.2 * cfg.A.height;
-        // LOCAL dominant team colour at this cell (decaying activity share)
+        // --- FULL-PITCH COLOUR: tint the WHOLE blanket by local territory ---
+        // dominance (decaying home/away share). Even low-activity zones carry a
+        // faint blanket tint toward whoever leans there; the shader relaxes to clay
+        // where no side clearly owns (low colour weight → uClay shows through).
         const hh = sampleGrid(A_hH, A_gx, A_gy, u, v);
         const ha = sampleGrid(A_hA, A_gx, A_gy, u, v);
         const tot = hh + ha;
         const awayShare = tot > 1e-5 ? ha / tot : 0.5;
+        const dom = tot > 1e-5 ? Math.abs(awayShare - 0.5) * 2 : 0;   // 0 neutral → 1 owned
         const ci = clamp(cfg.A.colour, 0, 2);
         const localR = lerp(cH.r, cA.r, awayShare), localG = lerp(cH.g, cA.g, awayShare), localB = lerp(cH.b, cA.b, awayShare);
-        const w = clamp(a * ci, 0, 1);                            // colour only where there is activity
+        // blanket colour weight: a faint floor everywhere it leans + stronger over
+        // activity peaks. Keeps the whole sheet coloured, not just the hills.
+        const w = clamp((0.18 * dom + 0.9 * a) * ci, 0, 1);
         rr += localR * w; gg += localG * w; bb += localB * w;
       }
       if (bOn) {
@@ -1031,12 +1052,16 @@ function buildLayerUI() {
     layerUIRefs[def.key] = refs;
 
     for (const c of (def.controls || [])) {
-      const row = document.createElement('div'); row.className = 'row';
+      // two-line control: label + value on top, full-width slider below — so the
+      // bigger fonts + longer RU labels never squeeze the slider track.
+      const ctl = document.createElement('div'); ctl.className = 'ctl';
+      const chead = document.createElement('div'); chead.className = 'ctl-head';
       const lab = document.createElement('label'); lab.textContent = c.label;
+      const val = document.createElement('span'); val.className = 'val';
+      chead.append(lab, val);
       const inp = document.createElement('input'); inp.type = 'range';
       inp.min = c.min; inp.max = c.max; inp.step = c.step;
-      const val = document.createElement('span'); val.className = 'val';
-      row.append(lab, inp, val); body.append(row);
+      ctl.append(chead, inp); body.append(ctl);
       refs.sliders[c.id] = { inp, val, fmt: c.fmt };
       inp.addEventListener('input', () => {
         cfg[def.key][c.id] = +inp.value; val.textContent = c.fmt(+inp.value);
