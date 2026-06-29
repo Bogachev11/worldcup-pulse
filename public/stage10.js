@@ -81,6 +81,13 @@ const DEFAULTS = () => ({
   A: {
     on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 1.0,
     colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0, lap: 0.08,
+    // МИН. ТЕРРИТОРИЯ ▸ у ворот — each team ALWAYS keeps a guaranteed band of
+    // ownership around ITS OWN goal line (home own-goal at u≈0, away at u≈1), so
+    // the opponent can never take the whole pitch in normal play. The contested
+    // front lives between the two bands and can be pushed deep, but never erases
+    // the defender's band. Fraction of pitch LENGTH per team. Overridden only by
+    // the celebratory goal-flood. 0 = no guaranteed band (old behaviour).
+    ownBand: 0.13,
     // ЯРКОСТЬ ЦВЕТА — emissive strength of the FLAT painted territory. The
     // coverage colour lies flat on the pitch (no tall body), so under scene
     // lighting it would render dark; this glow term makes it read VIVID team
@@ -788,11 +795,26 @@ function computeA(t) {
   let cMax = 1e-4;
   for (let k = 0; k < A_cH.length; k++) { if (A_cH[k] > cMax) cMax = A_cH[k]; if (A_cA[k] > cMax) cMax = A_cA[k]; }
   const prior = cMax * 0.05;            // weak — only decides truly empty zones
+  // OWN-GOAL BAND PRIOR — each team ALWAYS holds a strip at its own goal. Home's
+  // own goal is at u≈0, away's at u≈1 (home attacks u→1, see toUV). Inside the
+  // band the team's own coverage gets a STRONG positional boost (≫ cMax) so the
+  // opponent's activity can never out-claim it; the boost fades to neutral by the
+  // band's inner edge, so the contested front stays activity-shaped beyond it.
+  const band = clamp(Number.isFinite(cfg.A.ownBand) ? cfg.A.ownBand : 0, 0, 0.45);
+  const bandBoost = cMax * 6.0;         // dominant inside the band → guarantees ownership
   for (let j = 0; j < gy; j++) {
     for (let i = 0; i < gx; i++) {
       const u = i / (gx - 1);
       A_cH[j * gx + i] += prior * (1 - u);   // home prior strongest at u=0 (left)
       A_cA[j * gx + i] += prior * u;          // away prior strongest at u=1 (right)
+      if (band > 0.001) {
+        // home band: u in [0, band] → boost fades 1→0 across the band.
+        const fh = clamp(1 - u / band, 0, 1);
+        if (fh > 0) A_cH[j * gx + i] += bandBoost * (fh * fh * (3 - 2 * fh));
+        // away band: u in [1-band, 1] → boost fades 0→1 toward u=1.
+        const fa = clamp((u - (1 - band)) / band, 0, 1);
+        if (fa > 0) A_cA[j * gx + i] += bandBoost * (fa * fa * (3 - 2 * fa));
+      }
     }
   }
   // HEAVY blur (two passes) so small local pockets dissolve into the surrounding
@@ -812,10 +834,53 @@ function computeA(t) {
   // reads as a clean soft front with a small overlap. A_own becomes the 0..1 home
   // share sampled by the partition in computeField.
   cleanOwnership(gx, gy);
+  // HARD-FORCE the own-goal bands: regardless of the diffused presence + flood
+  // fill, every cell inside a team's own-goal band is owned by that team. This
+  // guarantees the defender keeps a visible strip even under total siege (the
+  // prior boost above already bends the front; this makes the band absolute and
+  // keeps the flood from being overridden away — flood is applied AFTER this).
+  if (band > 0.001) {
+    for (let j = 0; j < gy; j++) {
+      const row = j * gx;
+      for (let i = 0; i < gx; i++) {
+        const u = i / (gx - 1);
+        if (u <= band) A_own[row + i] = 1;          // home keeps its band (home=1)
+        else if (u >= 1 - band) A_own[row + i] = 0; // away keeps its band (away=0)
+      }
+    }
+  }
+  // GOAL FLOOD override — the scoring team's colour sweeps to fill the WHOLE
+  // pitch then recedes. amt=1 → every cell the scorer's owner value; partial amt
+  // pushes ownership toward the scorer proportionally (so the sweep reads as the
+  // colour washing across). Overrides the own-goal bands only during the flood.
+  const flood = goalFloodAt(t);
+  if (flood && flood.amt > 0.001) {
+    const target = flood.team === 'home' ? 1 : 0;   // owner value of the scorer
+    const a = flood.amt;
+    // SPATIAL WASH: the scorer's colour advances as a soft front from the
+    // scorer's OWN end across the whole pitch as amt rises 0→1. Home (own goal at
+    // u≈0) washes u: 0→1; away (own goal at u≈1) washes u: 1→0. A soft edge
+    // (width ~0.22) makes it read as a sweeping wave rather than a hard line.
+    const ew = 0.22;
+    for (let j = 0; j < gy; j++) {
+      const row = j * gx;
+      for (let i = 0; i < gx; i++) {
+        const u = i / (gx - 1);
+        // distance from the scorer's own end, 0 at their goal → 1 at the far end.
+        const d = flood.team === 'home' ? u : (1 - u);
+        // front reaches distance `a*(1+ew)`; cells behind it are fully scorer.
+        const cover = clamp(((a * (1 + ew)) - d) / ew, 0, 1);
+        const sm = cover * cover * (3 - 2 * cover);
+        A_own[row + i] = lerp(A_own[row + i], target, sm);
+      }
+    }
+  }
   blurGrid(A_own, gx, gy, Math.max(1, Math.round(gx * 0.05)));
   // ease the ownership field TEMPORALLY too, so the front glides between frames
   // instead of a boundary cell popping when the threshold flips. Snaps on scrub.
-  const ko = snapNow ? 1 : A_COV_SMOOTH_K;
+  // During an active flood we SNAP (ko=1) so the deterministic sweep/recede
+  // envelope is honoured exactly when scrubbing onto/away from a goal.
+  const ko = (snapNow || flood) ? 1 : A_COV_SMOOTH_K;
   for (let i = 0; i < A_own.length; i++) A_sown[i] += (A_own[i] - A_sown[i]) * ko;
   return win.length > 0;
 }
@@ -823,6 +888,45 @@ function computeA(t) {
 // flag in smoothA() makes scrubs/resizes snap, so this only damps live playback.
 const A_SMOOTH_K = 0.16;
 const A_COV_SMOOTH_K = 0.06;   // ownership/front glides slowly → no boundary snap
+
+// ---- GOAL FLOOD — the ONLY full-pitch single colour --------------------------
+// On a goal the SCORING team's colour sweeps to fill the ENTIRE pitch (a
+// celebratory symbol), then recedes to the normal contested front. The envelope
+// is driven DETERMINISTICALLY from the clock: at time t we find the most recent
+// isGoal ≤ t, compute elapsed = t − goalTime (in CLOCK match-minutes, the same
+// unit __setClock / the scrubber use), and shape a 0..1 intensity. Scrub-safe:
+// no frame state — scrubbing onto a goal shows the flood, away shows normal.
+// Phases (clock-minutes): sweep up over FLOOD_SWEEP, hold full for FLOOD_HOLD,
+// relax back over FLOOD_RELAX. Total ~1.15 match-minutes so it reads FULL around
+// goalTime+0.5min and has fully RECEDED to the normal split well before the next
+// minute of play (FRA's 72.5' goal must not still be flooding at 74'). Short and
+// celebratory — the whole blanket flashes the scorer's colour, then settles.
+const FLOOD_SWEEP = 0.3, FLOOD_HOLD = 0.45, FLOOD_RELAX = 0.4;
+const FLOOD_TOTAL = FLOOD_SWEEP + FLOOD_HOLD + FLOOD_RELAX;
+// Returns { team:'home'|'away', amt:0..1 } for the active flood at clock t, or
+// null when no flood is active. amt = how fully the scorer's colour covers the
+// pitch (1 = whole pitch the scorer colour).
+function goalFloodAt(t) {
+  if (!goalsByTime || !goalsByTime.length) return null;
+  // most recent goal at or before t
+  let g = null;
+  for (let i = 0; i < goalsByTime.length; i++) {
+    if (goalsByTime[i].t <= t) g = goalsByTime[i]; else break;
+  }
+  if (!g) return null;
+  const elapsed = t - g.t;
+  if (elapsed < 0 || elapsed >= FLOOD_TOTAL) return null;
+  let amt;
+  if (elapsed < FLOOD_SWEEP) {
+    const f = elapsed / FLOOD_SWEEP; amt = f * f * (3 - 2 * f);          // smooth sweep up
+  } else if (elapsed < FLOOD_SWEEP + FLOOD_HOLD) {
+    amt = 1;                                                            // hold full
+  } else {
+    const f = (elapsed - FLOOD_SWEEP - FLOOD_HOLD) / FLOOD_RELAX;
+    const e = f * f * (3 - 2 * f); amt = 1 - e;                         // relax back
+  }
+  return { team: g.team, amt: clamp(amt, 0, 1) };
+}
 
 // Recompute layer B's grid (finer pass relief). aggr 0 = each pass a small sharp
 // bump; aggr 1 = broad smoothed density.
@@ -1413,6 +1517,7 @@ const LAYER_DEFS = [
     { id: 'sharp', label: 'резкость ▸ контраст', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'floor', label: 'порог ▸ скрыть низ', min: 0, max: 0.8, step: 0.02, fmt: (v) => v.toFixed(2) },
     { id: 'lap', label: 'нахлёст ▸ перекрытие', min: 0, max: 0.4, step: 0.01, fmt: (v) => v.toFixed(2) },
+    { id: 'ownBand', label: 'мин. территория ▸ у ворот', min: 0, max: 0.35, step: 0.01, fmt: (v) => v.toFixed(2) },
     { id: 'xgW', label: 'xG ▸ ширина шпиля', min: 0.2, max: 4, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'xgH', label: 'xG ▸ высота шпиля', min: 0, max: 4, step: 0.05, fmt: (v) => v.toFixed(2) },
   ], contribHead: 'ПОДЪЁМ ИЗ:', contributors: [
