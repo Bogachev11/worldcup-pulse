@@ -292,10 +292,13 @@ function buildCloth() {
       `#include <color_fragment>
       {
         vec4 cd = texture2D(uColTex, vUvN);
-        vec3 baseCol = mix(uClay, cd.rgb, clamp(length(cd.rgb)*1.6, 0.0, 1.0));
-        baseCol *= mix(0.78, 1.18, clamp(cd.a, 0.0, 1.0));
-        float lowAO = 1.0 - smoothstep(0.0, 0.6, vHd);
-        baseCol *= clamp(1.0 - 0.3*lowAO, 0.5, 1.0);
+        // The B relief rises out of the VIVID flat territory below it, so it must
+        // glow the SAME vivid team colour — otherwise a lit-only dome reads as a
+        // dark navy "hole" inside the bright field. Saturate the (dim, ×w) team
+        // colour back to full chroma so the dome is uniformly vivid, shape coming
+        // from the height shading + emissive, never from a brightness dip.
+        vec3 chroma = cd.rgb / max(max(cd.r, max(cd.g, cd.b)), 1e-4);  // full-sat team hue
+        vec3 baseCol = mix(uClay, chroma, clamp(length(cd.rgb)*4.0, 0.0, 1.0));
         diffuseColor.rgb = baseCol;
         diffuseColor.a *= clamp(cd.a, 0.0, 1.0);   // B fades out where it has no relief
       }`);
@@ -303,8 +306,11 @@ function buildCloth() {
       `#include <emissivemap_fragment>
       {
         vec4 cd = texture2D(uColTex, vUvN);
-        float hot = smoothstep(0.6, 2.2, vHd);
-        totalEmissiveRadiance += cd.rgb * hot * 0.35 * clamp(cd.a, 0.0, 1.0);
+        // Strong emissive at the full-saturation team hue so a B dome over a team's
+        // territory GLOWS that vivid colour (no dark hole), matching the flat field.
+        vec3 chroma = cd.rgb / max(max(cd.r, max(cd.g, cd.b)), 1e-4);
+        float on = clamp(length(cd.rgb)*4.0, 0.0, 1.0);
+        totalEmissiveRadiance += chroma * on * 0.95 * clamp(cd.a, 0.0, 1.0);
       }`);
   };
   mesh = new THREE.Mesh(geo, material);
@@ -947,6 +953,7 @@ function computeField(t) {
 
       // ---- Layer A: per-team blanket height + crisp coverage ----
       let hH = 0, hA = 0, covH = 0, covA = 0;
+      let ownerShare = 0.5;   // A partition home-share at this cell (for B dome colour)
       if (aOn) {
         // height from contributors (per team), normalised + floor + gamma.
         // All sampling reads the SMOOTHED grids so the surface glides.
@@ -983,6 +990,7 @@ function computeField(t) {
         // Every cell is FILLED with its owner; the two colours meet at ONE
         // continuous activity-shaped front. No black field, no speckles.
         const shareH = sampleGrid(A_sown, A_gx, A_gy, u, v);   // 0..1; 0.5 = the boundary
+        ownerShare = shareH;
         // FULL-UNION partition: a single steep edge at the 50% share decides the
         // owner, and the two sheets are COMPLEMENTARY (covH = edge, covA = 1-edge)
         // so together they fill EVERY cell — no gaps, no black band at the front.
@@ -1004,18 +1012,19 @@ function computeField(t) {
       // ---- combined A height (max of covered team blankets) for cometY/baseline ----
       let hCombined = Math.max(covH > 0.05 ? hH : 0, covA > 0.05 ? hA : 0);
 
-      // ---- Layer B: shared relief mesh (unchanged behaviour) ----
+      // ---- Layer B: shared relief mesh ----
       let h = 0, rr = 0, gg = 0, bb = 0;
       if (bOn) {
         let b = sampleGrid(B_h, B_gx, B_gy, u, v) / bMax;
         if (cfg.B.sharp !== 1) b = Math.pow(b, clamp(cfg.B.sharp, 0.3, 4));
         h += b * 1.4 * cfg.B.height;
-        const hh = sampleGrid(B_hH, B_gx, B_gy, u, v);
-        const ha = sampleGrid(B_hA, B_gx, B_gy, u, v);
-        const tot = hh + ha;
-        const awayShare = tot > 1e-5 ? ha / tot : 0.5;
+        // A B dome rises out of A's flat territory, so colour it the OWNER'S colour
+        // at this cell (from the A partition `shareH`), NOT B's own pass blend —
+        // otherwise a mixed pass cluster tints the dome cyan/green inside a blue
+        // zone. Keeps each territory ONE uniform colour, dome included.
+        const oCol = ownerShare >= 0.5 ? cH : cA;
         const w = clamp(b * 0.6 * clamp(cfg.B.opacity, 0, 2), 0, 1);
-        rr += lerp(cH.r, cA.r, awayShare) * w; gg += lerp(cH.g, cA.g, awayShare) * w; bb += lerp(cH.b, cA.b, awayShare) * w;
+        rr += oCol.r * w; gg += oCol.g * w; bb += oCol.b * w;
       }
       const gate = clamp(h, 0, 1);
       heightData[idx] = Math.max(h, hCombined); sumH += heightData[idx];
