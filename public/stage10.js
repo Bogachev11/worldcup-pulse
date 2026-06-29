@@ -105,9 +105,9 @@ init().catch((e) => fail(e.message || String(e)));
 async function init() {
   if (!window.WebGLRenderingContext) throw new Error('WebGL not available');
 
-  // load config from URL hash if present, else default to the "Матч" preset.
-  const fromHash = loadCfgFromHash();
-  cfg = fromHash || MATCH_DEFAULT();
+  // load precedence: URL #cfg= (explicit share link) > saved localStorage
+  // (user's SAVE) > built-in "Матч" default.
+  cfg = loadCfgFromHash() || loadCfgFromStore() || MATCH_DEFAULT();
 
   let tlDoc = null;
   try { tlDoc = await fetch('/api/timeline/' + ID).then((r) => (r.ok ? r.json() : null)); } catch { tlDoc = null; }
@@ -991,6 +991,49 @@ function bindGlobalUI() {
       `target: [${controls.target.x.toFixed(2)}, ${controls.target.y.toFixed(2)}, ${controls.target.z.toFixed(2)}] }`;
     try { await navigator.clipboard.writeText(s); el('camread').textContent = 'copied'; } catch { el('camread').textContent = s; }
   });
+
+  bindCfgButtons();
+}
+
+// brief inline confirmation on a button (e.g. "сохранено ✓") then restore label.
+const _flashTimers = new WeakMap();
+function flashBtn(btn, msg, ms = 1500) {
+  if (!btn) return;
+  if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+  clearTimeout(_flashTimers.get(btn));
+  btn.textContent = msg; btn.classList.add('ok');
+  _flashTimers.set(btn, setTimeout(() => { btn.textContent = btn.dataset.label; btn.classList.remove('ok'); }, ms));
+}
+
+// COPY (clipboard) · SAVE (localStorage default) · СБРОС (clear + default).
+function bindCfgButtons() {
+  const copyBtn = el('cfgcopy'), saveBtn = el('cfgsave'), resetBtn = el('cfgreset'), pasteTA = el('cfgPaste');
+
+  copyBtn && copyBtn.addEventListener('click', async () => {
+    const json = JSON.stringify(cfg);
+    try {
+      await navigator.clipboard.writeText(json);
+      if (pasteTA) pasteTA.style.display = 'none';
+      flashBtn(copyBtn, 'скопировано ✓');
+    } catch {
+      // fallback: surface the JSON in a textarea + select it for manual copy.
+      if (pasteTA) { pasteTA.value = json; pasteTA.style.display = 'block'; pasteTA.focus(); pasteTA.select();
+        try { document.execCommand('copy'); flashBtn(copyBtn, 'скопировано ✓'); } catch { flashBtn(copyBtn, 'выдели ↓'); } }
+      else flashBtn(copyBtn, 'ошибка');
+    }
+  });
+
+  saveBtn && saveBtn.addEventListener('click', () => {
+    flashBtn(saveBtn, saveCfgToStore() ? 'сохранено ✓' : 'ошибка');
+  });
+
+  resetBtn && resetBtn.addEventListener('click', () => {
+    clearCfgStore(); clearHash();
+    cfg = MATCH_DEFAULT();
+    syncCfgToUI(); _ballCursor = 0; renderFrame(clock); composer.render();
+    if (pasteTA) pasteTA.style.display = 'none';
+    flashBtn(resetBtn, 'сброшено ✓');
+  });
 }
 
 function bindSlider(id, valId, fn) {
@@ -1133,8 +1176,23 @@ function syncCfgToUI() {
 }
 
 // ============================================================================
-// CONFIG SAVE/LOAD — URL hash (#cfg=<base64>) updated live + loaded on start.
+// CONFIG SAVE/LOAD — three layers of persistence:
+//   1. URL #cfg=<base64> — updated live on every change (silent share link).
+//   2. localStorage (STORE_KEY) — explicit SAVE → becomes the default on reload.
+//   3. built-in MATCH_DEFAULT fallback.
+// Load precedence on startup: hash > saved localStorage > default.
 // ============================================================================
+const STORE_KEY = 'wcp_stage10_cfg';
+
+// merge a parsed config object onto DEFAULTS so partial/old configs stay valid.
+function cfgFromParsed(parsed) {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const base = DEFAULTS();
+  base.speed = Number.isFinite(parsed.speed) ? parsed.speed : base.speed;
+  for (const k of ['A', 'B', 'C', 'D', 'K']) if (parsed[k]) Object.assign(base[k], parsed[k]);
+  return base;
+}
+
 function writeHash() {
   try {
     const json = JSON.stringify(cfg);
@@ -1147,14 +1205,20 @@ function loadCfgFromHash() {
   try {
     const m = (location.hash || '').match(/cfg=([^&]+)/);
     if (!m) return null;
-    const json = decodeURIComponent(escape(atob(m[1])));
-    const parsed = JSON.parse(json);
-    // merge onto defaults so a partial/old hash still has every field
-    const base = DEFAULTS();
-    base.speed = Number.isFinite(parsed.speed) ? parsed.speed : base.speed;
-    for (const k of ['A', 'B', 'C', 'D', 'K']) if (parsed[k]) Object.assign(base[k], parsed[k]);
-    return base;
+    return cfgFromParsed(JSON.parse(decodeURIComponent(escape(atob(m[1])))));
   } catch { return null; }
+}
+// localStorage persistence (explicit SAVE / СБРОС).
+function loadCfgFromStore() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    return raw ? cfgFromParsed(JSON.parse(raw)) : null;
+  } catch { return null; }
+}
+function saveCfgToStore() { try { localStorage.setItem(STORE_KEY, JSON.stringify(cfg)); return true; } catch { return false; } }
+function clearCfgStore() { try { localStorage.removeItem(STORE_KEY); } catch {} }
+function clearHash() {
+  try { const url = new URL(location.href); url.hash = ''; history.replaceState(null, '', url.pathname + url.search); } catch {}
 }
 
 // ============================================================================
