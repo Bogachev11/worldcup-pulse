@@ -824,11 +824,17 @@ function computeA(t) {
   blurGrid(A_cA, gx, gy, covBlur);
   blurGrid(A_cH, gx, gy, covBlur);
   blurGrid(A_cA, gx, gy, covBlur);
-  // glide the smoothed grids toward this frame's fields (calm in motion). HEIGHT
-  // uses the brisker rate; COVERAGE/ownership uses a much slower rate so the
-  // colour FRONT glides instead of snapping (kills the stutter).
+  // glide the smoothed grids toward this frame's fields. The COLOUR/front and the
+  // HEIGHT/hill must run on the SAME clock: the raw coverage presence (A_cH/A_cA)
+  // already decays at the user's спад (cfg.A.rel) via arWeight — the SAME window
+  // as the height contributors — so the front advances AND recedes with play. The
+  // per-frame temporal ease here is now MINOR and shared between height and
+  // coverage (no separate multi-minute lag): it only damps per-frame popping; the
+  // dominant time constant is the спад window itself. A faster спад → quicker ease
+  // so the colour can't lag the спад it's meant to follow.
   const snapNow = A_smoothReset;          // capture before smoothA clears it
-  smoothA(A_SMOOTH_K, A_COV_SMOOTH_K);
+  const easeK = covEaseK();
+  smoothA(easeK, easeK);
   // From the (slowly-eased) coverage presence, build an ENCLAVE-FREE ownership map
   // (largest connected component per team), then lightly blur it so the boundary
   // reads as a clean soft front with a small overlap. A_own becomes the 0..1 home
@@ -876,18 +882,26 @@ function computeA(t) {
     }
   }
   blurGrid(A_own, gx, gy, Math.max(1, Math.round(gx * 0.05)));
-  // ease the ownership field TEMPORALLY too, so the front glides between frames
-  // instead of a boundary cell popping when the threshold flips. Snaps on scrub.
-  // During an active flood we SNAP (ko=1) so the deterministic sweep/recede
-  // envelope is honoured exactly when scrubbing onto/away from a goal.
-  const ko = (snapNow || flood) ? 1 : A_COV_SMOOTH_K;
+  // ease the ownership field TEMPORALLY too, only to keep a boundary cell from
+  // POPPING when the threshold flips — MINOR, same shared clock as the coverage
+  // presence (covEaseK). The real time constant is the спад window, so the front
+  // tracks play instead of dragging a multi-minute tail. Snaps on scrub; during an
+  // active flood we SNAP so the deterministic sweep/recede envelope is exact.
+  const ko = (snapNow || flood) ? 1 : easeK;
   for (let i = 0; i < A_own.length; i++) A_sown[i] += (A_own[i] - A_sown[i]) * ko;
   return win.length > 0;
 }
-// per-frame blend toward the new fields. Lower = calmer (less twitch). The reset
-// flag in smoothA() makes scrubs/resizes snap, so this only damps live playback.
-const A_SMOOTH_K = 0.16;
-const A_COV_SMOOTH_K = 0.06;   // ownership/front glides slowly → no boundary snap
+// Shared per-frame ease for BOTH the height/hill grids and the coverage/ownership
+// front, so colour and hill move on ONE clock. It is deliberately MINOR (just
+// anti-pop): the dominant temporal behaviour comes from the спад (cfg.A.rel)
+// window baked into arWeight. Scale the ease with спад — a SHORT спад (snappy
+// play) eases faster so the front keeps up; a LONG спад can ease a touch calmer.
+// Never a fixed long lag: clamped to a brisk band well above the old k≈0.06.
+function covEaseK() {
+  const rel = Math.max(0.1, cfg.A.rel);
+  // rel 0.3→fast (~0.30), rel 5→calmer (~0.16); always ≥ A_SMOOTH-ish, never slow.
+  return clamp(0.34 - rel * 0.036, 0.16, 0.34);
+}
 
 // ---- GOAL FLOOD — the ONLY full-pitch single colour --------------------------
 // On a goal the SCORING team's colour sweeps to fill the ENTIRE pitch (a
