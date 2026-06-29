@@ -66,6 +66,10 @@ const COL_HOME = new THREE.Color(FRA_HEX);
 const COL_AWAY = new THREE.Color(SEN_HEX);
 const teamColor = (team) => (team === 'away' ? COL_AWAY : COL_HOME);
 
+// GOAL-FLOOD phase durations in SECONDS of wall time (see goalFloodAt). Declared
+// here so DEFAULTS() can seed cfg.A.floodHold without a temporal-dead-zone error.
+const FLOOD_SWEEP_S = 0.6, FLOOD_RELAX_S = 2.5, FLOOD_HOLD_DEFAULT_S = 3.0;
+
 // ============================================================================
 // CONFIG — every layer's enable flag + its own knobs. This whole object is what
 // gets serialised to the URL hash / COPY CONFIG and restored from a preset.
@@ -103,6 +107,10 @@ const DEFAULTS = () => ({
     // coherent swell where play is; wide → approaches the old free-form field.
     // Colour/coverage stay BROAD; only height is gated. 0..1 → σ in world units.
     focus: 0.2,
+    // ГОЛ ▸ держать заливку — how long the celebratory goal-flood HOLDS the
+    // scorer's colour over the whole pitch, in SECONDS of wall time (at the
+    // current speed). Default 3s (was ~1.2). Sweep-in/relax are fixed.
+    floodHold: FLOOD_HOLD_DEFAULT_S,
     // contributors (☑ default = true): which signals RAISE a team's blanket
     cOwn: true,  wOwn: 1.0,   // Владение — on-ball control density
     cXg: true,   wXg: 1.0,    // Удары · xG — sharp tall crest at the shot, ×xg
@@ -388,13 +396,15 @@ function makeBlanket(teamCol) {
         // luminance only on the (rare) raised hill so the crest still reads.
         vec3 col = uTeam * (0.9 + 0.35 * clamp(vHd*0.5, 0.0, 1.0));
         diffuseColor.rgb = col;
-        // Effective coverage = the partition mask, BUT a tall xG SPIRE always shows
-        // even if the OPPONENT owns that territory (a shot into the rival's half must
-        // still poke through). Threshold is high (3→5) so ONLY the sharp xG spire
-        // forces through — the gentler focus SWELL (≲2) never pokes into the
-        // opponent's colour zone (that would look like an enclave).
+        // Effective coverage = the partition mask ONLY. The old code let a tall xG
+        // spire (vHd>3) force the sheet visible even where the OPPONENT owns the
+        // territory — that read as a thin FOREIGN-COLOUR spike poking through the
+        // other team's colour (and through the whole-pitch goal flood). Killed: the
+        // spire now shows STRICTLY inside its own team's territory, so no stray
+        // opposite-colour peak can appear inside a zone or during a goal. The legit
+        // flat counter-tongues (cov regions) are untouched.
         float cov = texture2D(uCov, vUvN).r;
-        float covEff = max(clamp(cov, 0.0, 1.0), smoothstep(3.0, 5.0, vHd));
+        float covEff = clamp(cov, 0.0, 1.0);
         diffuseColor.a *= covEff;
       }`);
     shader.fragmentShader = shader.fragmentShader.replace('#include <alphatest_fragment>',
@@ -408,7 +418,7 @@ function makeBlanket(teamCol) {
          // flat paint glows its team colour vividly regardless of height. The one
          // raised hill (+xG spire) gets an extra hot boost so crests still pop.
          float cov = texture2D(uCov, vUvN).r;
-         float covEff = max(clamp(cov, 0.0, 1.0), smoothstep(3.0, 5.0, vHd));
+         float covEff = clamp(cov, 0.0, 1.0);   // spire only inside own territory (no foreign peak)
          vec3 emit = uTeam * covEff * (0.9 * uGlow);
          float hot = smoothstep(0.5, 3.0, vHd);
          emit += uTeam * hot * (0.6 * uGlow);
@@ -550,6 +560,22 @@ function ballAt(t) {
   const e = f * f * (3 - 2 * f);
   return { u: lerp(a.u, b.u, e), v: lerp(a.v, b.v, e), team: f < 0.5 ? a.team : b.team };
 }
+// Time-low-passed ball point. Eases the raw ballAt(t) toward a gliding (locusU,
+// locusV) with the dt filter (tau ≈ TAU_LOCUS) so teleports/kinks between
+// discrete events become gentle drifts. dt = Infinity (snap render / scrub)
+// resolves a = 1 → returns the raw point exactly (scrub-safe). team carries from
+// the raw point (no smoothing of the discrete ownership).
+function smoothedBall(t, dt) {
+  const raw = ballAt(t);
+  const a = expA(dt, TAU_LOCUS);
+  if (locusReset || !Number.isFinite(locusU) || a >= 1) {
+    locusU = raw.u; locusV = raw.v; locusReset = false;
+  } else {
+    locusU += (raw.u - locusU) * a;
+    locusV += (raw.v - locusV) * a;
+  }
+  return { u: locusU, v: locusV, team: raw.team };
+}
 // events in [t-window, t] (chronological)
 function eventsInWindow(t, halfLifeMin) {
   if (!timeline) return [];
@@ -589,6 +615,10 @@ let A_frontRaw = null, A_front = null, A_frontTmp = null;
 let A_smoothReset = true;         // first frame after a grid resize: snap, don't lerp
 let A_frontReset = true;          // snap the eased front on scrub/resize
 let focusCX = NaN, focusCZ = NaN, focusReset = true;   // eased focus-hill centre (glides)
+// time-low-passed ball locus point (world u,v). ballAt(t) has kinks/teleports
+// between discrete events; this glides so the hill + front feed off a gentle
+// point. Snapped on scrub via locusReset.
+let locusU = NaN, locusV = NaN, locusReset = true;
 let B_gx = 0, B_gy = 0, B_h = null, B_hH = null, B_hA = null;
 
 function ensureA(gx, gy) {
@@ -748,8 +778,9 @@ function contribLift(e) {
 }
 
 // Recompute the TWO team A grids for time t (height + presence). Returns whether
-// any A activity fell in the window.
-function computeA(t) {
+// any A activity fell in the window. dt = real seconds since last frame (Infinity
+// on a snap render) → drives the frame-rate-independent exponential smoothing.
+function computeA(t, dt) {
   const atk = Math.max(0.02, cfg.A.atk);
   const rel = Math.max(0.1, cfg.A.rel);
   // coarse → fine. grid 0 = ~14 cells long, grid 1 = ~34.
@@ -779,19 +810,22 @@ function computeA(t) {
       stamp(Xgrid, gx, gy, e.u, e.v, sharp * env, sharpRad);
     }
   }
-  // glide the HEIGHT/hill grids (presence + xG crest) toward this frame's fields.
-  const easeK = covEaseK();
-  smoothA(easeK);
+  // glide the HEIGHT/hill grids (presence + xG crest) toward this frame's fields
+  // with the frame-rate-independent dt filter (tau = TAU_GRID). dt = Infinity on
+  // a snap render → a = 1 → instant.
+  const aGrid = expA(dt, TAU_GRID);
+  smoothA(aGrid);
 
   // ---- POSSESSION TIDE PARTITION — colour by BALL FIELD-POSITION --------------
   // front(v) per channel from the recent ball depth (stage5 feel). home owns
   // u<front, away owns u>front → full two-colour fill, every cell owned (no black).
   const band = clamp(Number.isFinite(cfg.A.ownBand) ? cfg.A.ownBand : 0, 0, 0.45);
   buildTideFront(t, gx, gy, band);
-  // ease the per-channel front TEMPORALLY (advance/recede over the спад window via
-  // the shared brisk ease; the dominant time constant is спад baked into arWeight).
+  // ease the per-channel front TEMPORALLY with the dt filter (tau = TAU_FRONT) so
+  // the boundary DRIFTS smoothly and per-frame ball jitter can't shake it,
+  // combined with the existing light lateral spatial smoothing in buildTideFront.
   // Snap on scrub/resize so the deterministic per-t front is exact.
-  const kf = A_frontReset ? 1 : easeK; A_frontReset = false;
+  const kf = A_frontReset ? 1 : expA(dt, TAU_FRONT); A_frontReset = false;
   for (let j = 0; j < gy; j++) A_front[j] += (A_frontRaw[j] - A_front[j]) * kf;
   // GOAL FLOOD override — the scoring team's colour sweeps to fill the WHOLE pitch
   // then recedes. Push EVERY channel's front toward the scorer's far end as amt
@@ -822,17 +856,6 @@ function computeA(t) {
   A_sown.set(A_own);
   return win.length > 0;
 }
-// Shared per-frame ease for BOTH the height/hill grids and the coverage/ownership
-// front, so colour and hill move on ONE clock. It is deliberately MINOR (just
-// anti-pop): the dominant temporal behaviour comes from the спад (cfg.A.rel)
-// window baked into arWeight. Scale the ease with спад — a SHORT спад (snappy
-// play) eases faster so the front keeps up; a LONG спад can ease a touch calmer.
-// Never a fixed long lag: clamped to a brisk band well above the old k≈0.06.
-function covEaseK() {
-  const rel = Math.max(0.1, cfg.A.rel);
-  // rel 0.3→fast (~0.30), rel 5→calmer (~0.16); always ≥ A_SMOOTH-ish, never slow.
-  return clamp(0.34 - rel * 0.036, 0.16, 0.34);
-}
 
 // ---- GOAL FLOOD — the ONLY full-pitch single colour --------------------------
 // On a goal the SCORING team's colour sweeps to fill the ENTIRE pitch (a
@@ -841,13 +864,13 @@ function covEaseK() {
 // isGoal ≤ t, compute elapsed = t − goalTime (in CLOCK match-minutes, the same
 // unit __setClock / the scrubber use), and shape a 0..1 intensity. Scrub-safe:
 // no frame state — scrubbing onto a goal shows the flood, away shows normal.
-// Phases (clock-minutes): sweep up over FLOOD_SWEEP, hold full for FLOOD_HOLD,
-// relax back over FLOOD_RELAX. Total ~1.15 match-minutes so it reads FULL around
-// goalTime+0.5min and has fully RECEDED to the normal split well before the next
-// minute of play (FRA's 72.5' goal must not still be flooding at 74'). Short and
-// celebratory — the whole blanket flashes the scorer's colour, then settles.
-const FLOOD_SWEEP = 0.3, FLOOD_HOLD = 0.45, FLOOD_RELAX = 0.4;
-const FLOOD_TOTAL = FLOOD_SWEEP + FLOOD_HOLD + FLOOD_RELAX;
+// Phases — now LONGER so the celebration lingers: sweep in ~0.6s, HOLD full ~3s
+// (slider cfg.A.floodHold, was ~1.2s), relax back ~2.5s. The user authors these
+// in SECONDS; the envelope clock (elapsed = t − goalTime) is in match-minutes, so
+// we convert seconds → match-minutes by dividing by cfg.speed (the playback
+// minutes-per-second). At default 0.9× that holds ≈3s of wall time. Deterministic
+// from the clock + current speed → scrub-safe. (Phase-duration constants are
+// declared near the top of the file so DEFAULTS() can use FLOOD_HOLD_DEFAULT_S.)
 // Returns { team:'home'|'away', amt:0..1 } for the active flood at clock t, or
 // null when no flood is active. amt = how fully the scorer's colour covers the
 // pitch (1 = whole pitch the scorer colour).
@@ -859,15 +882,20 @@ function goalFloodAt(t) {
     if (goalsByTime[i].t <= t) g = goalsByTime[i]; else break;
   }
   if (!g) return null;
+  // seconds → match-minutes via the playback rate (minutes advanced per second).
+  const spd = Math.max(0.05, Number(cfg.speed) || 0.9);
+  const holdS = Number.isFinite(cfg.A.floodHold) ? clamp(cfg.A.floodHold, 0, 12) : FLOOD_HOLD_DEFAULT_S;
+  const sweep = FLOOD_SWEEP_S * spd, hold = holdS * spd, relax = FLOOD_RELAX_S * spd;
+  const total = sweep + hold + relax;
   const elapsed = t - g.t;
-  if (elapsed < 0 || elapsed >= FLOOD_TOTAL) return null;
+  if (elapsed < 0 || elapsed >= total) return null;
   let amt;
-  if (elapsed < FLOOD_SWEEP) {
-    const f = elapsed / FLOOD_SWEEP; amt = f * f * (3 - 2 * f);          // smooth sweep up
-  } else if (elapsed < FLOOD_SWEEP + FLOOD_HOLD) {
+  if (elapsed < sweep) {
+    const f = elapsed / sweep; amt = f * f * (3 - 2 * f);                // smooth sweep up
+  } else if (elapsed < sweep + hold) {
     amt = 1;                                                            // hold full
   } else {
-    const f = (elapsed - FLOOD_SWEEP - FLOOD_HOLD) / FLOOD_RELAX;
+    const f = (elapsed - sweep - hold) / relax;
     const e = f * f * (3 - 2 * f); amt = 1 - e;                         // relax back
   }
   return { team: g.team, amt: clamp(amt, 0, 1) };
@@ -913,13 +941,15 @@ function sampleGrid(grid, gx, gy, u, v) {
 
 // Rebuild the field surfaces at time t: TWO team A blankets (height + crisp
 // coverage) plus the shared B relief. Folds A+B into heightData so accents ride.
-function computeField(t) {
+function computeField(t, dt) {
   const aOn = cfg.A.on, bOn = cfg.B.on;
   let bMax = 1e-4;
-  if (aOn) computeA(t);
+  if (aOn) computeA(t, dt);
   if (bOn) { computeB(t); for (let k = 0; k < B_h.length; k++) bMax = Math.max(bMax, B_h[k]); }
 
-  const ball = ballAt(t);
+  // The hill + front feed off the TIME-LOW-PASSED locus (smoothedBall) so the
+  // raw ballAt teleports between discrete events don't jerk the relief.
+  const ball = smoothedBall(t, dt);
   // ---- FOCUS: anchor HEIGHT to the single live play locus -------------------
   // A smooth radial mask centred on ballAt(t) (plus a short memory tail along the
   // recent locus path for body) multiplies each team's HEIGHT field, so detached
@@ -938,8 +968,9 @@ function computeField(t) {
   const tgtX = worldX(ball.u), tgtZ = worldZ(ball.v);
   if (focusReset || !Number.isFinite(focusCX)) { focusCX = tgtX; focusCZ = tgtZ; focusReset = false; }
   else {
-    const d = Math.hypot(tgtX - focusCX, tgtZ - focusCZ);
-    const ke = clamp(0.10 + d * 0.04, 0.10, 0.5);   // base glide; speeds up for big jumps
+    // dt-aware glide (tau = TAU_HILL) so the single hill drifts in small smooth
+    // increments at any frame rate and never teleports. dt = Infinity → snap.
+    const ke = expA(dt, TAU_HILL);
     focusCX += (tgtX - focusCX) * ke; focusCZ += (tgtZ - focusCZ) * ke;
   }
   const lbX = focusCX, lbZ = focusCZ;
@@ -967,8 +998,10 @@ function computeField(t) {
     return clamp(m + focusFloor, 0, 1);
   };
   const cH = COL_HOME, cA = COL_AWAY;
-  // fabric wobble phase — gentle undulation so each blanket drapes like cloth.
-  const ph = (typeof performance !== 'undefined' ? performance.now() : Date.now()) * 0.00018;
+  // fabric wobble phase — VERY gentle undulation so each blanket drapes like
+  // cloth. Kept slow (small multiplier) so it never adds to the shaking; it is a
+  // continuous drift independent of the simulation clock.
+  const ph = (typeof performance !== 'undefined' ? performance.now() : Date.now()) * 0.00011;
   const amp = clamp(cfg.A.height, 0, 3);
   const xgH = Number.isFinite(cfg.A.xgH) ? clamp(cfg.A.xgH, 0, 4) : 1;   // xG spire height (independent of amp)
   // TERRITORY LIES FLAT. The old uniform base body raised EVERY covered cell, so
@@ -977,7 +1010,7 @@ function computeField(t) {
   // coloured (vivid via emissive, see the blanket shader), and the ONLY relief is
   // the FOCUS-gated swell (one coherent hill at the live locus) + the xG spire.
   const A_BASE = 0.0;                   // flat painted territory (no body)
-  const A_WOBBLE = 0.04 * amp;         // tiny cloth wobble only (≤0.05·amp)
+  const A_WOBBLE = 0.028 * amp;        // tiny cloth wobble only (reduced so it never shakes)
   const flr = clamp(cfg.A.floor, 0, 0.9);
   const gamma = clamp(cfg.A.sharp, 0.3, 4);
   const lap = clamp(cfg.A.lap, 0, 0.45);    // НАХЛЁСТ: extend coverage past the 50% front
@@ -1291,15 +1324,32 @@ const GradeShader = {
 // ============================================================================
 // FRAME COMPOSITION — recompute all enabled layers for time t, render one frame.
 // ============================================================================
-function renderFrame(t) {
-  if (cfg.A.on || cfg.B.on) computeField(t);
+// dt = real seconds since the previous rendered frame (clamped ≤0.1 for tab
+// spikes). When omitted (a SNAP render: scrub, slider, single-frame __setClock)
+// we pass dt = Infinity → every exp filter resolves a = 1 - exp(-∞) = 1 → snap.
+function renderFrame(t, dt) {
+  const D = Number.isFinite(dt) ? Math.max(0, dt) : Infinity;
+  if (cfg.A.on || cfg.B.on) computeField(t, D);
   else mesh.visible = false;
   updateComet(t);
   updateAccents(t);
 }
+// Frame-rate-independent exponential smoothing factor for a given time constant
+// tau (seconds): state += (target - state) * expA(dt, tau). dt = Infinity → 1
+// (instant snap). Small dt → small step → glide. tau bigger = calmer/slower.
+function expA(dt, tau) {
+  if (!(dt > 0)) return 0;
+  if (!Number.isFinite(dt)) return 1;
+  return 1 - Math.exp(-dt / Math.max(1e-3, tau));
+}
+// time constants (seconds) for the dt-aware smoothing.
+const TAU_FRONT = 0.5;    // possession-tide boundary per channel
+const TAU_GRID = 0.5;     // per-cell height / xG crest fields
+const TAU_HILL = 0.25;    // focus-hill centre glide
+const TAU_LOCUS = 0.25;   // low-pass on the ball locus point feeding hill+front
 // Force the A smoothing to SNAP on the next computeA (used after a scrub or a
 // slider change so the eased grids don't lag behind a jump-cut / new setting).
-function snapASmoothing() { A_smoothReset = true; focusReset = true; A_frontReset = true; }
+function snapASmoothing() { A_smoothReset = true; focusReset = true; A_frontReset = true; locusReset = true; }
 
 // ---- resize -----------------------------------------------------------------
 function onResize() {
@@ -1323,7 +1373,7 @@ function loop(now) {
     clock += dt * cfg.speed;
     if (clock >= teamMeta.duration) { clock = teamMeta.duration; playing = false; el('play').textContent = '▶'; }
   }
-  renderFrame(clock);
+  renderFrame(clock, dt);
   controls.update();
   composer.render();
   updateHud();
@@ -1332,6 +1382,10 @@ function loop(now) {
 }
 
 // ---- dev hook (hidden-tab safe: render exactly one frame via composer) -------
+// __setClock SNAPS the smoothing (jump-cut to an instant). For verifying MOTION
+// in a hidden tab (rAF paused) use __step(min, dt): it renders WITHOUT snapping,
+// feeding the dt-aware exponential filters a real dt — so calling it repeatedly
+// with small advancing min + dt reproduces the live glide deterministically.
 window.__setClock = (min) => {
   clock = clamp(+min || 0, 0, teamMeta.duration);
   playing = false; const pb = el('play'); if (pb) pb.textContent = '▶';
@@ -1341,6 +1395,14 @@ window.__setClock = (min) => {
   composer.render();
   updateHud();
   updateCamReadout();
+};
+window.__step = (min, dt) => {
+  clock = clamp(+min || 0, 0, teamMeta.duration);
+  playing = false;
+  renderFrame(clock, Number.isFinite(+dt) ? +dt : 0.016);
+  controls.update();
+  composer.render();
+  updateHud();
 };
 
 // ============================================================================
@@ -1464,6 +1526,7 @@ const LAYER_DEFS = [
     { id: 'ownBand', label: 'мин. территория ▸ у ворот', min: 0, max: 0.35, step: 0.01, fmt: (v) => v.toFixed(2) },
     { id: 'xgW', label: 'xG ▸ ширина шпиля', min: 0.2, max: 4, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'xgH', label: 'xG ▸ высота шпиля', min: 0, max: 4, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'floodHold', label: 'гол ▸ держать заливку', min: 0, max: 8, step: 0.1, fmt: (v) => v.toFixed(1) + ' с' },
   ], contribHead: 'ПОДЪЁМ ИЗ:', contributors: [
     { on: 'cOwn',  w: 'wOwn',  label: 'Владение' },
     { on: 'cXg',   w: 'wXg',   label: 'Удары · xG' },
