@@ -607,19 +607,24 @@ function ensureA(gx, gy) {
   A_lbl = new Int32Array(n); A_stack = new Int32Array(n);
   A_smoothReset = true;
 }
-// Kill ENCLAVES: build ownership from sign(scH - scA), then keep only the LARGEST
-// connected component for EACH team — any smaller island is flipped to the
-// opponent. Guarantees each team is ONE connected region meeting at a single
-// front. 4-connected flood fill on the A-grid; cheap at this resolution.
+// SMALL-ISLAND cleanup (NOT largest-component). Build ownership from
+// sign(scH − scA), then flip ONLY tiny noise specks — connected components below
+// a small area threshold (~1.5% of cells) — to the opponent. LARGER pockets and
+// TONGUES SURVIVE: a real counter is a legitimate region of the other team's
+// colour reaching into enemy territory, and the user wants it visible as an
+// organic coloured tongue/pocket. So we no longer collapse each team to one
+// region — we only erase pixel-noise speckles + the dark B-dome-hole specks.
+// 4-connected flood fill on the A-grid; cheap at this resolution.
 function cleanOwnership(gx, gy) {
   const n = gx * gy;
   for (let i = 0; i < n; i++) A_own[i] = A_scH[i] >= A_scA[i] ? 1 : 0;
-  // two passes: for each team value (1 then 0), find the largest component and
-  // flip every OTHER component of that team to the opponent.
+  // minimum surviving island size: ~1.5% of cells (a real counter tongue is much
+  // bigger than this; only sub-speck noise is removed). At least 3 cells.
+  const minSize = Math.max(3, Math.round(n * 0.015));
   for (let pass = 0; pass < 2; pass++) {
     const team = pass === 0 ? 1 : 0, other = pass === 0 ? 0 : 1;
     A_lbl.fill(0);
-    let curLabel = 0, bestLabel = 0, bestSize = -1;
+    let curLabel = 0;
     const sizes = [];
     for (let s = 0; s < n; s++) {
       if (A_own[s] !== team || A_lbl[s] !== 0) continue;
@@ -633,10 +638,10 @@ function cleanOwnership(gx, gy) {
         if (cy < gy - 1) { const nb = c + gx; if (A_own[nb] === team && A_lbl[nb] === 0) { A_lbl[nb] = curLabel; A_stack[sp++] = nb; } }
       }
       sizes[curLabel] = size;
-      if (size > bestSize) { bestSize = size; bestLabel = curLabel; }
     }
-    // flip every cell of this team that is NOT in the largest component.
-    if (curLabel > 1) for (let s = 0; s < n; s++) if (A_lbl[s] !== 0 && A_lbl[s] !== bestLabel) A_own[s] = other;
+    // flip ONLY the tiny speck components (size < minSize) to the opponent;
+    // pockets/tongues at or above the threshold are kept (organic boundary).
+    for (let s = 0; s < n; s++) { const lb = A_lbl[s]; if (lb !== 0 && sizes[lb] < minSize) A_own[s] = other; }
   }
 }
 // Separable box blur (radius r cells) of `src` into itself, using A_cTmp scratch.
@@ -758,9 +763,13 @@ function computeA(t) {
   const xgW = Number.isFinite(cfg.A.xgW) ? clamp(cfg.A.xgW, 0.2, 4) : 1;
   const baseSharp = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1)) * 0.3;
   const sharpRad = Math.max(0.5, baseSharp * xgW);
-  // coverage presence uses a WIDE stamp so each event paints a broad ownership
-  // claim, not a spot — combined with the heavy blur below this fills the pitch.
-  const covRad = radCells * 2.2;
+  // coverage presence uses a moderately wide stamp so each event paints a broad
+  // ownership claim (overlapping claims + the weak per-half prior still fill the
+  // whole pitch — no black gaps). It is narrower than before (×1.6, was ×2.2) so a
+  // localised burst of the OTHER team deep in enemy territory keeps a concentrated
+  // claim that can flip those cells → a visible counter TONGUE, instead of being
+  // washed flat by an over-wide diffuse claim.
+  const covRad = radCells * 1.6;
   const win = eventsInWindow(t, rel * 5 + atk * 3);
   for (const e of win) {
     const env = arWeight(t - e.t, atk, rel);
@@ -817,11 +826,15 @@ function computeA(t) {
       }
     }
   }
-  // HEAVY blur (two passes) so small local pockets dissolve into the surrounding
-  // owner → one clean connected front, no speckles. Much wider than height grain.
-  const covBlur = Math.max(3, Math.round(gx * 0.18));   // wide diffusion radius
-  blurGrid(A_cH, gx, gy, covBlur);
-  blurGrid(A_cA, gx, gy, covBlur);
+  // MODERATE blur (single pass, narrow radius) — diffuse each event's presence
+  // claim just enough to fill its surrounding region (no dry pixels, full two-
+  // colour partition) and to kill pixel-noise jaggies, but NOT so wide that real
+  // play POCKETS dissolve. The old heavy two-pass wide blur (gx·0.18 ×2) smeared
+  // every tongue away and straightened the boundary into a near-line; a single
+  // ~gx·0.06 pass keeps the boundary ORGANIC and reactive, so a team breaking into
+  // the other half reads as a coloured tongue. The weak per-half prior + the wide
+  // covRad stamps below still guarantee every cell gets an owner (no black gaps).
+  const covBlur = Math.max(2, Math.round(gx * 0.06));   // narrow diffusion radius
   blurGrid(A_cH, gx, gy, covBlur);
   blurGrid(A_cA, gx, gy, covBlur);
   // glide the smoothed grids toward this frame's fields. The COLOUR/front and the
@@ -881,7 +894,10 @@ function computeA(t) {
       }
     }
   }
-  blurGrid(A_own, gx, gy, Math.max(1, Math.round(gx * 0.05)));
+  // light edge blur on the binary ownership ONLY to anti-alias the boundary into a
+  // soft front (the partition edge smoothstep is narrow, so a small radius is
+  // enough). Kept minimal so tongue TIPS/pockets aren't rounded back off.
+  blurGrid(A_own, gx, gy, Math.max(1, Math.round(gx * 0.03)));
   // ease the ownership field TEMPORALLY too, only to keep a boundary cell from
   // POPPING when the threshold flips — MINOR, same shared clock as the coverage
   // presence (covEaseK). The real time constant is the спад window, so the front
