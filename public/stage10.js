@@ -570,24 +570,24 @@ function gridDims(t01, minC, maxC) {
 }
 
 // scratch buffers (reallocated only when a grid resolution changes)
-// A is now TWO team blankets: per-team HEIGHT grids (hH/hA — from enabled
-// contributors) + per-team PRESENCE grids (pH/pA — control density, drives the
-// coverage mask / front, independent of which height contributors are ticked).
-let A_gx = 0, A_gy = 0, A_hH = null, A_hA = null, A_pH = null, A_pA = null;
+// A is TWO team blankets: per-team HEIGHT grids (hH/hA — from the enabled
+// contributors, the focus-hill body) + per-team xG crest grids (xH/xA).
+let A_gx = 0, A_gy = 0, A_hH = null, A_hA = null;
 let A_xH = null, A_xA = null;     // xG SHARP crests (kept separate so they stay tall)
-// COVERAGE presence — a SEPARATE, heavily-diffused pair of presence grids used
-// ONLY to decide which team OWNS each cell of the colour partition. Distinct from
-// the height presence (A_pH/A_pA): coverage gets a wide spatial blur + a faint
-// per-half prior so ownership fills the WHOLE pitch (no black quiet zones), while
-// HEIGHT keeps its tight grain/focus. cH owns left (home defends u<0.5), cA right.
-let A_cH = null, A_cA = null, A_cTmp = null;
-// temporally-SMOOTHED copies of the per-team height/presence grids. Each frame
-// the freshly computed grids are lerped INTO these (see smoothA), and rendering
-// reads from these — so the surface + colour edges glide instead of twitching.
-let A_shH = null, A_shA = null, A_spH = null, A_spA = null, A_sxH = null, A_sxA = null;
-let A_scH = null, A_scA = null;   // smoothed COVERAGE presence (drives the partition)
-let A_own = null, A_sown = null, A_lbl = null, A_stack = null;   // ownership (raw + eased) + flood-fill scratch
+// temporally-SMOOTHED copies of the per-team height/crest grids. Each frame the
+// freshly computed grids are lerped INTO these (see smoothA), and rendering reads
+// from these — so the surface + colour edges glide instead of twitching.
+let A_shH = null, A_shA = null, A_sxH = null, A_sxA = null;
+let A_own = null, A_sown = null;   // ownership (0..1 home share) sampled by the partition
+// POSSESSION TIDE front (stage5 feel): per lateral CHANNEL (one value per grid
+// row v) the recent BALL depth in u. home owns u<front, away owns u>front, so the
+// boundary reflects WHERE PLAY IS (field position), not who has more touches. The
+// front advances toward a goal as the ball pushes and recedes over the спад window
+// → a ball rushing toward u=0 in some channel drops the front there → a green
+// tongue. A_frontRaw = this frame's per-channel target; A_front = temporally eased.
+let A_frontRaw = null, A_front = null, A_frontTmp = null;
 let A_smoothReset = true;         // first frame after a grid resize: snap, don't lerp
+let A_frontReset = true;          // snap the eased front on scrub/resize
 let focusCX = NaN, focusCZ = NaN, focusReset = true;   // eased focus-hill centre (glides)
 let B_gx = 0, B_gy = 0, B_h = null, B_hH = null, B_hA = null;
 
@@ -595,97 +595,29 @@ function ensureA(gx, gy) {
   if (gx === A_gx && gy === A_gy) return;
   A_gx = gx; A_gy = gy; const n = gx * gy;
   A_hH = new Float32Array(n); A_hA = new Float32Array(n);
-  A_pH = new Float32Array(n); A_pA = new Float32Array(n);
   A_xH = new Float32Array(n); A_xA = new Float32Array(n);
-  A_cH = new Float32Array(n); A_cA = new Float32Array(n); A_cTmp = new Float32Array(n);
   A_shH = new Float32Array(n); A_shA = new Float32Array(n);
-  A_spH = new Float32Array(n); A_spA = new Float32Array(n);
   A_sxH = new Float32Array(n); A_sxA = new Float32Array(n);
-  A_scH = new Float32Array(n); A_scA = new Float32Array(n);
-  A_own = new Float32Array(n);          // 1 = home owns cell, 0 = away (enclave-free)
-  A_sown = new Float32Array(n);         // temporally-eased ownership (sampled by partition)
-  A_lbl = new Int32Array(n); A_stack = new Int32Array(n);
-  A_smoothReset = true;
-}
-// SMALL-ISLAND cleanup (NOT largest-component). Build ownership from
-// sign(scH − scA), then flip ONLY tiny noise specks — connected components below
-// a small area threshold (~1.5% of cells) — to the opponent. LARGER pockets and
-// TONGUES SURVIVE: a real counter is a legitimate region of the other team's
-// colour reaching into enemy territory, and the user wants it visible as an
-// organic coloured tongue/pocket. So we no longer collapse each team to one
-// region — we only erase pixel-noise speckles + the dark B-dome-hole specks.
-// 4-connected flood fill on the A-grid; cheap at this resolution.
-function cleanOwnership(gx, gy) {
-  const n = gx * gy;
-  for (let i = 0; i < n; i++) A_own[i] = A_scH[i] >= A_scA[i] ? 1 : 0;
-  // minimum surviving island size: ~1.5% of cells (a real counter tongue is much
-  // bigger than this; only sub-speck noise is removed). At least 3 cells.
-  const minSize = Math.max(3, Math.round(n * 0.015));
-  for (let pass = 0; pass < 2; pass++) {
-    const team = pass === 0 ? 1 : 0, other = pass === 0 ? 0 : 1;
-    A_lbl.fill(0);
-    let curLabel = 0;
-    const sizes = [];
-    for (let s = 0; s < n; s++) {
-      if (A_own[s] !== team || A_lbl[s] !== 0) continue;
-      curLabel++; let sp = 0, size = 0; A_stack[sp++] = s; A_lbl[s] = curLabel;
-      while (sp > 0) {
-        const c = A_stack[--sp]; size++;
-        const cx = c % gx, cy = (c / gx) | 0;
-        if (cx > 0)      { const nb = c - 1;  if (A_own[nb] === team && A_lbl[nb] === 0) { A_lbl[nb] = curLabel; A_stack[sp++] = nb; } }
-        if (cx < gx - 1) { const nb = c + 1;  if (A_own[nb] === team && A_lbl[nb] === 0) { A_lbl[nb] = curLabel; A_stack[sp++] = nb; } }
-        if (cy > 0)      { const nb = c - gx; if (A_own[nb] === team && A_lbl[nb] === 0) { A_lbl[nb] = curLabel; A_stack[sp++] = nb; } }
-        if (cy < gy - 1) { const nb = c + gx; if (A_own[nb] === team && A_lbl[nb] === 0) { A_lbl[nb] = curLabel; A_stack[sp++] = nb; } }
-      }
-      sizes[curLabel] = size;
-    }
-    // flip ONLY the tiny speck components (size < minSize) to the opponent;
-    // pockets/tongues at or above the threshold are kept (organic boundary).
-    for (let s = 0; s < n; s++) { const lb = A_lbl[s]; if (lb !== 0 && sizes[lb] < minSize) A_own[s] = other; }
-  }
-}
-// Separable box blur (radius r cells) of `src` into itself, using A_cTmp scratch.
-// Heavy blur diffuses event-spot presence across a team's whole controlled region
-// so quiet cells inherit an owner. Edges clamp (no wrap).
-function blurGrid(src, gx, gy, r) {
-  if (r < 1) return;
-  const win = 2 * r + 1, inv = 1 / win, tmp = A_cTmp;
-  // horizontal
-  for (let j = 0; j < gy; j++) {
-    const row = j * gx;
-    for (let i = 0; i < gx; i++) {
-      let s = 0;
-      for (let k = -r; k <= r; k++) { const ii = clamp(i + k, 0, gx - 1); s += src[row + ii]; }
-      tmp[row + i] = s * inv;
-    }
-  }
-  // vertical
-  for (let i = 0; i < gx; i++) {
-    for (let j = 0; j < gy; j++) {
-      let s = 0;
-      for (let k = -r; k <= r; k++) { const jj = clamp(j + k, 0, gy - 1); s += tmp[jj * gx + i]; }
-      src[j * gx + i] = s * inv;
-    }
-  }
+  A_own = new Float32Array(n);          // 0..1 home share per cell (1 = home owns)
+  A_sown = new Float32Array(n);         // sampled by the partition
+  A_frontRaw = new Float32Array(gy);    // per-channel target front (this frame)
+  A_front = new Float32Array(gy).fill(0.5);   // per-channel eased front (start at mid)
+  A_frontTmp = new Float32Array(gy);
+  A_smoothReset = true; A_frontReset = true;
 }
 // Ease each smoothed grid toward the freshly computed one. `k` is the per-frame
 // blend (0..1); small k = calmer. On a resize / scrub we SNAP (k=1) once so a
 // jump-cut doesn't smear. Scrub-safety: the smoothing is purely cosmetic glide
 // on top of the deterministic per-t fields.
-function smoothA(k, kCov) {
+function smoothA(k) {
   const snap = A_smoothReset;
   const kk = snap ? 1 : clamp(k, 0, 1);
-  const kc = snap ? 1 : clamp(kCov, 0, 1);   // coverage glides SLOWER (calm front)
   A_smoothReset = false;
   for (let i = 0; i < A_hH.length; i++) {
     A_shH[i] += (A_hH[i] - A_shH[i]) * kk;
     A_shA[i] += (A_hA[i] - A_shA[i]) * kk;
-    A_spH[i] += (A_pH[i] - A_spH[i]) * kk;
-    A_spA[i] += (A_pA[i] - A_spA[i]) * kk;
     A_sxH[i] += (A_xH[i] - A_sxH[i]) * kk;
     A_sxA[i] += (A_xA[i] - A_sxA[i]) * kk;
-    A_scH[i] += (A_cH[i] - A_scH[i]) * kc;
-    A_scA[i] += (A_cA[i] - A_scA[i]) * kc;
   }
 }
 function ensureB(gx, gy) {
@@ -715,6 +647,76 @@ function arWeight(a, atk, rel) {
   if (a < 0) return 0;
   const rise = atk > 0.02 ? (1 - Math.exp(-a / atk)) : 1;
   return rise * Math.exp(-a / rel);
+}
+
+// ============================================================================
+// POSSESSION TIDE — territory by BALL FIELD-POSITION (stage5 feel) -------------
+// Replaces per-cell touch-dominance (which gave the possession-heavy team almost
+// the whole pitch → a straight band edge). Here a team's colour = the territory
+// it has reached, measured from its OWN goal up to where the BALL has been.
+//
+// For each lateral CHANNEL v (grid row), front(v) ∈ [0,1] = the recent ball DEPTH
+// in u within/near that channel, through the SAME asymmetric нарастание/спад
+// envelope as the height. home (u→1 attack, own goal u≈0) owns u<front; away owns
+// u>front. As the ball pushes toward a goal the front follows; when it comes back
+// the front recedes over спад. A ball rushing to u≈0 in some channels drops the
+// front there → a GREEN tongue into FRA's half. Clamp to [band,1−band] so neither
+// goal-end is erased. Deterministic from t (sampled ball locus) → scrub-safe.
+function buildTideFront(t, gx, gy, band) {
+  const atk = Math.max(0.02, cfg.A.atk);
+  const rel = Math.max(0.1, cfg.A.rel);
+  // sample the reconstructed ball locus back over the спад window. Step fine
+  // enough to catch quick rushes; cap the count for cost. (ballAt is cheap.)
+  const winMin = rel * 4 + atk * 2;
+  const N = 80;
+  const dt = winMin / N;
+  // per-channel weighted accumulation of ball-u (weight = envelope × lateral
+  // proximity to the channel). sigV = lateral influence half-width in v.
+  const accU = A_frontTmp; accU.fill(0);
+  const accW = new Float32Array(gy);
+  const sigV = 0.16;                 // a ball sample bleeds ~this far across channels
+  const inv2sig2 = 1 / (2 * sigV * sigV);
+  let anyW = false;
+  for (let k = 0; k <= N; k++) {
+    const tt = t - k * dt;
+    const w = arWeight(k * dt, atk, rel);
+    if (w < 0.02) continue;
+    const b = ballAt(tt);
+    anyW = true;
+    // lateral reach: only channels within ~3·sigV of the ball's v get this sample.
+    const reach = sigV * 3;
+    const jLo = Math.max(0, Math.floor((1 - (b.v + reach)) * (gy - 1)));
+    const jHi = Math.min(gy - 1, Math.ceil((1 - (b.v - reach)) * (gy - 1)));
+    for (let j = jLo; j <= jHi; j++) {
+      const vv = 1 - j / (gy - 1);
+      const dv = vv - b.v;
+      const lw = Math.exp(-dv * dv * inv2sig2);
+      accU[j] += b.u * w * lw; accW[j] += w * lw;
+    }
+  }
+  // resolve per-channel front; channels with no nearby ball default to 0.5 (mid).
+  for (let j = 0; j < gy; j++) {
+    A_frontRaw[j] = accW[j] > 1e-4 ? (accU[j] / accW[j]) : 0.5;
+  }
+  // LATERAL smoothing across channels (light) so the front is organic/blobby, not
+  // jagged — but channels still DIFFER (that's what makes tongues). 1-cell box ×2.
+  smoothChannels(A_frontRaw, gy, 1);
+  smoothChannels(A_frontRaw, gy, 1);
+  // clamp so neither team's own-goal band is ever erased.
+  const lo = clamp(band, 0, 0.45), hi = 1 - lo;
+  for (let j = 0; j < gy; j++) A_frontRaw[j] = clamp(A_frontRaw[j], lo, hi);
+  return anyW;
+}
+// 1-D box blur of a per-channel array (length gy) in place, radius r.
+function smoothChannels(arr, gy, r) {
+  if (r < 1) return;
+  const tmp = new Float32Array(gy);
+  const win = 2 * r + 1;
+  for (let j = 0; j < gy; j++) {
+    let s = 0; for (let k = -r; k <= r; k++) { const jj = clamp(j + k, 0, gy - 1); s += arr[jj]; }
+    tmp[j] = s / win;
+  }
+  arr.set(tmp);
 }
 
 // How much one event lifts a team's blanket = Σ of the ENABLED contributors that
@@ -753,8 +755,7 @@ function computeA(t) {
   // coarse → fine. grid 0 = ~14 cells long, grid 1 = ~34.
   const { gx, gy } = gridDims(cfg.A.grid, 14, 34);
   ensureA(gx, gy);
-  A_hH.fill(0); A_hA.fill(0); A_pH.fill(0); A_pA.fill(0); A_xH.fill(0); A_xA.fill(0);
-  A_cH.fill(0); A_cA.fill(0);
+  A_hH.fill(0); A_hA.fill(0); A_xH.fill(0); A_xA.fill(0);
   // base radius from detail; smoothing (blur) widens the swells; the xG crest uses
   // a much tighter radius so the chance reads as a sharp spire, not a swell.
   const radCells = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1)) * lerp(0.6, 2.2, clamp(cfg.A.blur, 0, 1));
@@ -763,148 +764,62 @@ function computeA(t) {
   const xgW = Number.isFinite(cfg.A.xgW) ? clamp(cfg.A.xgW, 0.2, 4) : 1;
   const baseSharp = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1)) * 0.3;
   const sharpRad = Math.max(0.5, baseSharp * xgW);
-  // coverage presence uses a moderately wide stamp so each event paints a broad
-  // ownership claim (overlapping claims + the weak per-half prior still fill the
-  // whole pitch — no black gaps). It is narrower than before (×1.6, was ×2.2) so a
-  // localised burst of the OTHER team deep in enemy territory keeps a concentrated
-  // claim that can flip those cells → a visible counter TONGUE, instead of being
-  // washed flat by an over-wide diffuse claim.
-  const covRad = radCells * 1.6;
   const win = eventsInWindow(t, rel * 5 + atk * 3);
   for (const e of win) {
     const env = arWeight(t - e.t, atk, rel);
     if (env < 0.02) continue;
     const isH = e.team === 'home';
     if (!isH && e.team !== 'away') continue;
-    const Hgrid = isH ? A_hH : A_hA, Pgrid = isH ? A_pH : A_pA, Xgrid = isH ? A_xH : A_xA;
-    const Cgrid = isH ? A_cH : A_cA;
-    // PRESENCE (coverage/front) — on-ball control + every touch, weighted by env.
-    const pw = (POSSESSION_TYPES.has(e.type) || e.isTouch || e.kind === 'pass') ? 1.0 : 0.5;
-    stamp(Pgrid, gx, gy, e.u, e.v, env * pw, radCells);
-    // COVERAGE claim — wide stamp into the diffused ownership field.
-    stamp(Cgrid, gx, gy, e.u, e.v, env * pw, covRad);
-    // HEIGHT — gentle swells from the enabled contributors.
+    const Hgrid = isH ? A_hH : A_hA, Xgrid = isH ? A_xH : A_xA;
+    // HEIGHT — gentle swells from the enabled contributors (the focus-hill body).
     const { lift, sharp } = contribLift(e);
     if (lift > 0) stamp(Hgrid, gx, gy, e.u, e.v, lift * env, radCells);
     if (sharp > 0) {
-      // xG crest: tall, tight, kept separate; also FORCE coverage at the shot so
-      // the danger spire is never masked away even if the team has little presence.
+      // xG crest: tall, tight, kept separate so the chance reads as a spire.
       stamp(Xgrid, gx, gy, e.u, e.v, sharp * env, sharpRad);
-      stamp(Pgrid, gx, gy, e.u, e.v, env * 2.0, sharpRad * 1.4);
-      stamp(Cgrid, gx, gy, e.u, e.v, env * 2.0, covRad);
     }
   }
-  // ---- COVERAGE PARTITION prep: make ownership fill the WHOLE pitch ----------
-  // 1) Faint per-half PRIOR: home defends the left (u<0.5), away the right. This
-  //    seeds genuinely empty cells so they default to the nearer team's colour
-  //    (no black) — but it's weak enough that real activity bends the boundary.
-  // 2) HEAVY box blur diffuses each team's event presence across its controlled
-  //    region, so the boundary is smooth + activity-shaped (bulges left/right),
-  //    not a spotty per-event mask. Much wider than the height grain.
-  let cMax = 1e-4;
-  for (let k = 0; k < A_cH.length; k++) { if (A_cH[k] > cMax) cMax = A_cH[k]; if (A_cA[k] > cMax) cMax = A_cA[k]; }
-  const prior = cMax * 0.05;            // weak — only decides truly empty zones
-  // OWN-GOAL BAND PRIOR — each team ALWAYS holds a strip at its own goal. Home's
-  // own goal is at u≈0, away's at u≈1 (home attacks u→1, see toUV). Inside the
-  // band the team's own coverage gets a STRONG positional boost (≫ cMax) so the
-  // opponent's activity can never out-claim it; the boost fades to neutral by the
-  // band's inner edge, so the contested front stays activity-shaped beyond it.
-  const band = clamp(Number.isFinite(cfg.A.ownBand) ? cfg.A.ownBand : 0, 0, 0.45);
-  const bandBoost = cMax * 6.0;         // dominant inside the band → guarantees ownership
-  for (let j = 0; j < gy; j++) {
-    for (let i = 0; i < gx; i++) {
-      const u = i / (gx - 1);
-      A_cH[j * gx + i] += prior * (1 - u);   // home prior strongest at u=0 (left)
-      A_cA[j * gx + i] += prior * u;          // away prior strongest at u=1 (right)
-      if (band > 0.001) {
-        // home band: u in [0, band] → boost fades 1→0 across the band.
-        const fh = clamp(1 - u / band, 0, 1);
-        if (fh > 0) A_cH[j * gx + i] += bandBoost * (fh * fh * (3 - 2 * fh));
-        // away band: u in [1-band, 1] → boost fades 0→1 toward u=1.
-        const fa = clamp((u - (1 - band)) / band, 0, 1);
-        if (fa > 0) A_cA[j * gx + i] += bandBoost * (fa * fa * (3 - 2 * fa));
-      }
-    }
-  }
-  // MODERATE blur (single pass, narrow radius) — diffuse each event's presence
-  // claim just enough to fill its surrounding region (no dry pixels, full two-
-  // colour partition) and to kill pixel-noise jaggies, but NOT so wide that real
-  // play POCKETS dissolve. The old heavy two-pass wide blur (gx·0.18 ×2) smeared
-  // every tongue away and straightened the boundary into a near-line; a single
-  // ~gx·0.06 pass keeps the boundary ORGANIC and reactive, so a team breaking into
-  // the other half reads as a coloured tongue. The weak per-half prior + the wide
-  // covRad stamps below still guarantee every cell gets an owner (no black gaps).
-  const covBlur = Math.max(2, Math.round(gx * 0.06));   // narrow diffusion radius
-  blurGrid(A_cH, gx, gy, covBlur);
-  blurGrid(A_cA, gx, gy, covBlur);
-  // glide the smoothed grids toward this frame's fields. The COLOUR/front and the
-  // HEIGHT/hill must run on the SAME clock: the raw coverage presence (A_cH/A_cA)
-  // already decays at the user's спад (cfg.A.rel) via arWeight — the SAME window
-  // as the height contributors — so the front advances AND recedes with play. The
-  // per-frame temporal ease here is now MINOR and shared between height and
-  // coverage (no separate multi-minute lag): it only damps per-frame popping; the
-  // dominant time constant is the спад window itself. A faster спад → quicker ease
-  // so the colour can't lag the спад it's meant to follow.
-  const snapNow = A_smoothReset;          // capture before smoothA clears it
+  // glide the HEIGHT/hill grids (presence + xG crest) toward this frame's fields.
   const easeK = covEaseK();
-  smoothA(easeK, easeK);
-  // From the (slowly-eased) coverage presence, build an ENCLAVE-FREE ownership map
-  // (largest connected component per team), then lightly blur it so the boundary
-  // reads as a clean soft front with a small overlap. A_own becomes the 0..1 home
-  // share sampled by the partition in computeField.
-  cleanOwnership(gx, gy);
-  // HARD-FORCE the own-goal bands: regardless of the diffused presence + flood
-  // fill, every cell inside a team's own-goal band is owned by that team. This
-  // guarantees the defender keeps a visible strip even under total siege (the
-  // prior boost above already bends the front; this makes the band absolute and
-  // keeps the flood from being overridden away — flood is applied AFTER this).
-  if (band > 0.001) {
-    for (let j = 0; j < gy; j++) {
-      const row = j * gx;
-      for (let i = 0; i < gx; i++) {
-        const u = i / (gx - 1);
-        if (u <= band) A_own[row + i] = 1;          // home keeps its band (home=1)
-        else if (u >= 1 - band) A_own[row + i] = 0; // away keeps its band (away=0)
-      }
-    }
-  }
-  // GOAL FLOOD override — the scoring team's colour sweeps to fill the WHOLE
-  // pitch then recedes. amt=1 → every cell the scorer's owner value; partial amt
-  // pushes ownership toward the scorer proportionally (so the sweep reads as the
-  // colour washing across). Overrides the own-goal bands only during the flood.
+  smoothA(easeK);
+
+  // ---- POSSESSION TIDE PARTITION — colour by BALL FIELD-POSITION --------------
+  // front(v) per channel from the recent ball depth (stage5 feel). home owns
+  // u<front, away owns u>front → full two-colour fill, every cell owned (no black).
+  const band = clamp(Number.isFinite(cfg.A.ownBand) ? cfg.A.ownBand : 0, 0, 0.45);
+  buildTideFront(t, gx, gy, band);
+  // ease the per-channel front TEMPORALLY (advance/recede over the спад window via
+  // the shared brisk ease; the dominant time constant is спад baked into arWeight).
+  // Snap on scrub/resize so the deterministic per-t front is exact.
+  const kf = A_frontReset ? 1 : easeK; A_frontReset = false;
+  for (let j = 0; j < gy; j++) A_front[j] += (A_frontRaw[j] - A_front[j]) * kf;
+  // GOAL FLOOD override — the scoring team's colour sweeps to fill the WHOLE pitch
+  // then recedes. Push EVERY channel's front toward the scorer's far end as amt
+  // rises: home (own goal u≈0) floods front→1 (home owns all); away floods →0.
+  // Deterministic from clock via goalFloodAt → scrub-safe; overrides bands only
+  // during the flood.
   const flood = goalFloodAt(t);
+  let floodFront = NaN;
   if (flood && flood.amt > 0.001) {
-    const target = flood.team === 'home' ? 1 : 0;   // owner value of the scorer
-    const a = flood.amt;
-    // SPATIAL WASH: the scorer's colour advances as a soft front from the
-    // scorer's OWN end across the whole pitch as amt rises 0→1. Home (own goal at
-    // u≈0) washes u: 0→1; away (own goal at u≈1) washes u: 1→0. A soft edge
-    // (width ~0.22) makes it read as a sweeping wave rather than a hard line.
-    const ew = 0.22;
-    for (let j = 0; j < gy; j++) {
-      const row = j * gx;
-      for (let i = 0; i < gx; i++) {
-        const u = i / (gx - 1);
-        // distance from the scorer's own end, 0 at their goal → 1 at the far end.
-        const d = flood.team === 'home' ? u : (1 - u);
-        // front reaches distance `a*(1+ew)`; cells behind it are fully scorer.
-        const cover = clamp(((a * (1 + ew)) - d) / ew, 0, 1);
-        const sm = cover * cover * (3 - 2 * cover);
-        A_own[row + i] = lerp(A_own[row + i], target, sm);
-      }
+    const target = flood.team === 'home' ? 1 : 0;   // front value that gives the scorer the whole pitch
+    floodFront = target;
+  }
+  // Build the ownership grid A_own from the (eased) per-channel front: home owns
+  // cells left of its channel front. A soft edge (one cell) anti-aliases the
+  // boundary; the partition's own smoothstep + НАХЛЁСТ then finish the front.
+  for (let j = 0; j < gy; j++) {
+    let fr = A_front[j];
+    if (!Number.isNaN(floodFront)) fr = lerp(fr, floodFront, flood.amt);   // flood wash
+    const row = j * gx;
+    const fcell = fr * (gx - 1);            // front position in cell units along u
+    for (let i = 0; i < gx; i++) {
+      // smooth step across ~1 cell at the front: 1 = home owns (u<front), 0 = away.
+      A_own[row + i] = clamp((fcell - i) + 0.5, 0, 1);
     }
   }
-  // light edge blur on the binary ownership ONLY to anti-alias the boundary into a
-  // soft front (the partition edge smoothstep is narrow, so a small radius is
-  // enough). Kept minimal so tongue TIPS/pockets aren't rounded back off.
-  blurGrid(A_own, gx, gy, Math.max(1, Math.round(gx * 0.03)));
-  // ease the ownership field TEMPORALLY too, only to keep a boundary cell from
-  // POPPING when the threshold flips — MINOR, same shared clock as the coverage
-  // presence (covEaseK). The real time constant is the спад window, so the front
-  // tracks play instead of dragging a multi-minute tail. Snaps on scrub; during an
-  // active flood we SNAP so the deterministic sweep/recede envelope is exact.
-  const ko = (snapNow || flood) ? 1 : easeK;
-  for (let i = 0; i < A_own.length; i++) A_sown[i] += (A_own[i] - A_sown[i]) * ko;
+  // A_sown is sampled directly by the partition (0..1 home share). The temporal
+  // ease already lives in A_front, so copy through (snap-consistent, scrub-safe).
+  A_sown.set(A_own);
   return win.length > 0;
 }
 // Shared per-frame ease for BOTH the height/hill grids and the coverage/ownership
@@ -1117,12 +1032,11 @@ function computeField(t) {
         const crestK = 2.6 * xgH;
         hH = A_BASE + A_WOBBLE * wob + rH * 2.0 * amp * fm + xH * crestK * fmCrest;
         hA = A_BASE + A_WOBBLE * wob + rA * 2.0 * amp * fm + xA * crestK * fmCrest;
-        // COVERAGE = FULL-PITCH PARTITION, ENCLAVE-FREE. Sample the cleaned, eased
-        // ownership field A_sown (0..1 home share): it was built from the heavily
-        // diffused presence, reduced to the LARGEST connected component per team
-        // (no islands), lightly blurred (soft front) and temporally eased (glides).
-        // Every cell is FILLED with its owner; the two colours meet at ONE
-        // continuous activity-shaped front. No black field, no speckles.
+        // COVERAGE = FULL-PITCH PARTITION from the POSSESSION TIDE. A_sown (0..1
+        // home share) is the per-channel ball-position front: home owns u<front,
+        // away owns u>front, so the boundary follows WHERE PLAY IS (field position)
+        // and a ball break into the other half reads as a coloured TONGUE. Every
+        // cell is FILLED with its owner; the two colours meet at the tide front.
         const shareH = sampleGrid(A_sown, A_gx, A_gy, u, v);   // 0..1; 0.5 = the boundary
         ownerShare = shareH;
         // FULL-UNION partition: a single steep edge at the 50% share decides the
@@ -1385,7 +1299,7 @@ function renderFrame(t) {
 }
 // Force the A smoothing to SNAP on the next computeA (used after a scrub or a
 // slider change so the eased grids don't lag behind a jump-cut / new setting).
-function snapASmoothing() { A_smoothReset = true; focusReset = true; }
+function snapASmoothing() { A_smoothReset = true; focusReset = true; A_frontReset = true; }
 
 // ---- resize -----------------------------------------------------------------
 function onResize() {
