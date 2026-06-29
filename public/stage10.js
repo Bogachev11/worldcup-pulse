@@ -86,6 +86,11 @@ const DEFAULTS = () => ({
     // lighting it would render dark; this glow term makes it read VIVID team
     // colour regardless of height. 0 = lit only, ~1 = strong glow.
     glow: 1.0,
+    // xG SPIRE — regulated INDEPENDENTLY of сглаживание (which only widens the
+    // activity swell grain) and of amplitude. xgW = spire WIDTH (scales the xG
+    // stamp radius), xgH = spire HEIGHT (scales the crest term). Defaults = 1.0
+    // reproduce the current sharp tall spire.
+    xgW: 1.0, xgH: 1.0,
     // ФОКУС ▸ зона игры — radius of the spatial focus mask that anchors the
     // HEIGHT relief to the single live play locus (ballAt(t)). Tight = one
     // coherent swell where play is; wide → approaches the old free-form field.
@@ -370,8 +375,14 @@ function makeBlanket(teamCol) {
         // luminance only on the (rare) raised hill so the crest still reads.
         vec3 col = uTeam * (0.9 + 0.35 * clamp(vHd*0.5, 0.0, 1.0));
         diffuseColor.rgb = col;
-        float cov = texture2D(uCov, vUvN).r;       // crisp coverage mask
-        diffuseColor.a *= clamp(cov, 0.0, 1.0);
+        // Effective coverage = the partition mask, BUT a tall xG SPIRE always shows
+        // even if the OPPONENT owns that territory (a shot into the rival's half must
+        // still poke through). Threshold is high (3→5) so ONLY the sharp xG spire
+        // forces through — the gentler focus SWELL (≲2) never pokes into the
+        // opponent's colour zone (that would look like an enclave).
+        float cov = texture2D(uCov, vUvN).r;
+        float covEff = max(clamp(cov, 0.0, 1.0), smoothstep(3.0, 5.0, vHd));
+        diffuseColor.a *= covEff;
       }`);
     shader.fragmentShader = shader.fragmentShader.replace('#include <alphatest_fragment>',
       `if (diffuseColor.a < 0.02) discard;
@@ -384,7 +395,8 @@ function makeBlanket(teamCol) {
          // flat paint glows its team colour vividly regardless of height. The one
          // raised hill (+xG spire) gets an extra hot boost so crests still pop.
          float cov = texture2D(uCov, vUvN).r;
-         vec3 emit = uTeam * clamp(cov, 0.0, 1.0) * (0.9 * uGlow);
+         float covEff = max(clamp(cov, 0.0, 1.0), smoothstep(3.0, 5.0, vHd));
+         vec3 emit = uTeam * covEff * (0.9 * uGlow);
          float hot = smoothstep(0.5, 3.0, vHd);
          emit += uTeam * hot * (0.6 * uGlow);
          totalEmissiveRadiance += emit;
@@ -550,11 +562,20 @@ function gridDims(t01, minC, maxC) {
 // coverage mask / front, independent of which height contributors are ticked).
 let A_gx = 0, A_gy = 0, A_hH = null, A_hA = null, A_pH = null, A_pA = null;
 let A_xH = null, A_xA = null;     // xG SHARP crests (kept separate so they stay tall)
+// COVERAGE presence — a SEPARATE, heavily-diffused pair of presence grids used
+// ONLY to decide which team OWNS each cell of the colour partition. Distinct from
+// the height presence (A_pH/A_pA): coverage gets a wide spatial blur + a faint
+// per-half prior so ownership fills the WHOLE pitch (no black quiet zones), while
+// HEIGHT keeps its tight grain/focus. cH owns left (home defends u<0.5), cA right.
+let A_cH = null, A_cA = null, A_cTmp = null;
 // temporally-SMOOTHED copies of the per-team height/presence grids. Each frame
 // the freshly computed grids are lerped INTO these (see smoothA), and rendering
 // reads from these — so the surface + colour edges glide instead of twitching.
 let A_shH = null, A_shA = null, A_spH = null, A_spA = null, A_sxH = null, A_sxA = null;
+let A_scH = null, A_scA = null;   // smoothed COVERAGE presence (drives the partition)
+let A_own = null, A_sown = null, A_lbl = null, A_stack = null;   // ownership (raw + eased) + flood-fill scratch
 let A_smoothReset = true;         // first frame after a grid resize: snap, don't lerp
+let focusCX = NaN, focusCZ = NaN, focusReset = true;   // eased focus-hill centre (glides)
 let B_gx = 0, B_gy = 0, B_h = null, B_hH = null, B_hA = null;
 
 function ensureA(gx, gy) {
@@ -563,17 +584,80 @@ function ensureA(gx, gy) {
   A_hH = new Float32Array(n); A_hA = new Float32Array(n);
   A_pH = new Float32Array(n); A_pA = new Float32Array(n);
   A_xH = new Float32Array(n); A_xA = new Float32Array(n);
+  A_cH = new Float32Array(n); A_cA = new Float32Array(n); A_cTmp = new Float32Array(n);
   A_shH = new Float32Array(n); A_shA = new Float32Array(n);
   A_spH = new Float32Array(n); A_spA = new Float32Array(n);
   A_sxH = new Float32Array(n); A_sxA = new Float32Array(n);
+  A_scH = new Float32Array(n); A_scA = new Float32Array(n);
+  A_own = new Float32Array(n);          // 1 = home owns cell, 0 = away (enclave-free)
+  A_sown = new Float32Array(n);         // temporally-eased ownership (sampled by partition)
+  A_lbl = new Int32Array(n); A_stack = new Int32Array(n);
   A_smoothReset = true;
+}
+// Kill ENCLAVES: build ownership from sign(scH - scA), then keep only the LARGEST
+// connected component for EACH team — any smaller island is flipped to the
+// opponent. Guarantees each team is ONE connected region meeting at a single
+// front. 4-connected flood fill on the A-grid; cheap at this resolution.
+function cleanOwnership(gx, gy) {
+  const n = gx * gy;
+  for (let i = 0; i < n; i++) A_own[i] = A_scH[i] >= A_scA[i] ? 1 : 0;
+  // two passes: for each team value (1 then 0), find the largest component and
+  // flip every OTHER component of that team to the opponent.
+  for (let pass = 0; pass < 2; pass++) {
+    const team = pass === 0 ? 1 : 0, other = pass === 0 ? 0 : 1;
+    A_lbl.fill(0);
+    let curLabel = 0, bestLabel = 0, bestSize = -1;
+    const sizes = [];
+    for (let s = 0; s < n; s++) {
+      if (A_own[s] !== team || A_lbl[s] !== 0) continue;
+      curLabel++; let sp = 0, size = 0; A_stack[sp++] = s; A_lbl[s] = curLabel;
+      while (sp > 0) {
+        const c = A_stack[--sp]; size++;
+        const cx = c % gx, cy = (c / gx) | 0;
+        if (cx > 0)      { const nb = c - 1;  if (A_own[nb] === team && A_lbl[nb] === 0) { A_lbl[nb] = curLabel; A_stack[sp++] = nb; } }
+        if (cx < gx - 1) { const nb = c + 1;  if (A_own[nb] === team && A_lbl[nb] === 0) { A_lbl[nb] = curLabel; A_stack[sp++] = nb; } }
+        if (cy > 0)      { const nb = c - gx; if (A_own[nb] === team && A_lbl[nb] === 0) { A_lbl[nb] = curLabel; A_stack[sp++] = nb; } }
+        if (cy < gy - 1) { const nb = c + gx; if (A_own[nb] === team && A_lbl[nb] === 0) { A_lbl[nb] = curLabel; A_stack[sp++] = nb; } }
+      }
+      sizes[curLabel] = size;
+      if (size > bestSize) { bestSize = size; bestLabel = curLabel; }
+    }
+    // flip every cell of this team that is NOT in the largest component.
+    if (curLabel > 1) for (let s = 0; s < n; s++) if (A_lbl[s] !== 0 && A_lbl[s] !== bestLabel) A_own[s] = other;
+  }
+}
+// Separable box blur (radius r cells) of `src` into itself, using A_cTmp scratch.
+// Heavy blur diffuses event-spot presence across a team's whole controlled region
+// so quiet cells inherit an owner. Edges clamp (no wrap).
+function blurGrid(src, gx, gy, r) {
+  if (r < 1) return;
+  const win = 2 * r + 1, inv = 1 / win, tmp = A_cTmp;
+  // horizontal
+  for (let j = 0; j < gy; j++) {
+    const row = j * gx;
+    for (let i = 0; i < gx; i++) {
+      let s = 0;
+      for (let k = -r; k <= r; k++) { const ii = clamp(i + k, 0, gx - 1); s += src[row + ii]; }
+      tmp[row + i] = s * inv;
+    }
+  }
+  // vertical
+  for (let i = 0; i < gx; i++) {
+    for (let j = 0; j < gy; j++) {
+      let s = 0;
+      for (let k = -r; k <= r; k++) { const jj = clamp(j + k, 0, gy - 1); s += tmp[jj * gx + i]; }
+      src[j * gx + i] = s * inv;
+    }
+  }
 }
 // Ease each smoothed grid toward the freshly computed one. `k` is the per-frame
 // blend (0..1); small k = calmer. On a resize / scrub we SNAP (k=1) once so a
 // jump-cut doesn't smear. Scrub-safety: the smoothing is purely cosmetic glide
 // on top of the deterministic per-t fields.
-function smoothA(k) {
-  const kk = A_smoothReset ? 1 : clamp(k, 0, 1);
+function smoothA(k, kCov) {
+  const snap = A_smoothReset;
+  const kk = snap ? 1 : clamp(k, 0, 1);
+  const kc = snap ? 1 : clamp(kCov, 0, 1);   // coverage glides SLOWER (calm front)
   A_smoothReset = false;
   for (let i = 0; i < A_hH.length; i++) {
     A_shH[i] += (A_hH[i] - A_shH[i]) * kk;
@@ -582,6 +666,8 @@ function smoothA(k) {
     A_spA[i] += (A_pA[i] - A_spA[i]) * kk;
     A_sxH[i] += (A_xH[i] - A_sxH[i]) * kk;
     A_sxA[i] += (A_xA[i] - A_sxA[i]) * kk;
+    A_scH[i] += (A_cH[i] - A_scH[i]) * kc;
+    A_scA[i] += (A_cA[i] - A_scA[i]) * kc;
   }
 }
 function ensureB(gx, gy) {
@@ -650,10 +736,18 @@ function computeA(t) {
   const { gx, gy } = gridDims(cfg.A.grid, 14, 34);
   ensureA(gx, gy);
   A_hH.fill(0); A_hA.fill(0); A_pH.fill(0); A_pA.fill(0); A_xH.fill(0); A_xA.fill(0);
+  A_cH.fill(0); A_cA.fill(0);
   // base radius from detail; smoothing (blur) widens the swells; the xG crest uses
   // a much tighter radius so the chance reads as a sharp spire, not a swell.
   const radCells = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1)) * lerp(0.6, 2.2, clamp(cfg.A.blur, 0, 1));
-  const sharpRad = Math.max(0.7, radCells * 0.3);
+  // xG spire WIDTH is INDEPENDENT of сглаживание/grid: derive the base sharp radius
+  // from grid only (not blur), then scale by the dedicated xgW slider.
+  const xgW = Number.isFinite(cfg.A.xgW) ? clamp(cfg.A.xgW, 0.2, 4) : 1;
+  const baseSharp = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1)) * 0.3;
+  const sharpRad = Math.max(0.5, baseSharp * xgW);
+  // coverage presence uses a WIDE stamp so each event paints a broad ownership
+  // claim, not a spot — combined with the heavy blur below this fills the pitch.
+  const covRad = radCells * 2.2;
   const win = eventsInWindow(t, rel * 5 + atk * 3);
   for (const e of win) {
     const env = arWeight(t - e.t, atk, rel);
@@ -661,9 +755,12 @@ function computeA(t) {
     const isH = e.team === 'home';
     if (!isH && e.team !== 'away') continue;
     const Hgrid = isH ? A_hH : A_hA, Pgrid = isH ? A_pH : A_pA, Xgrid = isH ? A_xH : A_xA;
+    const Cgrid = isH ? A_cH : A_cA;
     // PRESENCE (coverage/front) — on-ball control + every touch, weighted by env.
-    if (POSSESSION_TYPES.has(e.type) || e.isTouch || e.kind === 'pass') stamp(Pgrid, gx, gy, e.u, e.v, env, radCells);
-    else stamp(Pgrid, gx, gy, e.u, e.v, env * 0.5, radCells);
+    const pw = (POSSESSION_TYPES.has(e.type) || e.isTouch || e.kind === 'pass') ? 1.0 : 0.5;
+    stamp(Pgrid, gx, gy, e.u, e.v, env * pw, radCells);
+    // COVERAGE claim — wide stamp into the diffused ownership field.
+    stamp(Cgrid, gx, gy, e.u, e.v, env * pw, covRad);
     // HEIGHT — gentle swells from the enabled contributors.
     const { lift, sharp } = contribLift(e);
     if (lift > 0) stamp(Hgrid, gx, gy, e.u, e.v, lift * env, radCells);
@@ -672,15 +769,54 @@ function computeA(t) {
       // the danger spire is never masked away even if the team has little presence.
       stamp(Xgrid, gx, gy, e.u, e.v, sharp * env, sharpRad);
       stamp(Pgrid, gx, gy, e.u, e.v, env * 2.0, sharpRad * 1.4);
+      stamp(Cgrid, gx, gy, e.u, e.v, env * 2.0, covRad);
     }
   }
-  // glide the smoothed grids toward this frame's fields (calm in motion).
-  smoothA(A_SMOOTH_K);
+  // ---- COVERAGE PARTITION prep: make ownership fill the WHOLE pitch ----------
+  // 1) Faint per-half PRIOR: home defends the left (u<0.5), away the right. This
+  //    seeds genuinely empty cells so they default to the nearer team's colour
+  //    (no black) — but it's weak enough that real activity bends the boundary.
+  // 2) HEAVY box blur diffuses each team's event presence across its controlled
+  //    region, so the boundary is smooth + activity-shaped (bulges left/right),
+  //    not a spotty per-event mask. Much wider than the height grain.
+  let cMax = 1e-4;
+  for (let k = 0; k < A_cH.length; k++) { if (A_cH[k] > cMax) cMax = A_cH[k]; if (A_cA[k] > cMax) cMax = A_cA[k]; }
+  const prior = cMax * 0.05;            // weak — only decides truly empty zones
+  for (let j = 0; j < gy; j++) {
+    for (let i = 0; i < gx; i++) {
+      const u = i / (gx - 1);
+      A_cH[j * gx + i] += prior * (1 - u);   // home prior strongest at u=0 (left)
+      A_cA[j * gx + i] += prior * u;          // away prior strongest at u=1 (right)
+    }
+  }
+  // HEAVY blur (two passes) so small local pockets dissolve into the surrounding
+  // owner → one clean connected front, no speckles. Much wider than height grain.
+  const covBlur = Math.max(3, Math.round(gx * 0.18));   // wide diffusion radius
+  blurGrid(A_cH, gx, gy, covBlur);
+  blurGrid(A_cA, gx, gy, covBlur);
+  blurGrid(A_cH, gx, gy, covBlur);
+  blurGrid(A_cA, gx, gy, covBlur);
+  // glide the smoothed grids toward this frame's fields (calm in motion). HEIGHT
+  // uses the brisker rate; COVERAGE/ownership uses a much slower rate so the
+  // colour FRONT glides instead of snapping (kills the stutter).
+  const snapNow = A_smoothReset;          // capture before smoothA clears it
+  smoothA(A_SMOOTH_K, A_COV_SMOOTH_K);
+  // From the (slowly-eased) coverage presence, build an ENCLAVE-FREE ownership map
+  // (largest connected component per team), then lightly blur it so the boundary
+  // reads as a clean soft front with a small overlap. A_own becomes the 0..1 home
+  // share sampled by the partition in computeField.
+  cleanOwnership(gx, gy);
+  blurGrid(A_own, gx, gy, Math.max(1, Math.round(gx * 0.05)));
+  // ease the ownership field TEMPORALLY too, so the front glides between frames
+  // instead of a boundary cell popping when the threshold flips. Snaps on scrub.
+  const ko = snapNow ? 1 : A_COV_SMOOTH_K;
+  for (let i = 0; i < A_own.length; i++) A_sown[i] += (A_own[i] - A_sown[i]) * ko;
   return win.length > 0;
 }
 // per-frame blend toward the new fields. Lower = calmer (less twitch). The reset
 // flag in smoothA() makes scrubs/resizes snap, so this only damps live playback.
-const A_SMOOTH_K = 0.18;
+const A_SMOOTH_K = 0.16;
+const A_COV_SMOOTH_K = 0.06;   // ownership/front glides slowly → no boundary snap
 
 // Recompute layer B's grid (finer pass relief). aggr 0 = each pass a small sharp
 // bump; aggr 1 = broad smoothed density.
@@ -741,7 +877,17 @@ function computeField(t) {
   // path. CRITICAL: a tail sample is kept ONLY if it is contiguous with the live
   // locus (within tailReach of it); when the locus jumped far in the last instants
   // the far sample is DROPPED so it can never anchor a detached second hill.
-  const lbX = worldX(ball.u), lbZ = worldZ(ball.v);
+  // EASE the focus centre toward the live locus so the single hill GLIDES instead
+  // of teleporting frame-to-frame (the locus itself can jump between touches). On a
+  // scrub we snap. Larger jumps ease a touch faster so the hill keeps up with play.
+  const tgtX = worldX(ball.u), tgtZ = worldZ(ball.v);
+  if (focusReset || !Number.isFinite(focusCX)) { focusCX = tgtX; focusCZ = tgtZ; focusReset = false; }
+  else {
+    const d = Math.hypot(tgtX - focusCX, tgtZ - focusCZ);
+    const ke = clamp(0.10 + d * 0.04, 0.10, 0.5);   // base glide; speeds up for big jumps
+    focusCX += (tgtX - focusCX) * ke; focusCZ += (tgtZ - focusCZ) * ke;
+  }
+  const lbX = focusCX, lbZ = focusCZ;
   const tailReach = focusSig * 1.25;          // max gap that still counts as one path
   const FOCUS_TAIL = [0, 0.12, 0.28, 0.45];   // seconds back along the locus
   const focusPts = [{ fx: lbX, fz: lbZ, w: 1.0 }];
@@ -769,6 +915,7 @@ function computeField(t) {
   // fabric wobble phase — gentle undulation so each blanket drapes like cloth.
   const ph = (typeof performance !== 'undefined' ? performance.now() : Date.now()) * 0.00018;
   const amp = clamp(cfg.A.height, 0, 3);
+  const xgH = Number.isFinite(cfg.A.xgH) ? clamp(cfg.A.xgH, 0, 4) : 1;   // xG spire height (independent of amp)
   // TERRITORY LIES FLAT. The old uniform base body raised EVERY covered cell, so
   // a team whose coverage spanned multiple zones (e.g. both wings) showed several
   // detached raised domes. The base is now ~0 — covered-but-quiet zones stay flat
@@ -789,7 +936,7 @@ function computeField(t) {
   }
 
   const bH = blankets.home, bA = blankets.away;
-  let idx = 0, sumH = 0, sumHH = 0, sumHA = 0, nCovH = 0, nCovA = 0;
+  let idx = 0, sumH = 0;
   let totH = 0, totA = 0;   // total raised mass per team (decides who laps on top)
   for (let j = 0; j < VY; j++) {
     const v = j / (VY - 1);
@@ -819,29 +966,37 @@ function computeField(t) {
         // spire and is never flattened away.
         const wx = worldX(u), wz = worldZ(v);
         const fm = focusMask(wx, wz);
-        // crest uses a SOFTENED (√) mask so a chance AT the locus stays a tall
-        // spire (fm≈1 → 1), while a crest FAR from play dissolves like the swell.
-        const fmCrest = clamp(Math.sqrt(fm), 0, 1);
-        hH = A_BASE + A_WOBBLE * wob + rH * 2.0 * amp * fm + xH * 2.6 * amp * fmCrest;
-        hA = A_BASE + A_WOBBLE * wob + rA * 2.0 * amp * fm + xA * 2.6 * amp * fmCrest;
-        // coverage from PRESENCE share — CRISP front (steep), extended by lap.
-        // Smoothed presence → the colour edge slides instead of snapping.
-        const pH = sampleGrid(A_spH, A_gx, A_gy, u, v);
-        const pA = sampleGrid(A_spA, A_gx, A_gy, u, v);
-        const tot = pH + pA;
-        if (tot > 1e-4) {
-          const shareH = pH / tot;                 // 0..1
-          // crisp edge: steep smoothstep around 0.5, shifted out by `lap` so both
-          // sheets cover a small shared band (the overlap).
-          covH = smoothstepC(0.5 - lap - 0.05, 0.5 - lap + 0.05, shareH);
-          covA = smoothstepC(0.5 - lap - 0.05, 0.5 - lap + 0.05, 1 - shareH);
-          // require a minimum presence so empty pitch stays bare (no full-pitch wash)
-          const pres = clamp(tot * 6, 0, 1);
-          covH *= pres; covA *= pres;
+        // crest is its own TIGHT spatial spike (A_sxH/A_sxA), so it doesn't need
+        // the focus gate to stay coherent. Keep it mostly UNGATED (floor 0.55) so a
+        // recent shot always reads as a tall spire even when the live locus has
+        // already moved off the shot spot — only softly attenuated far from play.
+        const fmCrest = clamp(0.55 + 0.45 * Math.sqrt(fm), 0, 1);
+        // xG spire HEIGHT is INDEPENDENT of A.amplitude: the crest term is scaled
+        // by the dedicated xgH slider (× a fixed base so amp doesn't gate it).
+        const crestK = 2.6 * xgH;
+        hH = A_BASE + A_WOBBLE * wob + rH * 2.0 * amp * fm + xH * crestK * fmCrest;
+        hA = A_BASE + A_WOBBLE * wob + rA * 2.0 * amp * fm + xA * crestK * fmCrest;
+        // COVERAGE = FULL-PITCH PARTITION, ENCLAVE-FREE. Sample the cleaned, eased
+        // ownership field A_sown (0..1 home share): it was built from the heavily
+        // diffused presence, reduced to the LARGEST connected component per team
+        // (no islands), lightly blurred (soft front) and temporally eased (glides).
+        // Every cell is FILLED with its owner; the two colours meet at ONE
+        // continuous activity-shaped front. No black field, no speckles.
+        const shareH = sampleGrid(A_sown, A_gx, A_gy, u, v);   // 0..1; 0.5 = the boundary
+        // FULL-UNION partition: a single steep edge at the 50% share decides the
+        // owner, and the two sheets are COMPLEMENTARY (covH = edge, covA = 1-edge)
+        // so together they fill EVERY cell — no gaps, no black band at the front.
+        // The НАХЛЁСТ then ADDS a shared overlap: a soft bump straddling the
+        // boundary that lifts BOTH sheets to 1 within a `lap`-wide band.
+        const edge = smoothstepC(0.5 - 0.03, 0.5 + 0.03, shareH);   // crisp; 1 = home owns
+        covH = edge;
+        covA = 1 - edge;
+        if (lap > 0.001) {
+          const band = 1 - smoothstepC(0, lap, Math.abs(shareH - 0.5));  // 1 at boundary → 0 at |Δ|=lap
+          covH = Math.max(covH, band);
+          covA = Math.max(covA, band);
         }
         totH += rH + xH * 1.5; totA += rA + xA * 1.5;   // crest weighs into who laps on top
-        if (covH > 0.5) { sumHH += hH; nCovH++; }
-        if (covA > 0.5) { sumHA += hA; nCovA++; }
       }
       bH.hData[idx] = hH; bH.aData[idx] = covH;
       bA.hData[idx] = hA; bA.aData[idx] = covA;
@@ -872,11 +1027,17 @@ function computeField(t) {
   material.userData.u.uBaseline.value = heightBaseline;
   heightTex.needsUpdate = true; colTex.needsUpdate = true;
   mesh.visible = bOn;
-  // team blankets: baseline subtract per team (mean of that team's height) so each
-  // straddles ~y=0 like the old drape; the currently TALLER team laps on top.
-  const baseH = nCovH ? sumHH / nCovH : heightBaseline;
-  const baseA = nCovA ? sumHA / nCovA : heightBaseline;
-  bH.u.uBaseline.value = baseH; bA.u.uBaseline.value = baseA;
+  // team blankets: the territory is now FLAT (height ~0 except the one hill), so
+  // the baseline must be ~0 — otherwise subtracting the mean height would sink the
+  // flat sheet BELOW the pitch plane (where it gets occluded and reads black). A
+  // tiny lift keeps the flat paint just above y=0; only the focus hill + xG spire
+  // rise above it. (sumHH/sumHA/nCov* are no longer used for the baseline.)
+  // Lift must exceed the cloth wobble amplitude (max |wob|≈1.5 → A_WOBBLE·1.5) so a
+  // wobble TROUGH never dips the flat sheet below the pitch plane (y=0), which
+  // would let the dark ground show through as a black hole. (The flat partition
+  // no longer needs a per-team mean baseline.)
+  const BLANKET_LIFT = 0.12 + A_WOBBLE * 1.6;
+  bH.u.uBaseline.value = -BLANKET_LIFT; bA.u.uBaseline.value = -BLANKET_LIFT;
   // colour-glow strength (graceful for old cfgs lacking A.glow).
   const glow = Number.isFinite(cfg.A.glow) ? cfg.A.glow : 1.0;
   bH.u.uGlow.value = glow; bA.u.uGlow.value = glow;
@@ -1081,7 +1242,7 @@ function renderFrame(t) {
 }
 // Force the A smoothing to SNAP on the next computeA (used after a scrub or a
 // slider change so the eased grids don't lag behind a jump-cut / new setting).
-function snapASmoothing() { A_smoothReset = true; }
+function snapASmoothing() { A_smoothReset = true; focusReset = true; }
 
 // ---- resize -----------------------------------------------------------------
 function onResize() {
@@ -1243,6 +1404,8 @@ const LAYER_DEFS = [
     { id: 'sharp', label: 'резкость ▸ контраст', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'floor', label: 'порог ▸ скрыть низ', min: 0, max: 0.8, step: 0.02, fmt: (v) => v.toFixed(2) },
     { id: 'lap', label: 'нахлёст ▸ перекрытие', min: 0, max: 0.4, step: 0.01, fmt: (v) => v.toFixed(2) },
+    { id: 'xgW', label: 'xG ▸ ширина шпиля', min: 0.2, max: 4, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'xgH', label: 'xG ▸ высота шпиля', min: 0, max: 4, step: 0.05, fmt: (v) => v.toFixed(2) },
   ], contribHead: 'ПОДЪЁМ ИЗ:', contributors: [
     { on: 'cOwn',  w: 'wOwn',  label: 'Владение' },
     { on: 'cXg',   w: 'wXg',   label: 'Удары · xG' },
