@@ -98,6 +98,17 @@
       color: var(--ink-dim); border-radius: 7px; padding: 5px 10px; font-size: 12px; letter-spacing: 0.03em; }
     .pill.on { background: rgba(106,160,255,0.22); border-color: rgba(106,160,255,0.6); color: #cfe2ff; }
 
+    /* ---- A contributor rows: checkbox + label, then a weight slider below ---- */
+    .contrib { display: flex; flex-direction: column; gap: 5px; }
+    .contrib.off { opacity: 0.45; }
+    .contrib-head { display: flex; align-items: center; gap: 9px; }
+    .contrib-head label { flex: 1; min-width: 0; text-transform: none; letter-spacing: 0.02em; font-size: 13px; cursor: pointer; }
+    .lck.sm { width: 17px; height: 17px; border-radius: 4px; }
+    .lck.sm.on { background: #6aa0ff; border-color: #6aa0ff; }
+    .lck.sm.on::after { content: '✓'; position: absolute; inset: 0; display: flex; align-items: center;
+      justify-content: center; color: #04060c; font-size: 12px; font-weight: 800; }
+    .wslider { width: 100%; }
+
     .grp { margin-top: 2px; color: #9fd; font-size: 12px; letter-spacing: 0.14em;
       text-transform: uppercase; border-top: 1px solid var(--stroke); padding-top: 8px; }
     .btn { cursor: pointer; border: 1px solid var(--stroke); background: rgba(255,255,255,0.05);

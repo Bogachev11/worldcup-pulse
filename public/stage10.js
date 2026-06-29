@@ -72,10 +72,24 @@ const teamColor = (team) => (team === 'away' ? COL_AWAY : COL_HOME);
 // ============================================================================
 const DEFAULTS = () => ({
   speed: 0.9,
-  // A · activity terrain (macro relief)
+  // A · TWO TEAM BLANKETS (одеяла) — one cloth per team, meeting at an
+  //  activity-shaped front with a small НАХЛЁСТ overlap. Height per team = amplitude
+  //  · Σ ENABLED contributors through the asymmetric atk/rel envelope on the grid.
   //  height=amplitude, atk=attack/rise τ, rel=release/decay τ, grid=detail,
-  //  blur=smoothing, colour=intensity, sharp=hill contrast/gamma, floor=threshold.
-  A: { on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 1.0, colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0 },
+  //  blur=smoothing, colour=intensity, sharp=hill contrast/gamma, floor=threshold,
+  //  lap=НАХЛЁСТ overlap band. cOWN..cALL = contributor on/off; wOWN..wALL = weights.
+  A: {
+    on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 1.0,
+    colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0, lap: 0.08,
+    // contributors (☑ default = true): which signals RAISE a team's blanket
+    cOwn: true,  wOwn: 1.0,   // Владение — on-ball control density
+    cXg: true,   wXg: 1.0,    // Удары · xG — sharp tall crest at the shot, ×xg
+    cProg: true, wProg: 1.0,  // Продвижение — final-third / box entries, forward passes
+    cPass: false, wPass: 1.0, // Пасы — pass density
+    cDuel: false, wDuel: 1.0, // Единоборства — Tackle/Aerial/Challenge/Interception/Dispossessed
+    cDrib: false, wDrib: 1.0, // Обводки — TakeOn
+    cAll: false,  wAll: 1.0,  // Общая активность — all events
+  },
   // B · pass relief (fine overlay)
   //  height=amplitude, atk=attack/rise τ, rel=release/decay τ, aggr=aggregation,
   //  longw=long-pass weight, opacity=intensity, sharp=contrast/gamma.
@@ -204,8 +218,10 @@ function makeGradientTexture() {
 }
 
 // ============================================================================
-// SHARED CLOTH — a single thin sheet displaced by heightTex, coloured by colTex.
-// Both textures are written every frame from the enabled FIELD layers (A + B).
+// SHARED CLOTH (Layer B surface) — a single thin sheet displaced by heightTex,
+// coloured by colTex. Written from layer B; also carries the combined A+B height
+// so C/D accents + cometY ride the visible surface. Layer A renders as two
+// SEPARATE team blankets (see buildTeamBlankets) composited over this.
 // ============================================================================
 function buildCloth() {
   const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, GX, GY);
@@ -223,6 +239,7 @@ function buildCloth() {
 
   material = new THREE.MeshStandardMaterial({
     color: 0xffffff, roughness: 0.95, metalness: 0.12, envMapIntensity: 1.1,
+    transparent: true,
   });
   const u = {
     uHeight: { value: heightTex },
@@ -260,16 +277,12 @@ function buildCloth() {
       `#include <color_fragment>
       {
         vec4 cd = texture2D(uColTex, vUvN);
-        // cd.rgb = team-tinted colour already blended on the CPU; cd.a = brightness gate.
-        // The whole sheet is a draped BLANKET: clay where unowned, tinted toward the
-        // owning team where territory leans. Keep clay visible (never bare black) so
-        // the full drape reads as fabric across the entire pitch.
         vec3 baseCol = mix(uClay, cd.rgb, clamp(length(cd.rgb)*1.6, 0.0, 1.0));
-        baseCol *= mix(0.78, 1.18, clamp(cd.a, 0.0, 1.0));   // gentle possession brightness gate
-        // valley AO so the relief reads as volume
+        baseCol *= mix(0.78, 1.18, clamp(cd.a, 0.0, 1.0));
         float lowAO = 1.0 - smoothstep(0.0, 0.6, vHd);
         baseCol *= clamp(1.0 - 0.3*lowAO, 0.5, 1.0);
         diffuseColor.rgb = baseCol;
+        diffuseColor.a *= clamp(cd.a, 0.0, 1.0);   // B fades out where it has no relief
       }`);
     shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>',
       `#include <emissivemap_fragment>
@@ -280,12 +293,90 @@ function buildCloth() {
       }`);
   };
   mesh = new THREE.Mesh(geo, material);
-  mesh.castShadow = true; mesh.receiveShadow = true;
+  mesh.castShadow = true; mesh.receiveShadow = true; mesh.renderOrder = 0;
   scene.add(mesh);
 
+  buildTeamBlankets();
   buildPitchPlane();
   buildAccentLayer();
   buildCometLayer();
+}
+
+// ============================================================================
+// A · TWO TEAM BLANKETS — one full-pitch cloth per team. Each has its own height
+// texture (from its enabled contributors) and a coverage(alpha) texture (crisp
+// front from local presence share, extended by НАХЛЁСТ so the two laps overlap).
+// Solid team colour where covered, transparent where the opponent owns. The
+// taller team's sheet laps ON TOP (set per-frame via renderOrder).
+// ============================================================================
+let blankets = null;  // { home:{mesh,hData,hTex,aData,aTex,u}, away:{...} }
+function makeBlanket(teamCol) {
+  const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, GX, GY);
+  geo.rotateX(-Math.PI / 2);
+  const hData = new Float32Array(NV);
+  const hTex = new THREE.DataTexture(hData, VX, VY, THREE.RedFormat, THREE.FloatType);
+  hTex.magFilter = THREE.LinearFilter; hTex.minFilter = THREE.LinearFilter; hTex.needsUpdate = true;
+  const aData = new Float32Array(NV);    // coverage alpha 0..1
+  const aTex = new THREE.DataTexture(aData, VX, VY, THREE.RedFormat, THREE.FloatType);
+  aTex.magFilter = THREE.LinearFilter; aTex.minFilter = THREE.LinearFilter; aTex.needsUpdate = true;
+
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xffffff, roughness: 0.92, metalness: 0.1, envMapIntensity: 1.1,
+    transparent: true, depthWrite: true, side: THREE.DoubleSide,
+  });
+  const u = {
+    uHeight: { value: hTex }, uCov: { value: aTex },
+    uTexel: { value: new THREE.Vector2(1 / VX, 1 / VY) },
+    uBaseline: { value: 0 }, uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
+    uTeam: { value: new THREE.Color(teamCol) },
+  };
+  mat.userData.u = u;
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, u);
+    shader.vertexShader = `
+      uniform sampler2D uHeight; uniform vec2 uTexel; uniform float uBaseline; uniform vec2 uWorld;
+      varying float vHd; varying vec2 vUvN;
+      float HB(vec2 uv){ float h = texture2D(uHeight, uv).r; if(!(h==h)) h=0.0; return h; }
+    ` + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace('#include <beginnormal_vertex>',
+      `#include <beginnormal_vertex>
+        vUvN = uv;
+        float hl = HB(uv - vec2(uTexel.x,0.0)); float hr = HB(uv + vec2(uTexel.x,0.0));
+        float hd = HB(uv - vec2(0.0,uTexel.y)); float hu = HB(uv + vec2(0.0,uTexel.y));
+        float dx = (uWorld.x*uTexel.x)*2.0; float dz = (uWorld.y*uTexel.y)*2.0;
+        objectNormal = normalize(vec3(-(hr-hl)/max(dx,1e-4), 1.0, -(hu-hd)/max(dz,1e-4)));`);
+    shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>',
+      `#include <begin_vertex>
+        float hb = HB(uv); vHd = hb; transformed.y += (hb - uBaseline);`);
+    shader.fragmentShader = `
+      uniform sampler2D uCov; uniform vec3 uTeam;
+      varying float vHd; varying vec2 vUvN;
+    ` + shader.fragmentShader;
+    shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>',
+      `#include <color_fragment>
+      {
+        // solid team colour; height adds a little luminance so crests read.
+        vec3 col = uTeam * (0.82 + 0.5 * clamp(vHd*0.5, 0.0, 1.0));
+        float lowAO = 1.0 - smoothstep(0.0, 0.6, vHd);
+        col *= clamp(1.0 - 0.28*lowAO, 0.55, 1.0);
+        diffuseColor.rgb = col;
+        float cov = texture2D(uCov, vUvN).r;       // crisp coverage mask
+        diffuseColor.a *= clamp(cov, 0.0, 1.0);
+      }`);
+    shader.fragmentShader = shader.fragmentShader.replace('#include <alphatest_fragment>',
+      `if (diffuseColor.a < 0.02) discard;
+       #include <alphatest_fragment>`);
+    shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>',
+      `#include <emissivemap_fragment>
+       { float hot = smoothstep(1.2, 4.0, vHd); totalEmissiveRadiance += uTeam * hot * 0.5; }`);
+  };
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true; m.receiveShadow = true;
+  scene.add(m);
+  return { mesh: m, hData, hTex, aData, aTex, u };
+}
+function buildTeamBlankets() {
+  blankets = { home: makeBlanket(FRA_HEX), away: makeBlanket(SEN_HEX) };
 }
 
 // ---- STATIC PITCH-MARKINGS PLANE at y=0 (from stage9) -----------------------
@@ -377,6 +468,11 @@ const ONBALL_TYPES = new Set([
   'KeeperPickup', 'Save', 'CornerAwarded', 'ShieldBallOpp', 'Goal',
   'SavedShot', 'MissedShots', 'ShotOnPost',
 ]);
+
+// ---- Layer-A contributor classification (which events raise a team blanket) --
+// Possession/control = on-ball touches the team keeps. Duels = contests.
+const POSSESSION_TYPES = new Set(['Pass', 'BallTouch', 'TakeOn', 'BallRecovery', 'KeeperPickup', 'ShieldBallOpp', 'Goal']);
+const DUEL_A_TYPES = new Set(['Tackle', 'Aerial', 'Challenge', 'Interception', 'Dispossessed']);
 function buildBallLocus(tl) {
   const anchors = [];
   const onball = tl.filter((it) => ONBALL_TYPES.has(it.type) || it.isTouch);
@@ -429,13 +525,19 @@ function gridDims(t01, minC, maxC) {
 }
 
 // scratch buffers (reallocated only when a grid resolution changes)
-let A_gx = 0, A_gy = 0, A_h = null, A_hH = null, A_hA = null, A_poss = null;
+// A is now TWO team blankets: per-team HEIGHT grids (hH/hA — from enabled
+// contributors) + per-team PRESENCE grids (pH/pA — control density, drives the
+// coverage mask / front, independent of which height contributors are ticked).
+let A_gx = 0, A_gy = 0, A_hH = null, A_hA = null, A_pH = null, A_pA = null;
+let A_xH = null, A_xA = null;     // xG SHARP crests (kept separate so they stay tall)
 let B_gx = 0, B_gy = 0, B_h = null, B_hH = null, B_hA = null;
 
 function ensureA(gx, gy) {
   if (gx === A_gx && gy === A_gy) return;
   A_gx = gx; A_gy = gy; const n = gx * gy;
-  A_h = new Float32Array(n); A_hH = new Float32Array(n); A_hA = new Float32Array(n); A_poss = new Float32Array(n);
+  A_hH = new Float32Array(n); A_hA = new Float32Array(n);
+  A_pH = new Float32Array(n); A_pA = new Float32Array(n);
+  A_xH = new Float32Array(n); A_xA = new Float32Array(n);
 }
 function ensureB(gx, gy) {
   if (gx === B_gx && gy === B_gy) return;
@@ -466,24 +568,66 @@ function arWeight(a, atk, rel) {
   return rise * Math.exp(-a / rel);
 }
 
-// Recompute layer A's grid for time t. Returns true if A contributed.
+// How much one event lifts a team's blanket = Σ of the ENABLED contributors that
+// match it, each scaled by its weight. Returns { lift, sharp } where `sharp` is an
+// extra concentrated crest (xG) drawn with a tighter radius so danger reads tall.
+function contribLift(e) {
+  const A = cfg.A;
+  let lift = 0, sharp = 0;
+  const isShot = e.kind === 'shot';
+  if (A.cOwn && (POSSESSION_TYPES.has(e.type) || e.isTouch)) lift += A.wOwn * 1.0;
+  if (A.cPass && e.kind === 'pass') lift += A.wPass * 1.0;
+  if (A.cDuel && DUEL_A_TYPES.has(e.type)) lift += A.wDuel * 1.0;
+  if (A.cDrib && e.type === 'TakeOn') lift += A.wDrib * 1.0;
+  if (A.cAll) lift += A.wAll * 0.6;
+  if (A.cProg) {
+    // progression: forward passes + final-third / box entries (endX advanced vs x)
+    if (Number.isFinite(e.eu)) {
+      const adv = e.eu - e.u;                       // toward attacking goal (u→1 in shared frame for the team)
+      if (adv > 0.04) lift += A.wProg * (1.2 * clamp(adv * 2.5, 0, 1) + (e.eu > 0.66 ? 0.5 : 0));
+    }
+  }
+  if (A.cXg && isShot) {
+    // sharp tall crest at the shot, scaled by xg; goals tallest. Kept SEPARATE
+    // (A_xH/A_xA) so it stays a tall spire above the gentle swells.
+    const xg = clamp(e.xg || 0, 0, 1);
+    sharp += A.wXg * (1.0 + 4.5 * xg + (e.isGoal ? 2.5 : 0));
+  }
+  return { lift, sharp };
+}
+
+// Recompute the TWO team A grids for time t (height + presence). Returns whether
+// any A activity fell in the window.
 function computeA(t) {
   const atk = Math.max(0.02, cfg.A.atk);
   const rel = Math.max(0.1, cfg.A.rel);
   // coarse → fine. grid 0 = ~14 cells long, grid 1 = ~34.
   const { gx, gy } = gridDims(cfg.A.grid, 14, 34);
   ensureA(gx, gy);
-  A_h.fill(0); A_hH.fill(0); A_hA.fill(0); A_poss.fill(0);
-  // base radius from detail; smoothing (blur) widens the stamp on top.
+  A_hH.fill(0); A_hA.fill(0); A_pH.fill(0); A_pA.fill(0); A_xH.fill(0); A_xA.fill(0);
+  // base radius from detail; smoothing (blur) widens the swells; the xG crest uses
+  // a much tighter radius so the chance reads as a sharp spire, not a swell.
   const radCells = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1)) * lerp(0.6, 2.2, clamp(cfg.A.blur, 0, 1));
-  // window covers the release tail (plus a little attack ramp-in head room).
+  const sharpRad = Math.max(0.7, radCells * 0.3);
   const win = eventsInWindow(t, rel * 5 + atk * 3);
   for (const e of win) {
-    const w = arWeight(t - e.t, atk, rel);
-    if (w < 0.02) continue;
-    stamp(A_h, gx, gy, e.u, e.v, w, radCells);
-    if (e.team === 'home') stamp(A_hH, gx, gy, e.u, e.v, w, radCells);
-    else if (e.team === 'away') stamp(A_hA, gx, gy, e.u, e.v, w, radCells);
+    const env = arWeight(t - e.t, atk, rel);
+    if (env < 0.02) continue;
+    const isH = e.team === 'home';
+    if (!isH && e.team !== 'away') continue;
+    const Hgrid = isH ? A_hH : A_hA, Pgrid = isH ? A_pH : A_pA, Xgrid = isH ? A_xH : A_xA;
+    // PRESENCE (coverage/front) — on-ball control + every touch, weighted by env.
+    if (POSSESSION_TYPES.has(e.type) || e.isTouch || e.kind === 'pass') stamp(Pgrid, gx, gy, e.u, e.v, env, radCells);
+    else stamp(Pgrid, gx, gy, e.u, e.v, env * 0.5, radCells);
+    // HEIGHT — gentle swells from the enabled contributors.
+    const { lift, sharp } = contribLift(e);
+    if (lift > 0) stamp(Hgrid, gx, gy, e.u, e.v, lift * env, radCells);
+    if (sharp > 0) {
+      // xG crest: tall, tight, kept separate; also FORCE coverage at the shot so
+      // the danger spire is never masked away even if the team has little presence.
+      stamp(Xgrid, gx, gy, e.u, e.v, sharp * env, sharpRad);
+      stamp(Pgrid, gx, gy, e.u, e.v, env * 2.0, sharpRad * 1.4);
+    }
   }
   return win.length > 0;
 }
@@ -526,84 +670,121 @@ function sampleGrid(grid, gx, gy, u, v) {
   return lerp(lerp(a, b, tx), lerp(c, d, tx), ty);
 }
 
-// Rebuild the mesh height+colour textures from the enabled field layers at time t.
+// Rebuild the field surfaces at time t: TWO team A blankets (height + crisp
+// coverage) plus the shared B relief. Folds A+B into heightData so accents ride.
 function computeField(t) {
   const aOn = cfg.A.on, bOn = cfg.B.on;
-  let aMax = 1e-4, bMax = 1e-4;
-  if (aOn) { computeA(t); for (let k = 0; k < A_h.length; k++) aMax = Math.max(aMax, A_h[k]); }
+  let bMax = 1e-4;
+  if (aOn) computeA(t);
   if (bOn) { computeB(t); for (let k = 0; k < B_h.length; k++) bMax = Math.max(bMax, B_h[k]); }
 
-  // who is on the ball now → global possession brightness baseline
   const ball = ballAt(t);
   const cH = COL_HOME, cA = COL_AWAY;
-  // fabric wobble phase — gentle undulation so the blanket drapes/breathes like
-  // cloth (stage7/stage9 feel). Wall-clock based; scrub-safe (no data dependence).
+  // fabric wobble phase — gentle undulation so each blanket drapes like cloth.
   const ph = (typeof performance !== 'undefined' ? performance.now() : Date.now()) * 0.00018;
-  // A's always-present base sheet: a low blanket the whole pitch sits on, scaled
-  // by amplitude so relief rides ON TOP of an ever-present drape (never bare pitch).
-  const A_BASE = 0.55 * clamp(cfg.A.height, 0, 3);
-  const A_WOBBLE = 0.18 * clamp(cfg.A.height, 0, 3);
-  let idx = 0, sumH = 0;
+  const amp = clamp(cfg.A.height, 0, 3);
+  const A_BASE = 0.5 * amp;            // always-present low drape per team
+  const A_WOBBLE = 0.16 * amp;
+  const flr = clamp(cfg.A.floor, 0, 0.9);
+  const gamma = clamp(cfg.A.sharp, 0.3, 4);
+  const lap = clamp(cfg.A.lap, 0, 0.45);    // НАХЛЁСТ: extend coverage past the 50% front
+
+  // normalisation for the two A height grids (shared so relative team height is honest)
+  let aMax = 1e-4;
+  if (aOn) {
+    for (let k = 0; k < A_hH.length; k++) { if (A_hH[k] > aMax) aMax = A_hH[k]; if (A_hA[k] > aMax) aMax = A_hA[k]; }
+  }
+
+  const bH = blankets.home, bA = blankets.away;
+  let idx = 0, sumH = 0, sumHH = 0, sumHA = 0, nCovH = 0, nCovA = 0;
+  let totH = 0, totA = 0;   // total raised mass per team (decides who laps on top)
   for (let j = 0; j < VY; j++) {
     const v = j / (VY - 1);
     for (let i = 0; i < VX; i++, idx++) {
       const u = i / (VX - 1);
-      let h = 0;
-      let rr = 0, gg = 0, bb = 0, gate = 0.5;
+      const wob = Math.sin(u * 6.1 + ph) * Math.cos(v * 5.3 - ph * 0.8)
+                + 0.5 * Math.sin((u + v) * 9.7 - ph * 1.3);
+
+      // ---- Layer A: per-team blanket height + crisp coverage ----
+      let hH = 0, hA = 0, covH = 0, covA = 0;
       if (aOn) {
-        // --- ALWAYS-PRESENT DRAPE: base blanket + soft fabric wobble everywhere ---
-        const wob = Math.sin(u * 6.1 + ph) * Math.cos(v * 5.3 - ph * 0.8)
-                  + 0.5 * Math.sin((u + v) * 9.7 - ph * 1.3);
-        h += A_BASE + A_WOBBLE * wob;
-        // --- RELIEF on top: normalised activity ---
-        let a = sampleGrid(A_h, A_gx, A_gy, u, v) / aMax;         // 0..1
-        // floor/threshold: hide low activity, then renormalise the remainder.
-        const flr = clamp(cfg.A.floor, 0, 0.9);
-        a = flr > 0 ? clamp((a - flr) / (1 - flr), 0, 1) : a;
-        // sharpness = gamma on the normalised activity (peaky >1 ↔ soft <1).
-        if (cfg.A.sharp !== 1) a = Math.pow(a, clamp(cfg.A.sharp, 0.3, 4));
-        h += a * 2.2 * cfg.A.height;
-        // --- FULL-PITCH COLOUR: tint the WHOLE blanket by local territory ---
-        // dominance (decaying home/away share). Even low-activity zones carry a
-        // faint blanket tint toward whoever leans there; the shader relaxes to clay
-        // where no side clearly owns (low colour weight → uClay shows through).
-        const hh = sampleGrid(A_hH, A_gx, A_gy, u, v);
-        const ha = sampleGrid(A_hA, A_gx, A_gy, u, v);
-        const tot = hh + ha;
-        const awayShare = tot > 1e-5 ? ha / tot : 0.5;
-        const dom = tot > 1e-5 ? Math.abs(awayShare - 0.5) * 2 : 0;   // 0 neutral → 1 owned
-        const ci = clamp(cfg.A.colour, 0, 2);
-        const localR = lerp(cH.r, cA.r, awayShare), localG = lerp(cH.g, cA.g, awayShare), localB = lerp(cH.b, cA.b, awayShare);
-        // blanket colour weight: a faint floor everywhere it leans + stronger over
-        // activity peaks. Keeps the whole sheet coloured, not just the hills.
-        const w = clamp((0.18 * dom + 0.9 * a) * ci, 0, 1);
-        rr += localR * w; gg += localG * w; bb += localB * w;
+        // height from contributors (per team), normalised + floor + gamma
+        let rH = sampleGrid(A_hH, A_gx, A_gy, u, v) / aMax;
+        let rA = sampleGrid(A_hA, A_gx, A_gy, u, v) / aMax;
+        if (flr > 0) { rH = clamp((rH - flr) / (1 - flr), 0, 1); rA = clamp((rA - flr) / (1 - flr), 0, 1); }
+        if (gamma !== 1) { rH = Math.pow(rH, gamma); rA = Math.pow(rA, gamma); }
+        // xG SHARP crest added ON TOP of the swell (not normalised/floored) so a
+        // chance reads as a tall spire well above the GENTLE control swells: swells
+        // are kept low (×1.5) and the crest towers (×2.6, uncapped by xg).
+        const xH = sampleGrid(A_xH, A_gx, A_gy, u, v);
+        const xA = sampleGrid(A_xA, A_gx, A_gy, u, v);
+        hH = A_BASE + A_WOBBLE * wob + rH * 1.5 * amp + xH * 2.6 * amp;
+        hA = A_BASE + A_WOBBLE * wob + rA * 1.5 * amp + xA * 2.6 * amp;
+        // coverage from PRESENCE share — CRISP front (steep), extended by lap.
+        const pH = sampleGrid(A_pH, A_gx, A_gy, u, v);
+        const pA = sampleGrid(A_pA, A_gx, A_gy, u, v);
+        const tot = pH + pA;
+        if (tot > 1e-4) {
+          const shareH = pH / tot;                 // 0..1
+          // crisp edge: steep smoothstep around 0.5, shifted out by `lap` so both
+          // sheets cover a small shared band (the overlap).
+          covH = smoothstepC(0.5 - lap - 0.05, 0.5 - lap + 0.05, shareH);
+          covA = smoothstepC(0.5 - lap - 0.05, 0.5 - lap + 0.05, 1 - shareH);
+          // require a minimum presence so empty pitch stays bare (no full-pitch wash)
+          const pres = clamp(tot * 6, 0, 1);
+          covH *= pres; covA *= pres;
+        }
+        totH += rH + xH * 1.5; totA += rA + xA * 1.5;   // crest weighs into who laps on top
+        if (covH > 0.5) { sumHH += hH; nCovH++; }
+        if (covA > 0.5) { sumHA += hA; nCovA++; }
       }
+      bH.hData[idx] = hH; bH.aData[idx] = covH;
+      bA.hData[idx] = hA; bA.aData[idx] = covA;
+
+      // ---- combined A height (max of covered team blankets) for cometY/baseline ----
+      let hCombined = Math.max(covH > 0.05 ? hH : 0, covA > 0.05 ? hA : 0);
+
+      // ---- Layer B: shared relief mesh (unchanged behaviour) ----
+      let h = 0, rr = 0, gg = 0, bb = 0;
       if (bOn) {
         let b = sampleGrid(B_h, B_gx, B_gy, u, v) / bMax;
-        if (cfg.B.sharp !== 1) b = Math.pow(b, clamp(cfg.B.sharp, 0.3, 4));  // contrast/gamma
+        if (cfg.B.sharp !== 1) b = Math.pow(b, clamp(cfg.B.sharp, 0.3, 4));
         h += b * 1.4 * cfg.B.height;
-        // B tints toward its own local dominant team too, but weaker
         const hh = sampleGrid(B_hH, B_gx, B_gy, u, v);
         const ha = sampleGrid(B_hA, B_gx, B_gy, u, v);
         const tot = hh + ha;
         const awayShare = tot > 1e-5 ? ha / tot : 0.5;
-        const w = clamp(b * 0.6 * clamp(cfg.B.opacity, 0, 2), 0, 1);        // opacity/intensity
+        const w = clamp(b * 0.6 * clamp(cfg.B.opacity, 0, 2), 0, 1);
         rr += lerp(cH.r, cA.r, awayShare) * w; gg += lerp(cH.g, cA.g, awayShare) * w; bb += lerp(cH.b, cA.b, awayShare) * w;
       }
-      // brightness gate: the on-ball team's side glows a touch brighter near the locus
-      const dl = Math.hypot(u - ball.u, v - ball.v);
-      gate = 0.5 + 0.5 * Math.exp(-(dl * dl) / (2 * 0.18 * 0.18));
-      heightData[idx] = h; sumH += h;
+      const gate = clamp(h, 0, 1);
+      heightData[idx] = Math.max(h, hCombined); sumH += heightData[idx];
       colData[idx * 4] = rr; colData[idx * 4 + 1] = gg; colData[idx * 4 + 2] = bb; colData[idx * 4 + 3] = gate;
     }
   }
-  heightBaseline = (sumH / NV);
+  heightBaseline = sumH / NV;
+  // shared B mesh
   material.userData.u.uBaseline.value = heightBaseline;
-  material.userData.u.uHScale.value = 1.0;
   heightTex.needsUpdate = true; colTex.needsUpdate = true;
-  mesh.visible = aOn || bOn;
+  mesh.visible = bOn;
+  // team blankets: baseline subtract per team (mean of that team's height) so each
+  // straddles ~y=0 like the old drape; the currently TALLER team laps on top.
+  const baseH = nCovH ? sumHH / nCovH : heightBaseline;
+  const baseA = nCovA ? sumHA / nCovA : heightBaseline;
+  bH.u.uBaseline.value = baseH; bA.u.uBaseline.value = baseA;
+  bH.hTex.needsUpdate = true; bH.aTex.needsUpdate = true;
+  bA.hTex.needsUpdate = true; bA.aTex.needsUpdate = true;
+  bH.mesh.visible = aOn; bA.mesh.visible = aOn;
+  // taller (more raised mass right now) team's sheet laps ON TOP at the overlap.
+  // tiny y-offset + renderOrder + the loser writes depth first.
+  const homeOnTop = totH >= totA;
+  bH.mesh.position.y = homeOnTop ? 0.012 : 0.0;
+  bA.mesh.position.y = homeOnTop ? 0.0 : 0.012;
+  bH.mesh.renderOrder = homeOnTop ? 2 : 1;
+  bA.mesh.renderOrder = homeOnTop ? 1 : 2;
 }
+// clamped smoothstep helper (steep edge for the crisp front)
+function smoothstepC(a, b, x) { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); }
 
 // ============================================================================
 // C · LIVE LOCUS COMET — moving orb + fading trail, on-ball team colour.
@@ -867,6 +1048,10 @@ function bindGlobalUI() {
   el('clock').addEventListener('input', () => {
     clock = (+el('clock').value / 100) * teamMeta.duration; playing = false; playBtn.textContent = '▶'; _ballCursor = 0;
   });
+  // seed the slider from the loaded cfg BEFORE binding, so bindSlider's initial
+  // apply() reads the restored value instead of clobbering cfg.speed with the HTML
+  // default (the old speed-not-restored bug). syncCfgToUI later re-affirms it.
+  el('speed').value = cfg.speed;
   bindSlider('speed', 'speedV', (v) => { cfg.speed = v; writeHash(); return v.toFixed(1) + '×'; });
 
   el('resetcam').addEventListener('click', () => applyDefaultCamera());
@@ -940,6 +1125,15 @@ const LAYER_DEFS = [
     { id: 'colour', label: 'насыщ. цвета ▸ цвет', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'sharp', label: 'резкость ▸ контраст', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'floor', label: 'порог ▸ скрыть низ', min: 0, max: 0.8, step: 0.02, fmt: (v) => v.toFixed(2) },
+    { id: 'lap', label: 'нахлёст ▸ перекрытие', min: 0, max: 0.4, step: 0.01, fmt: (v) => v.toFixed(2) },
+  ], contribHead: 'ПОДЪЁМ ИЗ:', contributors: [
+    { on: 'cOwn',  w: 'wOwn',  label: 'Владение' },
+    { on: 'cXg',   w: 'wXg',   label: 'Удары · xG' },
+    { on: 'cProg', w: 'wProg', label: 'Продвижение' },
+    { on: 'cPass', w: 'wPass', label: 'Пасы' },
+    { on: 'cDuel', w: 'wDuel', label: 'Единоборства' },
+    { on: 'cDrib', w: 'wDrib', label: 'Обводки' },
+    { on: 'cAll',  w: 'wAll',  label: 'Общая активность' },
   ] },
   { key: 'B', name: 'B · пасы', controls: [
     { id: 'height', label: 'амплитуда ▸ высота', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
@@ -1016,6 +1210,34 @@ function buildLayerUI() {
       }
       body.append(tg);
     }
+    // contributor checkboxes + weight sliders (Layer A): tick which signals lift.
+    if (def.contributors) {
+      refs.contribs = {};
+      const hdr = document.createElement('div'); hdr.className = 'grp'; hdr.textContent = def.contribHead || '';
+      body.append(hdr);
+      for (const c of def.contributors) {
+        const row = document.createElement('div'); row.className = 'contrib';
+        const cbWrap = document.createElement('div'); cbWrap.className = 'contrib-head';
+        const cb = document.createElement('div'); cb.className = 'lck sm';
+        const lab = document.createElement('label'); lab.textContent = c.label;
+        cbWrap.append(cb, lab);
+        const wInp = document.createElement('input'); wInp.type = 'range';
+        wInp.min = 0; wInp.max = 3; wInp.step = 0.05; wInp.className = 'wslider';
+        row.append(cbWrap, wInp); body.append(row);
+        refs.contribs[c.on] = { cb, row };
+        refs.sliders[c.w] = { inp: wInp, val: { textContent: '' }, fmt: (v) => v.toFixed(2) };
+        cb.addEventListener('click', () => {
+          cfg[def.key][c.on] = !cfg[def.key][c.on];
+          cb.classList.toggle('on', cfg[def.key][c.on]);
+          row.classList.toggle('off', !cfg[def.key][c.on]);
+          writeHash(); _ballCursor = 0; renderFrame(clock); composer.render();
+        });
+        wInp.addEventListener('input', () => {
+          cfg[def.key][c.w] = +wInp.value;
+          writeHash(); _ballCursor = 0; renderFrame(clock); composer.render();
+        });
+      }
+    }
     wrap.append(head, body); host.append(wrap);
 
     // enable checkbox (stops the expand toggle)
@@ -1046,6 +1268,9 @@ function syncCfgToUI() {
       const s = refs.sliders[id]; s.inp.value = L[id]; s.val.textContent = s.fmt(+L[id]);
     }
     for (const id in refs.pills) refs.pills[id].classList.toggle('on', !!L[id]);
+    if (refs.contribs) for (const id in refs.contribs) {
+      const c = refs.contribs[id]; c.cb.classList.toggle('on', !!L[id]); c.row.classList.toggle('off', !L[id]);
+    }
   }
 }
 
