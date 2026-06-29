@@ -74,13 +74,13 @@ const teamColor = (team) => (team === 'away' ? COL_AWAY : COL_HOME);
 const DEFAULTS = () => ({
   speed: 0.9,
   // A · activity terrain (macro relief)
-  //  height=amplitude, tau=speed, grid=detail, blur=smoothing, colour=intensity,
-  //  sharp=hill contrast/gamma, floor=hide-low threshold.
-  A: { on: true, open: false, tau: 1.6, grid: 0.45, height: 1.0, colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0 },
+  //  height=amplitude, atk=attack/rise τ, rel=release/decay τ, grid=detail,
+  //  blur=smoothing, colour=intensity, sharp=hill contrast/gamma, floor=threshold.
+  A: { on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 1.0, colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0 },
   // B · pass relief (fine overlay)
-  //  height=amplitude, tau=speed, aggr=aggregation, longw=long-pass weight,
-  //  opacity=intensity, sharp=contrast/gamma.
-  B: { on: true, open: false, tau: 1.2, aggr: 0.5, height: 0.6, longw: 0, opacity: 1.0, sharp: 1.0 },
+  //  height=amplitude, atk=attack/rise τ, rel=release/decay τ, aggr=aggregation,
+  //  longw=long-pass weight, opacity=intensity, sharp=contrast/gamma.
+  B: { on: true, open: false, atk: 0.12, rel: 1.2, aggr: 0.5, height: 0.6, longw: 0, opacity: 1.0, sharp: 1.0 },
   // C · live locus comet
   //  hop=amplitude (ride height), size=orb size, trail=trail length (min),
   //  twidth=trail width, bright=brightness, fade=trail fade.
@@ -525,18 +525,31 @@ function stamp(grid, gx, gy, u, v, amt, radCells) {
   }
 }
 
+// Asymmetric attack/release envelope for one event at age a = t - e.t (>=0).
+// Rises toward 1 over the attack constant `atk`, then melts at the (slower)
+// release constant `rel`. Deterministic from t → scrub-safe (recomputed each
+// frame from the event window; no frame-to-frame state). When atk→0 it collapses
+// to the old pure-decay exp(-a/rel), keeping load behaviour intact.
+function arWeight(a, atk, rel) {
+  if (a < 0) return 0;
+  const rise = atk > 0.02 ? (1 - Math.exp(-a / atk)) : 1;
+  return rise * Math.exp(-a / rel);
+}
+
 // Recompute layer A's grid for time t. Returns true if A contributed.
 function computeA(t) {
-  const tau = Math.max(0.1, cfg.A.tau);
+  const atk = Math.max(0.02, cfg.A.atk);
+  const rel = Math.max(0.1, cfg.A.rel);
   // coarse → fine. grid 0 = ~14 cells long, grid 1 = ~34.
   const { gx, gy } = gridDims(cfg.A.grid, 14, 34);
   ensureA(gx, gy);
   A_h.fill(0); A_hH.fill(0); A_hA.fill(0); A_poss.fill(0);
   // base radius from detail; smoothing (blur) widens the stamp on top.
   const radCells = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1)) * lerp(0.6, 2.2, clamp(cfg.A.blur, 0, 1));
-  const win = eventsInWindow(t, tau * 5);
+  // window covers the release tail (plus a little attack ramp-in head room).
+  const win = eventsInWindow(t, rel * 5 + atk * 3);
   for (const e of win) {
-    const w = Math.exp(-(t - e.t) / tau);
+    const w = arWeight(t - e.t, atk, rel);
     if (w < 0.02) continue;
     stamp(A_h, gx, gy, e.u, e.v, w, radCells);
     if (e.team === 'home') stamp(A_hH, gx, gy, e.u, e.v, w, radCells);
@@ -548,17 +561,18 @@ function computeA(t) {
 // Recompute layer B's grid (finer pass relief). aggr 0 = each pass a small sharp
 // bump; aggr 1 = broad smoothed density.
 function computeB(t) {
-  const tau = Math.max(0.1, cfg.B.tau);
+  const atk = Math.max(0.02, cfg.B.atk);
+  const rel = Math.max(0.1, cfg.B.rel);
   const { gx, gy } = gridDims(1, 40, 40);     // B is always fine
   ensureB(gx, gy);
   B_h.fill(0); B_hH.fill(0); B_hA.fill(0);
   // aggregation knob → stamp radius (sharp small bumps ↔ smoothed density)
   const radCells = lerp(0.9, 4.2, clamp(cfg.B.aggr, 0, 1));
   const amp = lerp(1.0, 0.55, clamp(cfg.B.aggr, 0, 1));   // keep total mass ~steady
-  const win = eventsInWindow(t, tau * 5);
+  const win = eventsInWindow(t, rel * 5 + atk * 3);
   for (const e of win) {
     if (e.kind !== 'pass') continue;
-    let w = Math.exp(-(t - e.t) / tau) * amp;
+    let w = arWeight(t - e.t, atk, rel) * amp;
     if (w < 0.02) continue;
     if (cfg.B.longw > 0) {                                  // optional long-pass weighting
       const lenW = 1 + cfg.B.longw * (e.long ? 1.2 : clamp(e.len / 40, 0, 1));
@@ -992,7 +1006,8 @@ function bindSlider(id, valId, fn) {
 const LAYER_DEFS = [
   { key: 'A', name: 'A · активность', controls: [
     { id: 'height', label: 'амплитуда ▸ высота', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'tau', label: 'скорость τ ▸ затухание', min: 0.5, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
+    { id: 'atk', label: 'скорость ▸ нарастание', min: 0.02, max: 2, step: 0.02, fmt: (v) => v.toFixed(2) },
+    { id: 'rel', label: 'затухание ▸ спад', min: 0.3, max: 5, step: 0.1, fmt: (v) => v.toFixed(1) },
     { id: 'grid', label: 'детализация ▸ грид', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
     { id: 'blur', label: 'сглаживание ▸ размытие', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
     { id: 'colour', label: 'насыщ. цвета ▸ цвет', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
@@ -1001,7 +1016,8 @@ const LAYER_DEFS = [
   ] },
   { key: 'B', name: 'B · пасы', controls: [
     { id: 'height', label: 'амплитуда ▸ высота', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'tau', label: 'скорость τ ▸ затухание', min: 0.3, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
+    { id: 'atk', label: 'скорость ▸ нарастание', min: 0.02, max: 2, step: 0.02, fmt: (v) => v.toFixed(2) },
+    { id: 'rel', label: 'затухание ▸ спад', min: 0.3, max: 5, step: 0.1, fmt: (v) => v.toFixed(1) },
     { id: 'aggr', label: 'слитность ▸ агрегация', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
     { id: 'longw', label: 'вес длинных ▸ длина', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'opacity', label: 'интенсивность ▸ цвет', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
@@ -1027,11 +1043,11 @@ const LAYER_DEFS = [
   ] },
   { key: 'K', name: '★ контратаки', controls: [
     { id: 'height', label: 'амплитуда ▸ высота', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'sharp', label: 'резкость ▸ снап', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'sharp', label: 'скорость ▸ нарастание', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'fade', label: 'затухание ▸ спад', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'width', label: 'ширина ▸ толщина', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'pct', label: 'чувствит. % ▸ порог', min: 0.15, max: 0.7, step: 0.01, fmt: (v) => Math.round(v * 100) + '%', recount: true },
     { id: 'secs', label: 'окно ▸ секунды', min: 4, max: 25, step: 1, fmt: (v) => v.toFixed(0) + 's', recount: true },
-    { id: 'fade', label: 'затухание ▸ время жизни', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
   ] },
 ];
 
