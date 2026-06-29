@@ -81,6 +81,11 @@ const DEFAULTS = () => ({
   A: {
     on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 1.0,
     colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0, lap: 0.08,
+    // ЯРКОСТЬ ЦВЕТА — emissive strength of the FLAT painted territory. The
+    // coverage colour lies flat on the pitch (no tall body), so under scene
+    // lighting it would render dark; this glow term makes it read VIVID team
+    // colour regardless of height. 0 = lit only, ~1 = strong glow.
+    glow: 1.0,
     // ФОКУС ▸ зона игры — radius of the spatial focus mask that anchors the
     // HEIGHT relief to the single live play locus (ballAt(t)). Tight = one
     // coherent swell where play is; wide → approaches the old free-form field.
@@ -334,6 +339,7 @@ function makeBlanket(teamCol) {
     uTexel: { value: new THREE.Vector2(1 / VX, 1 / VY) },
     uBaseline: { value: 0 }, uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
     uTeam: { value: new THREE.Color(teamCol) },
+    uGlow: { value: 1.0 },     // ЯРКОСТЬ ЦВЕТА — emissive strength of flat territory
   };
   mat.userData.u = u;
   mat.onBeforeCompile = (shader) => {
@@ -354,16 +360,15 @@ function makeBlanket(teamCol) {
       `#include <begin_vertex>
         float hb = HB(uv); vHd = hb; transformed.y += (hb - uBaseline);`);
     shader.fragmentShader = `
-      uniform sampler2D uCov; uniform vec3 uTeam;
+      uniform sampler2D uCov; uniform vec3 uTeam; uniform float uGlow;
       varying float vHd; varying vec2 vUvN;
     ` + shader.fragmentShader;
     shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>',
       `#include <color_fragment>
       {
-        // solid team colour; height adds a little luminance so crests read.
-        vec3 col = uTeam * (0.82 + 0.5 * clamp(vHd*0.5, 0.0, 1.0));
-        float lowAO = 1.0 - smoothstep(0.0, 0.6, vHd);
-        col *= clamp(1.0 - 0.28*lowAO, 0.55, 1.0);
+        // FLAT painted territory: solid team colour, height adds a touch of
+        // luminance only on the (rare) raised hill so the crest still reads.
+        vec3 col = uTeam * (0.9 + 0.35 * clamp(vHd*0.5, 0.0, 1.0));
         diffuseColor.rgb = col;
         float cov = texture2D(uCov, vUvN).r;       // crisp coverage mask
         diffuseColor.a *= clamp(cov, 0.0, 1.0);
@@ -373,7 +378,17 @@ function makeBlanket(teamCol) {
        #include <alphatest_fragment>`);
     shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>',
       `#include <emissivemap_fragment>
-       { float hot = smoothstep(1.2, 4.0, vHd); totalEmissiveRadiance += uTeam * hot * 0.5; }`);
+       {
+         // The territory lies FLAT on the pitch, so lit shading alone renders it
+         // dark. Drive a strong EMISSIVE = team colour × coverage × glow so the
+         // flat paint glows its team colour vividly regardless of height. The one
+         // raised hill (+xG spire) gets an extra hot boost so crests still pop.
+         float cov = texture2D(uCov, vUvN).r;
+         vec3 emit = uTeam * clamp(cov, 0.0, 1.0) * (0.9 * uGlow);
+         float hot = smoothstep(0.5, 3.0, vHd);
+         emit += uTeam * hot * (0.6 * uGlow);
+         totalEmissiveRadiance += emit;
+       }`);
   };
   const m = new THREE.Mesh(geo, mat);
   m.castShadow = true; m.receiveShadow = true;
@@ -535,6 +550,11 @@ function gridDims(t01, minC, maxC) {
 // coverage mask / front, independent of which height contributors are ticked).
 let A_gx = 0, A_gy = 0, A_hH = null, A_hA = null, A_pH = null, A_pA = null;
 let A_xH = null, A_xA = null;     // xG SHARP crests (kept separate so they stay tall)
+// temporally-SMOOTHED copies of the per-team height/presence grids. Each frame
+// the freshly computed grids are lerped INTO these (see smoothA), and rendering
+// reads from these — so the surface + colour edges glide instead of twitching.
+let A_shH = null, A_shA = null, A_spH = null, A_spA = null, A_sxH = null, A_sxA = null;
+let A_smoothReset = true;         // first frame after a grid resize: snap, don't lerp
 let B_gx = 0, B_gy = 0, B_h = null, B_hH = null, B_hA = null;
 
 function ensureA(gx, gy) {
@@ -543,6 +563,26 @@ function ensureA(gx, gy) {
   A_hH = new Float32Array(n); A_hA = new Float32Array(n);
   A_pH = new Float32Array(n); A_pA = new Float32Array(n);
   A_xH = new Float32Array(n); A_xA = new Float32Array(n);
+  A_shH = new Float32Array(n); A_shA = new Float32Array(n);
+  A_spH = new Float32Array(n); A_spA = new Float32Array(n);
+  A_sxH = new Float32Array(n); A_sxA = new Float32Array(n);
+  A_smoothReset = true;
+}
+// Ease each smoothed grid toward the freshly computed one. `k` is the per-frame
+// blend (0..1); small k = calmer. On a resize / scrub we SNAP (k=1) once so a
+// jump-cut doesn't smear. Scrub-safety: the smoothing is purely cosmetic glide
+// on top of the deterministic per-t fields.
+function smoothA(k) {
+  const kk = A_smoothReset ? 1 : clamp(k, 0, 1);
+  A_smoothReset = false;
+  for (let i = 0; i < A_hH.length; i++) {
+    A_shH[i] += (A_hH[i] - A_shH[i]) * kk;
+    A_shA[i] += (A_hA[i] - A_shA[i]) * kk;
+    A_spH[i] += (A_pH[i] - A_spH[i]) * kk;
+    A_spA[i] += (A_pA[i] - A_spA[i]) * kk;
+    A_sxH[i] += (A_xH[i] - A_sxH[i]) * kk;
+    A_sxA[i] += (A_xA[i] - A_sxA[i]) * kk;
+  }
 }
 function ensureB(gx, gy) {
   if (gx === B_gx && gy === B_gy) return;
@@ -634,8 +674,13 @@ function computeA(t) {
       stamp(Pgrid, gx, gy, e.u, e.v, env * 2.0, sharpRad * 1.4);
     }
   }
+  // glide the smoothed grids toward this frame's fields (calm in motion).
+  smoothA(A_SMOOTH_K);
   return win.length > 0;
 }
+// per-frame blend toward the new fields. Lower = calmer (less twitch). The reset
+// flag in smoothA() makes scrubs/resizes snap, so this only damps live playback.
+const A_SMOOTH_K = 0.18;
 
 // Recompute layer B's grid (finer pass relief). aggr 0 = each pass a small sharp
 // bump; aggr 1 = broad smoothed density.
@@ -724,21 +769,23 @@ function computeField(t) {
   // fabric wobble phase — gentle undulation so each blanket drapes like cloth.
   const ph = (typeof performance !== 'undefined' ? performance.now() : Date.now()) * 0.00018;
   const amp = clamp(cfg.A.height, 0, 3);
-  // The unfocused base drape gives the blanket its BODY so the whole covered
-  // territory reads as a coloured draped sheet ("покрывало"), not a dark sheet
-  // pressed flat onto the pitch. It is UNIFORM across the covered zone, so it
-  // adds body WITHOUT creating a detached "second dome" — the islands came from
-  // the spread SWELL (rH·fm), which the focus mask now keeps to one hill.
-  const A_BASE = 0.5 * amp;            // always-present FLAT draped body per team
-  const A_WOBBLE = 0.09 * amp;
+  // TERRITORY LIES FLAT. The old uniform base body raised EVERY covered cell, so
+  // a team whose coverage spanned multiple zones (e.g. both wings) showed several
+  // detached raised domes. The base is now ~0 — covered-but-quiet zones stay flat
+  // coloured (vivid via emissive, see the blanket shader), and the ONLY relief is
+  // the FOCUS-gated swell (one coherent hill at the live locus) + the xG spire.
+  const A_BASE = 0.0;                   // flat painted territory (no body)
+  const A_WOBBLE = 0.04 * amp;         // tiny cloth wobble only (≤0.05·amp)
   const flr = clamp(cfg.A.floor, 0, 0.9);
   const gamma = clamp(cfg.A.sharp, 0.3, 4);
   const lap = clamp(cfg.A.lap, 0, 0.45);    // НАХЛЁСТ: extend coverage past the 50% front
 
-  // normalisation for the two A height grids (shared so relative team height is honest)
+  // normalisation for the two A height grids (shared so relative team height is
+  // honest). Read the SMOOTHED grids — that's what we render — so the normaliser
+  // tracks the eased fields and doesn't itself jump frame-to-frame.
   let aMax = 1e-4;
   if (aOn) {
-    for (let k = 0; k < A_hH.length; k++) { if (A_hH[k] > aMax) aMax = A_hH[k]; if (A_hA[k] > aMax) aMax = A_hA[k]; }
+    for (let k = 0; k < A_shH.length; k++) { if (A_shH[k] > aMax) aMax = A_shH[k]; if (A_shA[k] > aMax) aMax = A_shA[k]; }
   }
 
   const bH = blankets.home, bA = blankets.away;
@@ -754,16 +801,17 @@ function computeField(t) {
       // ---- Layer A: per-team blanket height + crisp coverage ----
       let hH = 0, hA = 0, covH = 0, covA = 0;
       if (aOn) {
-        // height from contributors (per team), normalised + floor + gamma
-        let rH = sampleGrid(A_hH, A_gx, A_gy, u, v) / aMax;
-        let rA = sampleGrid(A_hA, A_gx, A_gy, u, v) / aMax;
+        // height from contributors (per team), normalised + floor + gamma.
+        // All sampling reads the SMOOTHED grids so the surface glides.
+        let rH = sampleGrid(A_shH, A_gx, A_gy, u, v) / aMax;
+        let rA = sampleGrid(A_shA, A_gx, A_gy, u, v) / aMax;
         if (flr > 0) { rH = clamp((rH - flr) / (1 - flr), 0, 1); rA = clamp((rA - flr) / (1 - flr), 0, 1); }
         if (gamma !== 1) { rH = Math.pow(rH, gamma); rA = Math.pow(rA, gamma); }
         // xG SHARP crest added ON TOP of the swell (not normalised/floored) so a
         // chance reads as a tall spire well above the GENTLE control swells: swells
         // are kept low (×1.5) and the crest towers (×2.6, uncapped by xg).
-        const xH = sampleGrid(A_xH, A_gx, A_gy, u, v);
-        const xA = sampleGrid(A_xA, A_gx, A_gy, u, v);
+        const xH = sampleGrid(A_sxH, A_gx, A_gy, u, v);
+        const xA = sampleGrid(A_sxA, A_gx, A_gy, u, v);
         // FOCUS mask: dissolve detached far swells, keep ONE coherent hill at the
         // locus. Gates BOTH teams' swells (both cluster around the ball; the
         // possessing team rises higher via the Владение contributor). The xG crest
@@ -777,8 +825,9 @@ function computeField(t) {
         hH = A_BASE + A_WOBBLE * wob + rH * 2.0 * amp * fm + xH * 2.6 * amp * fmCrest;
         hA = A_BASE + A_WOBBLE * wob + rA * 2.0 * amp * fm + xA * 2.6 * amp * fmCrest;
         // coverage from PRESENCE share — CRISP front (steep), extended by lap.
-        const pH = sampleGrid(A_pH, A_gx, A_gy, u, v);
-        const pA = sampleGrid(A_pA, A_gx, A_gy, u, v);
+        // Smoothed presence → the colour edge slides instead of snapping.
+        const pH = sampleGrid(A_spH, A_gx, A_gy, u, v);
+        const pA = sampleGrid(A_spA, A_gx, A_gy, u, v);
         const tot = pH + pA;
         if (tot > 1e-4) {
           const shareH = pH / tot;                 // 0..1
@@ -828,17 +877,24 @@ function computeField(t) {
   const baseH = nCovH ? sumHH / nCovH : heightBaseline;
   const baseA = nCovA ? sumHA / nCovA : heightBaseline;
   bH.u.uBaseline.value = baseH; bA.u.uBaseline.value = baseA;
+  // colour-glow strength (graceful for old cfgs lacking A.glow).
+  const glow = Number.isFinite(cfg.A.glow) ? cfg.A.glow : 1.0;
+  bH.u.uGlow.value = glow; bA.u.uGlow.value = glow;
   bH.hTex.needsUpdate = true; bH.aTex.needsUpdate = true;
   bA.hTex.needsUpdate = true; bA.aTex.needsUpdate = true;
   bH.mesh.visible = aOn; bA.mesh.visible = aOn;
   // taller (more raised mass right now) team's sheet laps ON TOP at the overlap.
-  // tiny y-offset + renderOrder + the loser writes depth first.
-  const homeOnTop = totH >= totA;
+  // HYSTERESIS: only flip who's on top when one team clearly out-masses the other
+  // (>15% margin), so the order doesn't jitter every frame when they're close.
+  if (homeOnTopState) { if (totA > totH * 1.15) homeOnTopState = false; }
+  else { if (totH > totA * 1.15) homeOnTopState = true; }
+  const homeOnTop = homeOnTopState;
   bH.mesh.position.y = homeOnTop ? 0.012 : 0.0;
   bA.mesh.position.y = homeOnTop ? 0.0 : 0.012;
   bH.mesh.renderOrder = homeOnTop ? 2 : 1;
   bA.mesh.renderOrder = homeOnTop ? 1 : 2;
 }
+let homeOnTopState = true;   // hysteresis latch for the lap-on-top swap
 // clamped smoothstep helper (steep edge for the crisp front)
 function smoothstepC(a, b, x) { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); }
 
@@ -1023,6 +1079,9 @@ function renderFrame(t) {
   updateComet(t);
   updateAccents(t);
 }
+// Force the A smoothing to SNAP on the next computeA (used after a scrub or a
+// slider change so the eased grids don't lag behind a jump-cut / new setting).
+function snapASmoothing() { A_smoothReset = true; }
 
 // ---- resize -----------------------------------------------------------------
 function onResize() {
@@ -1058,7 +1117,7 @@ function loop(now) {
 window.__setClock = (min) => {
   clock = clamp(+min || 0, 0, teamMeta.duration);
   playing = false; const pb = el('play'); if (pb) pb.textContent = '▶';
-  _ballCursor = 0;
+  _ballCursor = 0; snapASmoothing();
   renderFrame(clock);
   controls.update();
   composer.render();
@@ -1102,7 +1161,7 @@ function bindGlobalUI() {
   });
   el('restart').addEventListener('click', () => { clock = 0; playing = true; playBtn.textContent = '❚❚'; });
   el('clock').addEventListener('input', () => {
-    clock = (+el('clock').value / 100) * teamMeta.duration; playing = false; playBtn.textContent = '▶'; _ballCursor = 0;
+    clock = (+el('clock').value / 100) * teamMeta.duration; playing = false; playBtn.textContent = '▶'; _ballCursor = 0; snapASmoothing();
   });
   // seed the slider from the loaded cfg BEFORE binding, so bindSlider's initial
   // apply() reads the restored value instead of clobbering cfg.speed with the HTML
@@ -1180,6 +1239,7 @@ const LAYER_DEFS = [
     { id: 'focus', label: 'фокус ▸ зона игры', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
     { id: 'blur', label: 'сглаживание ▸ размытие', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
     { id: 'colour', label: 'насыщ. цвета ▸ цвет', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'glow', label: 'яркость цвета ▸ свечение', min: 0, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'sharp', label: 'резкость ▸ контраст', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'floor', label: 'порог ▸ скрыть низ', min: 0, max: 0.8, step: 0.02, fmt: (v) => v.toFixed(2) },
     { id: 'lap', label: 'нахлёст ▸ перекрытие', min: 0, max: 0.4, step: 0.01, fmt: (v) => v.toFixed(2) },
@@ -1251,7 +1311,7 @@ function buildLayerUI() {
       refs.sliders[c.id] = { inp, val, fmt: c.fmt };
       inp.addEventListener('input', () => {
         cfg[def.key][c.id] = +inp.value; val.textContent = c.fmt(+inp.value);
-        writeHash(); _ballCursor = 0; renderFrame(clock); composer.render();
+        writeHash(); _ballCursor = 0; if (!playing) snapASmoothing(); renderFrame(clock); composer.render();
       });
     }
     if (def.toggles) {
@@ -1287,11 +1347,11 @@ function buildLayerUI() {
           cfg[def.key][c.on] = !cfg[def.key][c.on];
           cb.classList.toggle('on', cfg[def.key][c.on]);
           row.classList.toggle('off', !cfg[def.key][c.on]);
-          writeHash(); _ballCursor = 0; renderFrame(clock); composer.render();
+          writeHash(); _ballCursor = 0; if (!playing) snapASmoothing(); renderFrame(clock); composer.render();
         });
         wInp.addEventListener('input', () => {
           cfg[def.key][c.w] = +wInp.value;
-          writeHash(); _ballCursor = 0; renderFrame(clock); composer.render();
+          writeHash(); _ballCursor = 0; if (!playing) snapASmoothing(); renderFrame(clock); composer.render();
         });
       }
     }
