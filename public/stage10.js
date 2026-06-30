@@ -19,7 +19,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { clamp, lerp } from './claybattle.js';
+import { clamp, lerp, smoothstep } from './claybattle.js';
 
 const ID = new URLSearchParams(location.search).get('id') || '1953888';
 const el = (id) => document.getElementById(id);
@@ -47,6 +47,7 @@ const VX = GX + 1, VY = GY + 1, NV = VX * VY;
 const worldX = (u) => (u - 0.5) * WORLD_X;
 const worldZ = (v) => (0.5 - v) * WORLD_Z;
 const LOCUS_Y = 0.02;
+const SURF_CLEAR = 0.06;   // small clearance so accents sit JUST above the cloth, no z-fight
 
 // ---- scene state ------------------------------------------------------------
 let renderer, scene, camera, controls, composer;
@@ -56,6 +57,13 @@ let pitchPlane, pitchMat;
 let heightTex, heightData;                 // per-vertex displaced height (mesh res)
 let colTex, colData;                        // per-vertex RGB (mesh res)
 let heightBaseline = 0;
+// TRUE top-A-surface world-Y per vertex (mesh res) — the height of whichever blanket
+// sheet is VISIBLE (laps on top) at each cell, INCLUDING base drape + cloth wobble +
+// focus hill + xG spire + the seam LIP fold + BLANKET_LIFT, in the SAME world units
+// the blanket vertex shader renders. B/C/D ride this so they sit on the wave we see.
+// Built from the SMOOTHED A fields (same as rendering) → no jitter relative to the
+// surface; snapped with the rest on scrub.
+let surfYData = null, surfTopH = null, surfTopDu = null;
 let timeline = null;                        // merged, mirrored, real-t event stream
 let ballLocus = null;                       // locus anchors for ballAt()
 let teamMeta = { home: { abbr: 'FRA' }, away: { abbr: 'SEN' }, score: { home: 0, away: 0 }, duration: 100 };
@@ -68,7 +76,7 @@ const teamColor = (team) => (team === 'away' ? COL_AWAY : COL_HOME);
 
 // GOAL-FLOOD phase durations in SECONDS of wall time (see goalFloodAt). Declared
 // here so DEFAULTS() can seed cfg.A.floodHold without a temporal-dead-zone error.
-const FLOOD_SWEEP_S = 0.6, FLOOD_RELAX_S = 2.5, FLOOD_HOLD_DEFAULT_S = 3.0;
+const FLOOD_SWEEP_S = 0.5, FLOOD_RELAX_S = 2.0, FLOOD_HOLD_DEFAULT_S = 1.8;
 
 // ============================================================================
 // CONFIG — every layer's enable flag + its own knobs. This whole object is what
@@ -81,10 +89,18 @@ const DEFAULTS = () => ({
   //  · Σ ENABLED contributors through the asymmetric atk/rel envelope on the grid.
   //  height=amplitude, atk=attack/rise τ, rel=release/decay τ, grid=detail,
   //  blur=smoothing, colour=intensity, sharp=hill contrast/gamma, floor=threshold,
-  //  lap=НАХЛЁСТ overlap band. cOWN..cALL = contributor on/off; wOWN..wALL = weights.
+  //  lap=НАХЛЁСТ ▸ глубина (finite OVERLAP depth, fraction of pitch length: each
+  //  opaque sheet tucks this far PAST the front under the other). cOWN..cALL =
+  //  contributor on/off; wOWN..wALL = weights.
   A: {
     on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 1.0,
-    colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0, lap: 0.08,
+    colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0, lap: 0.04,
+    // КРОМКА ▸ подъём — LIP HEIGHT (world-Y) of the fabric fold where the TOP
+    // blanket laps OVER the under one at the seam. A SHORT, thin folded edge so the
+    // two blankets read as two separate sheets (one over the other) WITHOUT a tall
+    // wall that would cross through a hill near the front. The possessor laps on top.
+    // 0 = flush (no lap), ~0.1 = a thin clean fold, up to 0.35 = a deeper lap.
+    lipH: 0.1,
     // МИН. ТЕРРИТОРИЯ ▸ у ворот — each team ALWAYS keeps a guaranteed band of
     // ownership around ITS OWN goal line (home own-goal at u≈0, away at u≈1), so
     // the opponent can never take the whole pitch in normal play. The contested
@@ -111,6 +127,17 @@ const DEFAULTS = () => ({
     // scorer's colour over the whole pitch, in SECONDS of wall time (at the
     // current speed). Default 3s (was ~1.2). Sweep-in/relax are fixed.
     floodHold: FLOOD_HOLD_DEFAULT_S,
+    // ВЫПАД ▸ сила — THRUST FINGER strength. A FAST FORWARD pass by the attacking
+    // team makes the colour front STAB FORWARD as a sharp, narrow FINGER of that
+    // team's colour into the opponent half (in the PLANE of the blanket — the
+    // front(v) boundary moving forward, NOT a vertical height peak). Forward
+    // distance (endX−x in the team's attacking frame) is the primary signal, boosted
+    // for through/long balls and for passes that gain ground QUICKLY (fast counter).
+    // The finger appears almost immediately and decays on its OWN fast half-life
+    // (~few seconds), so an unsustained foray recedes fast while a sustained attack
+    // lets the SLOW territorial base catch up and consolidate. 0 = off (front stays
+    // the smooth lateral tide). Default keeps counters clearly visible but not noisy.
+    thrust: 1.0,
     // contributors (☑ default = true): which signals RAISE a team's blanket
     cOwn: true,  wOwn: 1.0,   // Владение — on-ball control density
     cXg: true,   wXg: 1.0,    // Удары · xG — sharp tall crest at the shot, ×xg
@@ -258,6 +285,9 @@ function buildCloth() {
   geo.rotateX(-Math.PI / 2);
 
   heightData = new Float32Array(NV);
+  surfYData = new Float32Array(NV);          // true top-A-surface world-Y per vertex (B/C/D ride this)
+  surfTopH = new Float32Array(NV);           // visible top sheet's displaced height (pre-baseline/lip)
+  surfTopDu = new Float32Array(NV);          // signed seam distance (u-units) at each vertex, for the lip fold
   heightTex = new THREE.DataTexture(heightData, VX, VY, THREE.RedFormat, THREE.FloatType);
   heightTex.magFilter = THREE.LinearFilter; heightTex.minFilter = THREE.LinearFilter;
   heightTex.needsUpdate = true;
@@ -346,7 +376,7 @@ function buildCloth() {
 // taller team's sheet laps ON TOP (set per-frame via renderOrder).
 // ============================================================================
 let blankets = null;  // { home:{mesh,hData,hTex,aData,aTex,u}, away:{...} }
-function makeBlanket(teamCol) {
+function makeBlanket(teamCol, isAway) {
   const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, GX, GY);
   geo.rotateX(-Math.PI / 2);
   const hData = new Float32Array(NV);
@@ -356,9 +386,20 @@ function makeBlanket(teamCol) {
   const aTex = new THREE.DataTexture(aData, VX, VY, THREE.RedFormat, THREE.FloatType);
   aTex.magFilter = THREE.LinearFilter; aTex.minFilter = THREE.LinearFilter; aTex.needsUpdate = true;
 
+  // OPAQUE sheets: no alpha blending (the old alpha НАХЛЁСТ caused the ugly blur).
+  // The seam is a HARD discard (alphaTest 0.5) inside the shader, and depth-test +
+  // the per-sheet owner LIP resolve which sheet laps on top — no transparency sort,
+  // no z-fighting.
   const mat = new THREE.MeshStandardMaterial({
     color: 0xffffff, roughness: 0.92, metalness: 0.1, envMapIntensity: 1.1,
-    transparent: true, depthWrite: true, side: THREE.DoubleSide,
+    transparent: false, alphaTest: 0.5, depthWrite: true, depthTest: true,
+    side: THREE.DoubleSide,
+    // tiny opposite-sign depth bias so that at the exact seam line (du=0, where the
+    // owner lips momentarily tie) ONE sheet deterministically wins the depth test —
+    // kills the measure-zero z-fight shimmer without affecting the lap elsewhere.
+    polygonOffset: true,
+    polygonOffsetFactor: isAway ? 0.5 : -0.5,
+    polygonOffsetUnits: isAway ? 0.5 : -0.5,
   });
   const u = {
     uHeight: { value: hTex }, uCov: { value: aTex },
@@ -366,14 +407,59 @@ function makeBlanket(teamCol) {
     uBaseline: { value: 0 }, uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
     uTeam: { value: new THREE.Color(teamCol) },
     uGlow: { value: 1.0 },     // ЯРКОСТЬ ЦВЕТА — emissive strength of flat territory
+    // НАХЛЁСТ ▸ глубина — finite OVERLAP depth (fraction of pitch length, u-units).
+    // Each opaque sheet covers its own side AND extends this far PAST the front into
+    // the opponent's territory, then ends with a clean ~1px-AA cutoff that tucks
+    // UNDER the other sheet. The coverage texture stores the per-channel FRONT u, so
+    // the shader works in honest u-units (overlap is directly the pitch fraction).
+    uLap: { value: 0.06 },
+    // КРОМКА — world-Y height of the fold by which THIS sheet, WHEN IT IS THE TOP
+    // sheet, laps OVER the under sheet at the seam. uTop is the smoothed 0..1
+    // "this sheet is on top right now" state (the possessor laps over); it eases
+    // between 0 and 1 over ~0.4s so the top/bottom choice never flickers per frame.
+    uLipH: { value: 0.1 },
+    uTop: { value: isAway ? 0.0 : 1.0 },
+    uAway: { value: isAway ? 1.0 : 0.0 },  // 1 = this sheet owns u>front (away half)
+    // ---- STAGE-7 CLAY/STONE MATERIAL LOOK (ported) -------------------------
+    // A believable clay/stone base (uClay) TINTED by this sheet's team colour
+    // (uTeam), with natural saturation (uSat), a subtle clay micro-texture
+    // (uTex) that also modulates roughness, and a fiery glowing-crest ember on
+    // the high relief (uGlowCol × intensity). Values are stage7's tuned defaults.
+    uClay: { value: new THREE.Color('#6a6560') },  // neutral clay/stone base
+    uSat: { value: 0.86 },                          // natural saturation (no neon)
+    uTint: { value: 1.0 },                          // how strongly clay is tinted by team
+    uTex: { value: 0.86 },                          // clay micro-texture amount
+    uGlowCol: { value: new THREE.Color('#f0d8c1') }, // ember crest colour
+    uEmber: { value: 1.0 },                          // ember crest strength (stage7 glow feel)
+    uTime: { value: 0 },                            // animates micro-texture + ember flicker
   };
   mat.userData.u = u;
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, u);
     shader.vertexShader = `
-      uniform sampler2D uHeight; uniform vec2 uTexel; uniform float uBaseline; uniform vec2 uWorld;
-      varying float vHd; varying vec2 vUvN;
+      uniform sampler2D uHeight; uniform sampler2D uCov; uniform vec2 uTexel;
+      uniform float uBaseline; uniform vec2 uWorld;
+      uniform float uLap; uniform float uLipH; uniform float uTop; uniform float uAway;
+      varying float vHd; varying vec2 vUvN; varying float vDu; varying float vFold;
       float HB(vec2 uv){ float h = texture2D(uHeight, uv).r; if(!(h==h)) h=0.0; return h; }
+      float FRONT(vec2 uv){ float f = texture2D(uCov, uv).r; if(!(f==f)) f=0.5; return f; }
+      // FABRIC FOLD — only the TOP sheet (uTop→1) gets a SHORT, LOCAL lip right at
+      // the seam so it laps OVER the under sheet. NOT a broad raised ridge across the
+      // whole overlap and NOT a tall wall: a thin folded edge localised to the
+      // boundary, tapering to flat on BOTH sides over a small fixed width so it never
+      // crosses through the other sheet's hill. The under sheet (uTop→0) gets none
+      // and continues flat beneath. du>0 = away half; s = signed dist into OWN half.
+      float FOLD(float du){
+        float s = mix(-du, du, uAway);                  // + = own side, − = lapped onto opponent
+        // Fold WIDTH (the visible кромка length) tracks the НАХЛЁСТ ▸ глубина slider
+        // (uLap) so the user controls how long the lapping edge is. Kept SHORT.
+        float fw = max(uLap * 0.6, 0.001);               // fold half-width (own side)
+        float ow = max(uLap * 0.4, 0.001);               // shorter taper on the lapped tip
+        // 1 in a thin band straddling the seam, falling off quickly each way.
+        float own  = 1.0 - smoothstep(0.0, fw, s);      // own side: drop off just past the line
+        float opp  = smoothstep(-ow, 0.0, s);           // opponent side: taper the tip so no tall wall
+        return clamp(min(own, opp + step(0.0, s)), 0.0, 1.0); // full for small +s, tapered for −s
+      }
     ` + shader.vertexShader;
     shader.vertexShader = shader.vertexShader.replace('#include <beginnormal_vertex>',
       `#include <beginnormal_vertex>
@@ -384,44 +470,127 @@ function makeBlanket(teamCol) {
         objectNormal = normalize(vec3(-(hr-hl)/max(dx,1e-4), 1.0, -(hu-hd)/max(dz,1e-4)));`);
     shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>',
       `#include <begin_vertex>
-        float hb = HB(uv); vHd = hb; transformed.y += (hb - uBaseline);`);
+        float hb = HB(uv);
+        float frnt = FRONT(uv);
+        vDu = uv.x - frnt;                 // signed dist from seam in u-units (+ = away half)
+        vHd = hb;
+        // The TOP sheet folds UP by uLipH near the seam (× smoothed uTop); the under
+        // sheet gets no lip and lies beneath. Each sheet keeps its OWN relief (hb),
+        // so they are TWO distinct surfaces — the lip is the visible lap, not a merge.
+        vFold = uTop * FOLD(vDu);
+        transformed.y += (hb - uBaseline) + uLipH * vFold;`);
     shader.fragmentShader = `
-      uniform sampler2D uCov; uniform vec3 uTeam; uniform float uGlow;
-      varying float vHd; varying vec2 vUvN;
+      uniform vec3 uTeam; uniform float uGlow;
+      uniform float uLap; uniform float uAway; uniform float uTop;
+      // STAGE-7 material uniforms (clay tint + sat + micro-texture + ember crest)
+      uniform vec3 uClay; uniform float uSat; uniform float uTint; uniform float uTex;
+      uniform vec3 uGlowCol; uniform float uEmber; uniform float uTime;
+      varying float vHd; varying vec2 vUvN; varying float vDu; varying float vFold;
+      // --- stage7 smooth value-noise + fbm (continuous → stable derivatives,
+      //     no firefly speckle) for the clay micro-texture ---
+      float h21_s10(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+      float vn_s10(vec2 p){
+        vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+        float a=h21_s10(i), b=h21_s10(i+vec2(1,0)), c=h21_s10(i+vec2(0,1)), d=h21_s10(i+vec2(1,1));
+        return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
+      }
+      float fbm_s10(vec2 p){
+        float s=0.0, a=0.5;
+        for (int k=0;k<4;k++){ s += a*vn_s10(p); p = p*2.03 + vec2(11.3,7.7); a *= 0.5; }
+        return s;
+      }
+      // OPAQUE finite-overlap coverage. vDu = u − front(v) (u-units). This sheet
+      // covers its OWN side fully AND extends uLap past the front into the
+      // opponent's half, then ends with a clean ~1px-AA cutoff (NOT a soft gradient).
+      // Home (uAway=0) owns du<0, covers up to du = +uLap. Away owns du>0, covers
+      // down to du = −uLap. So the band [−uLap,+uLap] is covered by BOTH (no gap),
+      // and the cutoff is razor-sharp so there is no blur. Returns coverage 0..1.
+      float covAt(){
+        // distance from THIS sheet's far cutoff edge (positive = inside coverage).
+        float d = mix(uLap - vDu, vDu + uLap, uAway);   // home: uLap−du ; away: du+uLap
+        // ~1px-in-u razor edge, but CLAMP the AA half-width to a tiny ceiling. On a
+        // steep hill face viewed edge-on, fwidth(vDu) explodes and would widen the
+        // cutoff into a discard zone deep inside coverage → a BLACK HOLE behind the
+        // hill. Capping keeps the edge a thin AA line and never over-discards.
+        float aa = clamp(fwidth(vDu), 1e-4, 0.01);
+        return clamp(smoothstep(-aa, aa, d), 0.0, 1.0);
+      }
     ` + shader.fragmentShader;
     shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>',
       `#include <color_fragment>
       {
-        // FLAT painted territory: solid team colour, height adds a touch of
-        // luminance only on the (rare) raised hill so the crest still reads.
-        vec3 col = uTeam * (0.9 + 0.35 * clamp(vHd*0.5, 0.0, 1.0));
+        // STAGE-7 CLAY/STONE LOOK, kept SINGLE-TEAM (no cross-team mix — territories
+        // stay crisp). The surface is a believable clay/stone (uClay) TINTED by THIS
+        // sheet's team colour. Because each blanket is one team, we tint strongly over
+        // its territory and only relax toward bare clay at the very lowest/flattest
+        // relief so it reads as tinted clay, not flat paint.
+        vec3 team = uTeam;
+        // gentle saturation control (natural, not neon) — stage7 uSat.
+        float lum = dot(team, vec3(0.299, 0.587, 0.114));
+        team = max(mix(vec3(lum), team, uSat), 0.0);
+        // strong tint over own territory; ease slightly toward clay only where the
+        // relief is essentially flat (gives the lowest ground a stony, not painted,
+        // read). tintAmt stays high everywhere there is any swell.
+        float relief = clamp(vHd * 0.6, 0.0, 1.0);            // 0 flat → 1 with relief
+        // strong on relief, but let the clay/stone show through more on flat ground so
+        // the field reads as TINTED CLAY (stage7), not flat saturated paint.
+        float tintAmt = clamp(uTint * (0.66 + 0.30 * relief), 0.0, 1.0);
+        vec3 col = mix(uClay, team, tintAmt);
+        // subtle clay micro-texture, amount = uTex (stage7 marble fbm). Kills the
+        // plastic flat-matte look without speckle (continuous fbm).
+        float marble = fbm_s10(vUvN * 22.0 + vec2(0.0, uTime * 0.05));
+        col *= (1.0 - 0.5 * uTex) + uTex * marble;
+        // CONTACT SHADOW on the UNDER sheet: where THIS sheet is the under one
+        // (uTop→0), darken the strip that lies BENEATH the top sheet's raised lip —
+        // i.e. across the overlap band near the seam — so the top sheet's lapping
+        // edge casts onto the fabric below it and reads as one sheet lying over the
+        // other. Strongest right under the seam, fading out beyond the overlap. None
+        // on the top sheet itself.
+        float dist = abs(vDu);                              // distance from seam (u-units)
+        float band = 1.0 - smoothstep(0.0, max(uLap*1.6, 0.04), dist);
+        float shadow = (1.0 - uTop) * band;
+        col *= mix(1.0, 0.40, shadow);
         diffuseColor.rgb = col;
-        // Effective coverage = the partition mask ONLY. The old code let a tall xG
-        // spire (vHd>3) force the sheet visible even where the OPPONENT owns the
-        // territory — that read as a thin FOREIGN-COLOUR spike poking through the
-        // other team's colour (and through the whole-pitch goal flood). Killed: the
-        // spire now shows STRICTLY inside its own team's territory, so no stray
-        // opposite-colour peak can appear inside a zone or during a goal. The legit
-        // flat counter-tongues (cov regions) are untouched.
-        float cov = texture2D(uCov, vUvN).r;
-        float covEff = clamp(cov, 0.0, 1.0);
+        float covEff = covAt();
         diffuseColor.a *= covEff;
       }`);
     shader.fragmentShader = shader.fragmentShader.replace('#include <alphatest_fragment>',
-      `if (diffuseColor.a < 0.02) discard;
+      `if (diffuseColor.a < 0.5) discard;     // OPAQUE: hard binary cut, no alpha blur
        #include <alphatest_fragment>`);
+    // STAGE-7 MICRO-ROUGHNESS: modulate roughnessFactor by the same fine clay
+    // micro-relief so some patches read duller/shinier. Uniform roughness is the
+    // #1 CG/plastic tell — breaking it up gives the rich material look.
+    shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>',
+      `#include <roughnessmap_fragment>
+       {
+         float marble = fbm_s10(vUvN * 22.0 + vec2(0.0, uTime * 0.05));
+         roughnessFactor = clamp(roughnessFactor + uTex * 0.22 * (0.5 - marble), 0.16, 1.0);
+       }`);
     shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>',
       `#include <emissivemap_fragment>
        {
-         // The territory lies FLAT on the pitch, so lit shading alone renders it
-         // dark. Drive a strong EMISSIVE = team colour × coverage × glow so the
-         // flat paint glows its team colour vividly regardless of height. The one
-         // raised hill (+xG spire) gets an extra hot boost so crests still pop.
-         float cov = texture2D(uCov, vUvN).r;
-         float covEff = clamp(cov, 0.0, 1.0);   // spire only inside own territory (no foreign peak)
-         vec3 emit = uTeam * covEff * (0.9 * uGlow);
-         float hot = smoothstep(0.5, 3.0, vHd);
-         emit += uTeam * hot * (0.6 * uGlow);
+         // Contact-shadow damp on the UNDER sheet's seam strip (unchanged).
+         float dist = abs(vDu);
+         float band = 1.0 - smoothstep(0.0, max(uLap*1.6, 0.04), dist);
+         float shadow = (1.0 - uTop) * band;
+         float litMul = mix(1.0, 0.40, shadow);
+         // (1) GENTLE TEAM-COLOUR GLOW FLOOR — the territory lies FLAT on the pitch,
+         // so lit shading alone would render it dark. A modest team-hue emissive keeps
+         // the flat field readable as its team colour (kept LOW so the clay tint +
+         // lighting + micro-texture do the heavy lifting and it isn't a flat neon wash).
+         vec3 emit = uTeam * (0.34 * uGlow) * litMul;
+         // (2) STAGE-7 FIERY GLOWING-CREST EMBER — the emissive highlight that rises
+         // on the CREST / steep high relief so hills & spires GLOW like stage7 (not a
+         // flat uniform emissive). Tied to height (vHd) and surface steepness; a warm
+         // ember colour (uGlowCol) layered with a tiny continuous flicker.
+         vec3 Nw = normalize(vNormal);
+         float steep = 1.0 - clamp(Nw.y, 0.0, 1.0);
+         // vHd here is the blanket relief in world-Y (swells ~2, spires up to ~5),
+         // so the ember turns on across crests and tops out on tall spires.
+         float hot = smoothstep(0.6, 2.6, vHd) * smoothstep(0.12, 0.62, steep);
+         float flick = 0.82 + 0.18 * vn_s10(vUvN * 40.0 + uTime * 0.7);
+         vec3 hi = uGlowCol * (1.0 + smoothstep(1.6, 3.4, vHd) * 0.5);
+         emit += hi * hot * uEmber * 1.3 * flick * litMul;
          totalEmissiveRadiance += emit;
        }`);
   };
@@ -431,21 +600,25 @@ function makeBlanket(teamCol) {
   return { mesh: m, hData, hTex, aData, aTex, u };
 }
 function buildTeamBlankets() {
-  blankets = { home: makeBlanket(FRA_HEX), away: makeBlanket(SEN_HEX) };
+  blankets = { home: makeBlanket(FRA_HEX, false), away: makeBlanket(SEN_HEX, true) };
 }
 
 // ---- STATIC PITCH-MARKINGS PLANE at y=0 (from stage9) -----------------------
 function buildPitchPlane() {
   const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, 1, 1);
   geo.rotateX(-Math.PI / 2);
+  // Lines kept in the OPAQUE pass (transparent:false) with depthTest+depthWrite so they
+  // participate honestly in the depth buffer and WEAVE through the relief: cloth above
+  // y=0 occludes them, cloth below shows them on top. Mild transparency for line AA is
+  // still allowed, but depth is written so the interplay is real.
   pitchMat = new THREE.ShaderMaterial({
-    transparent: true, depthWrite: true, side: THREE.DoubleSide,
+    transparent: true, depthWrite: true, depthTest: true, side: THREE.DoubleSide,
     uniforms: { uLines: { value: 0.6 } },
     vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
     fragmentShader: PITCH_FRAG,
   });
   pitchPlane = new THREE.Mesh(geo, pitchMat);
-  pitchPlane.position.y = 0.0; pitchPlane.renderOrder = -1;
+  pitchPlane.position.y = 0.0; pitchPlane.renderOrder = 0;
   scene.add(pitchPlane);
 }
 
@@ -474,9 +647,15 @@ const PITCH_FRAG = `
       float outside=(dir>0.0)?step(pax,P.x):step(P.x,pax); c=max(c,arc*outside); }
     return clamp(c,0.0,1.0); }
   void main(){ float lines = pitchLines7(vUv) * clamp(uLines,0.0,1.0);
-    vec3 ground = vec3(0.02,0.03,0.05); vec3 lineCol = vec3(0.92,0.94,0.97);
-    vec3 col = mix(ground, lineCol, lines); float alpha = max(0.12*clamp(uLines,0.0,1.0), lines);
-    gl_FragColor = vec4(col, alpha); }
+    // WEAVE: only the white LINES are drawn (and write depth) at y=0, so they float on
+    // the markings plane and the cloth shows everywhere BETWEEN them. Where the cloth
+    // dips BELOW y=0 the lines (closer to the top-down camera) occlude it → lines on
+    // top; where a hill rises ABOVE y=0 the opaque cloth occludes the lines → hidden.
+    // Discarding the empty ground means it neither paints over nor depth-occludes the
+    // cloth between lines, so the dipped cloth stays visible with the lines woven over.
+    if (lines < 0.02) discard;
+    vec3 lineCol = vec3(0.92,0.94,0.97);
+    gl_FragColor = vec4(lineCol, lines); }
 `;
 
 // ============================================================================
@@ -611,9 +790,17 @@ let A_own = null, A_sown = null;   // ownership (0..1 home share) sampled by the
 // front advances toward a goal as the ball pushes and recedes over the спад window
 // → a ball rushing toward u=0 in some channel drops the front there → a green
 // tongue. A_frontRaw = this frame's per-channel target; A_front = temporally eased.
-let A_frontRaw = null, A_front = null, A_frontTmp = null;
+let A_frontRaw = null, A_front = null, A_frontTmp = null, A_frontEff = null;
+// A_frontDisp = the COMBINED (eased base + thrust fingers + flood) front after a
+// final dt-aware temporal low-pass — this is what's actually rendered. The combine
+// is re-evaluated fresh each frame, so when a fast pass enters/leaves the recent
+// window its weight STEPS → the raw combined front would jump frame-to-frame at the
+// seam (a trembling during busy/counter play). Low-passing the COMBINED front with a
+// small TAU_THRUST kills that twitch while keeping a counter a quick stab.
+let A_frontDisp = null;
 let A_smoothReset = true;         // first frame after a grid resize: snap, don't lerp
 let A_frontReset = true;          // snap the eased front on scrub/resize
+let A_frontDispReset = true;      // snap the displayed combined front on scrub/resize
 let focusCX = NaN, focusCZ = NaN, focusReset = true;   // eased focus-hill centre (glides)
 // time-low-passed ball locus point (world u,v). ballAt(t) has kinks/teleports
 // between discrete events; this glides so the hill + front feed off a gentle
@@ -633,7 +820,11 @@ function ensureA(gx, gy) {
   A_frontRaw = new Float32Array(gy);    // per-channel target front (this frame)
   A_front = new Float32Array(gy).fill(0.5);   // per-channel eased front (start at mid)
   A_frontTmp = new Float32Array(gy);
-  A_smoothReset = true; A_frontReset = true;
+  A_frontEff = new Float32Array(gy).fill(0.5); // eased front + goal-flood wash (combined, pre-display-LP)
+  A_frontDisp = new Float32Array(gy).fill(0.5); // combined front after the final temporal low-pass (rendered)
+  A_thrustH = new Float32Array(gy); A_thrustA = new Float32Array(gy);   // finger end-depth accum
+  A_thrustWH = new Float32Array(gy); A_thrustWA = new Float32Array(gy); // finger weights
+  A_smoothReset = true; A_frontReset = true; A_frontDispReset = true;
 }
 // Ease each smoothed grid toward the freshly computed one. `k` is the per-frame
 // blend (0..1); small k = calmer. On a resize / scrub we SNAP (k=1) once so a
@@ -737,6 +928,120 @@ function buildTideFront(t, gx, gy, band) {
   for (let j = 0; j < gy; j++) A_frontRaw[j] = clamp(A_frontRaw[j], lo, hi);
   return anyW;
 }
+// ============================================================================
+// THRUST FINGERS — counters/fast breaks STAB the colour front forward ----------
+// The slow tide front (buildTideFront) is the territorial BASE — a smooth lateral
+// boundary of recent ball depth. On a FAST FORWARD pass the attacking team should
+// punch a sharp, narrow FINGER of its colour into the opponent half, IN THE PLANE
+// of the blanket (advance front(v) at the pass's flank toward the opponent goal),
+// NOT a vertical bump. This is purely a per-channel front modifier.
+//
+// DETECTION — scan recent passes in a short window before t. A pass is a candidate
+// "thrust" when, in the team's ATTACKING FRAME (already mirrored into the shared
+// pitch frame so home attacks u→1, away attacks u→0), it gains ground FORWARD:
+//   home: fwd = eu − u   (toward u=1) ;  away: fwd = u − eu   (toward u=0).
+// Forward distance is the PRIMARY signal. Multipliers:
+//   · through ball  → ×1.8   (a slicing pass behind the line)
+//   · long ball     → ×1.4
+//   · SPEED — a forward pass that lands shortly after the team won/received the
+//     ball, OR a quick chain gaining lots of ground, reads as a fast counter. We
+//     approximate "fast" from the second-resolution timestamps: the gap to the
+//     team's PREVIOUS on-ball touch (a short gap after regaining/receiving →
+//     counter). Short gap → up to ×1.6.
+// Each candidate's strength = fwd · (multipliers) · cfg.A.thrust, gated by a min
+// forward gain so ordinary short sideways passes never finger.
+//
+// INJECTION — each candidate pushes the front at its lateral channel(s) toward the
+// pass's END depth (eu), as a SHARP NARROW finger (~1–2 channels, small lateral
+// falloff), with its OWN fast attack (appears ~immediately) and fast decay
+// (half-life ~few seconds) so an unsustained foray recedes quickly. Direction is
+// per team: a home thrust advances the front toward u=1, an away thrust toward u=0
+// — we only ever push the front in the attacker's forward direction (max-toward-
+// attacker), never pull it back. Respect the own-goal band clamp.
+//
+// COMBINE (done in computeA): front(v) = max-toward-attacker(slowBase, finger). The
+// finger can advance the front BEYOND the slow base, but the slow base holds the
+// territory; if deep activity SUSTAINS, the slow base catches up and consolidates
+// automatically (sustained presence keeps the channel deep). Deterministic from t
+// (recomputed from the event window each frame) → scrub-safe.
+const THRUST_ATK_S = 0.25;      // finger rises ~immediately (fast attack τ, seconds)
+const THRUST_HALF_S = 3.0;      // finger half-life (seconds) — unsustained forays recede fast
+const THRUST_MIN_FWD = 0.06;    // min forward gain (u-units) to count as a thrust
+const THRUST_SIGV = 0.07;       // finger lateral half-width in v (NARROW — ~1–2 channels)
+// Per-team thrust targets: A_thrustH[j] = deepest home finger end-depth (u→1) this
+// frame at channel j, A_thrustA[j] = deepest away finger end-depth (u→0). NaN/sentinel
+// = no finger in that channel. Sized to gy in ensureA.
+let A_thrustH = null, A_thrustA = null, A_thrustWH = null, A_thrustWA = null;
+function buildThrustFingers(t, gx, gy, band) {
+  const strength = Number.isFinite(cfg.A.thrust) ? clamp(cfg.A.thrust, 0, 3) : 1;
+  // home fingers stab toward u=1 → start each channel at -inf (take the MAX);
+  // away fingers stab toward u=0 → start at +inf (take the MIN). Weighted blend so
+  // a finger reads its full depth at its channel and tapers laterally.
+  A_thrustH.fill(0); A_thrustA.fill(0); A_thrustWH.fill(0); A_thrustWA.fill(0);
+  if (strength <= 0) return;
+  // decay constant from half-life; attack τ for the fast rise. Window a few
+  // half-lives so a faded finger drops out cheaply.
+  const relS = THRUST_HALF_S / Math.LN2;
+  // work in CLOCK match-minutes for the event window (timeline.t is match-minutes),
+  // but the thrust time constants are authored in SECONDS of wall time → convert via
+  // the playback rate (minutes advanced per second) so the finger life is in wall
+  // time like the goal flood. So a window of ~4 half-lives of wall time.
+  const spd = Math.max(0.05, Number(cfg.speed) || 0.9);
+  const relMin = (relS * spd);
+  const atkMin = (THRUST_ATK_S * spd);
+  const winMin = relMin * 4 + atkMin * 2;
+  const win = eventsInWindow(t, winMin);
+  const reach = THRUST_SIGV * 3;
+  const inv2sig2 = 1 / (2 * THRUST_SIGV * THRUST_SIGV);
+  const lo = clamp(band, 0, 0.45), hi = 1 - lo;
+  // track each team's previous on-ball touch time to estimate "fast" (short gap).
+  for (let wi = 0; wi < win.length; wi++) {
+    const e = win[wi];
+    if (e.kind !== 'pass' || !Number.isFinite(e.eu)) continue;
+    const isH = e.team === 'home';
+    if (!isH && e.team !== 'away') continue;
+    // forward gain in the team's attacking frame (already mirrored). home attacks
+    // u→1, away attacks u→0.
+    const fwd = isH ? (e.eu - e.u) : (e.u - e.eu);
+    if (fwd < THRUST_MIN_FWD) continue;
+    const age = t - e.t;
+    const env = arWeight(age, atkMin, relMin);   // fast attack + fast decay
+    if (env < 0.03) continue;
+    // SPEED multiplier — short gap since the team's previous on-ball touch ⇒ a
+    // quick forward pass right after regaining/receiving = a counter. Scan back a
+    // little for the team's prior touch time.
+    let prevT = -Infinity;
+    for (let k = wi - 1; k >= 0; k--) {
+      const pe = win[k];
+      if (pe.team === e.team && (ONBALL_TYPES.has(pe.type) || pe.isTouch)) { prevT = pe.t; break; }
+    }
+    const gap = e.t - prevT;                       // match-minutes since prior touch
+    // gap small (≲ ~0.08 min ≈ 5s of match time) → fast; convert to a 1..1.6 boost.
+    const fastBoost = 1 + 0.6 * clamp(1 - gap / 0.12, 0, 1);
+    // through/long multipliers.
+    const thruBoost = e.through ? 1.8 : 1;
+    const longBoost = e.long ? 1.4 : 1;
+    // overall finger weight: forward distance is primary, the rest multiply.
+    const w = clamp(fwd * 3.0, 0, 1.2) * fastBoost * thruBoost * longBoost * env * strength;
+    if (w < 0.02) continue;
+    // end depth the finger reaches, clamped to the opponent band so it never crosses
+    // the defender's own-goal band.
+    const endU = clamp(e.eu, lo, hi);
+    // lateral channels around the pass END's v (where the finger tip lands).
+    const fv = e.ev;
+    const jLo = Math.max(0, Math.floor((1 - (fv + reach)) * (gy - 1)));
+    const jHi = Math.min(gy - 1, Math.ceil((1 - (fv - reach)) * (gy - 1)));
+    for (let j = jLo; j <= jHi; j++) {
+      const vv = 1 - j / (gy - 1);
+      const dv = vv - fv;
+      const lw = Math.exp(-dv * dv * inv2sig2) * w;
+      if (lw < 0.02) continue;
+      if (isH) { A_thrustH[j] += endU * lw; A_thrustWH[j] += lw; }
+      else     { A_thrustA[j] += endU * lw; A_thrustWA[j] += lw; }
+    }
+  }
+}
+
 // 1-D box blur of a per-channel array (length gy) in place, radius r.
 function smoothChannels(arr, gy, r) {
   if (r < 1) return;
@@ -821,6 +1126,11 @@ function computeA(t, dt) {
   // u<front, away owns u>front → full two-colour fill, every cell owned (no black).
   const band = clamp(Number.isFinite(cfg.A.ownBand) ? cfg.A.ownBand : 0, 0, 0.45);
   buildTideFront(t, gx, gy, band);
+  // THRUST FINGERS — fast forward passes punch sharp narrow fingers into the
+  // opponent half. Built from the recent-pass window with their OWN fast time
+  // constants (NOT the slow TAU_FRONT base), so a counter stabs immediately and an
+  // unsustained foray recedes fast. Combined below per channel (max-toward-attacker).
+  buildThrustFingers(t, gx, gy, band);
   // ease the per-channel front TEMPORALLY with the dt filter (tau = TAU_FRONT) so
   // the boundary DRIFTS smoothly and per-frame ball jitter can't shake it,
   // combined with the existing light lateral spatial smoothing in buildTideFront.
@@ -838,21 +1148,53 @@ function computeA(t, dt) {
     const target = flood.team === 'home' ? 1 : 0;   // front value that gives the scorer the whole pitch
     floodFront = target;
   }
-  // Build the ownership grid A_own from the (eased) per-channel front: home owns
-  // cells left of its channel front. A soft edge (one cell) anti-aliases the
-  // boundary; the partition's own smoothstep + НАХЛЁСТ then finish the front.
+  // Build the EFFECTIVE per-channel front (eased front + goal-flood wash) and store
+  // it — as a FRONT-u VALUE, not a home-share — into A_own. The blanket shaders work
+  // in honest u-units: vDu = u − front(v), so coverage cutoffs + the owner lip live
+  // directly in pitch-length fractions (the НАХЛЁСТ depth slider). Bilinear sampling
+  // across channels smooths the front laterally; storing the same value along u keeps
+  // it a clean per-channel line.
+  // COMBINE THRUST FINGERS — max-TOWARD-ATTACKER per channel, applied to a COPY of
+  // the slow base (A_front stays pure so next frame's slow easing isn't polluted by a
+  // transient finger). A home finger advances the front toward u=1 (only if its end
+  // depth is BEYOND the base); an away finger advances toward u=0. The fingers carry
+  // their own fast attack/decay (arWeight in buildThrustFingers), so an unsustained
+  // foray collapses on its own and the channel falls straight back to the slow base.
+  // A sustained deep attack keeps the slow base advancing underneath, so when the
+  // finger fades the territory is already consolidated. `conf` = how strongly the
+  // finger asserts (its normalised lateral weight) so a faint finger barely nudges.
   for (let j = 0; j < gy; j++) {
     let fr = A_front[j];
-    if (!Number.isNaN(floodFront)) fr = lerp(fr, floodFront, flood.amt);   // flood wash
-    const row = j * gx;
-    const fcell = fr * (gx - 1);            // front position in cell units along u
-    for (let i = 0; i < gx; i++) {
-      // smooth step across ~1 cell at the front: 1 = home owns (u<front), 0 = away.
-      A_own[row + i] = clamp((fcell - i) + 0.5, 0, 1);
+    if (A_thrustWH[j] > 1e-4) {                              // home stabs toward u=1
+      const endU = A_thrustH[j] / A_thrustWH[j];
+      const conf = clamp(A_thrustWH[j], 0, 1);
+      const target = lerp(fr, endU, conf);
+      if (target > fr) fr = target;
     }
+    if (A_thrustWA[j] > 1e-4) {                              // away stabs toward u=0
+      const endU = A_thrustA[j] / A_thrustWA[j];
+      const conf = clamp(A_thrustWA[j], 0, 1);
+      const target = lerp(fr, endU, conf);
+      if (target < fr) fr = target;
+    }
+    if (!Number.isNaN(floodFront)) fr = lerp(fr, floodFront, flood.amt);   // flood wash
+    A_frontEff[j] = fr;   // raw COMBINED front this frame (eased base + fingers + flood)
   }
-  // A_sown is sampled directly by the partition (0..1 home share). The temporal
-  // ease already lives in A_front, so copy through (snap-consistent, scrub-safe).
+  // FINAL temporal low-pass on the COMBINED/displayed front. The combine above is
+  // re-evaluated fresh each frame; when a fast pass enters/leaves the recent window
+  // its finger weight STEPS, so A_frontEff would jump frame-to-frame at the seam
+  // during busy/counter moments (the returned trembling). A small dt-aware low-pass
+  // (tau = TAU_THRUST) smooths the DISPLAYED boundary in time only — the fingers stay
+  // spatially sharp (narrow gaussian, untouched) so a counter still appears within
+  // ~0.2s and reads as a sharp stab, just without the per-frame twitch. SNAP on
+  // scrub/resize so a jump-cut is exact.
+  const kd = A_frontDispReset ? 1 : expA(dt, TAU_THRUST); A_frontDispReset = false;
+  for (let j = 0; j < gy; j++) {
+    A_frontDisp[j] += (A_frontEff[j] - A_frontDisp[j]) * kd;
+    const fr = A_frontDisp[j];
+    const row = j * gx;
+    for (let i = 0; i < gx; i++) A_own[row + i] = fr;   // front-u, constant along u
+  }
   A_sown.set(A_own);
   return win.length > 0;
 }
@@ -876,7 +1218,11 @@ function computeA(t, dt) {
 // pitch (1 = whole pitch the scorer colour).
 function goalFloodAt(t) {
   if (!goalsByTime || !goalsByTime.length) return null;
-  // most recent goal at or before t
+  // LATEST GOAL WINS: pick the single most-recent goal at or before t and shape its
+  // envelope from elapsed = t − g.t. If a second goal lands while the first flood is
+  // still active (e.g. SEN 101.50 → FRA 102.63), `g` switches to the newer goal and
+  // elapsed resets to ~0, so the flood restarts CLEANLY for the new scorer — the two
+  // never composite/fight. Reads as one clean event, then the next.
   let g = null;
   for (let i = 0; i < goalsByTime.length; i++) {
     if (goalsByTime[i].t <= t) g = goalsByTime[i]; else break;
@@ -986,8 +1332,15 @@ function computeField(t, dt) {
     focusPts.push({ fx, fz, w: 0.8 - (k - 1) * 0.18 });
     prevX = fx; prevZ = fz;
   }
-  // wide focus (slider near max) lets the mask approach 1 everywhere (old field).
-  const focusFloor = clamp((cfg.A.focus - 0.82) / 0.18, 0, 1) * 0.6;
+  // FOCUS FLOOR — the mask never drops below this, so BROAD contributors (Владение,
+  // Пасы, Единоборства) whose events spread across the pitch still raise a VISIBLE
+  // swell away from the live locus instead of being masked to ~0 (the old bug where
+  // ticking those boxes did nothing at the default tight focus). The focus peak
+  // still rides ON TOP at the locus, so the "one coherent hill" reads as the tallest
+  // point while the rest of a team's territory keeps a gentle, perceptible relief.
+  // 0.4 base, ramping to ~1 as the slider approaches max (the old free-form field).
+  const FOCUS_FLOOR_BASE = 0.4;
+  const focusFloor = clamp(FOCUS_FLOOR_BASE + clamp((cfg.A.focus - 0.82) / 0.18, 0, 1) * 0.6, 0, 1);
   const focusMask = (wx, wz) => {
     let m = 0;
     for (const p of focusPts) {
@@ -1013,7 +1366,22 @@ function computeField(t, dt) {
   const A_WOBBLE = 0.028 * amp;        // tiny cloth wobble only (reduced so it never shakes)
   const flr = clamp(cfg.A.floor, 0, 0.9);
   const gamma = clamp(cfg.A.sharp, 0.3, 4);
-  const lap = clamp(cfg.A.lap, 0, 0.45);    // НАХЛЁСТ: extend coverage past the 50% front
+  // НАХЛЁСТ ▸ глубина — finite OVERLAP depth (fraction of pitch length). Each opaque
+  // sheet extends `lap` PAST the front into the opponent's half, so the band
+  // [front−lap, front+lap] is covered by BOTH (no gap/black hole), each sheet ending
+  // with a clean cutoff that tucks UNDER the other. Slider range 0–0.2.
+  const lap = clamp(Number.isFinite(cfg.A.lap) ? cfg.A.lap : 0.06, 0, 0.25);
+
+  // POSSESSOR ON TOP — which team's blanket laps over (computed BEFORE the vertex
+  // loop so the seam-band under-sheet clamp below can use it). The live ball owner
+  // laps over; a goal flood forces the scorer on top. Eased over ~0.4s (snap on
+  // scrub) so it never flickers per frame.
+  const flood2 = goalFloodAt(t);
+  let topTargetHome = ball.team === 'away' ? 0 : 1;
+  if (flood2 && flood2.amt > 0.5) topTargetHome = flood2.team === 'home' ? 1 : 0;
+  const kTop = seamTopReset ? 1 : expA(dt, TAU_TOP); seamTopReset = false;
+  seamTopHome += (topTargetHome - seamTopHome) * kTop;
+  const homeIsTop = seamTopHome >= 0.5;
 
   // normalisation for the two A height grids (shared so relative team height is
   // honest). Read the SMOOTHED grids — that's what we render — so the normaliser
@@ -1025,7 +1393,6 @@ function computeField(t, dt) {
 
   const bH = blankets.home, bA = blankets.away;
   let idx = 0, sumH = 0;
-  let totH = 0, totA = 0;   // total raised mass per team (decides who laps on top)
   for (let j = 0; j < VY; j++) {
     const v = j / (VY - 1);
     for (let i = 0; i < VX; i++, idx++) {
@@ -1063,35 +1430,72 @@ function computeField(t, dt) {
         // xG spire HEIGHT is INDEPENDENT of A.amplitude: the crest term is scaled
         // by the dedicated xgH slider (× a fixed base so amp doesn't gate it).
         const crestK = 2.6 * xgH;
-        hH = A_BASE + A_WOBBLE * wob + rH * 2.0 * amp * fm + xH * crestK * fmCrest;
-        hA = A_BASE + A_WOBBLE * wob + rA * 2.0 * amp * fm + xA * crestK * fmCrest;
-        // COVERAGE = FULL-PITCH PARTITION from the POSSESSION TIDE. A_sown (0..1
-        // home share) is the per-channel ball-position front: home owns u<front,
-        // away owns u>front, so the boundary follows WHERE PLAY IS (field position)
-        // and a ball break into the other half reads as a coloured TONGUE. Every
-        // cell is FILLED with its owner; the two colours meet at the tide front.
-        const shareH = sampleGrid(A_sown, A_gx, A_gy, u, v);   // 0..1; 0.5 = the boundary
-        ownerShare = shareH;
-        // FULL-UNION partition: a single steep edge at the 50% share decides the
-        // owner, and the two sheets are COMPLEMENTARY (covH = edge, covA = 1-edge)
-        // so together they fill EVERY cell — no gaps, no black band at the front.
-        // The НАХЛЁСТ then ADDS a shared overlap: a soft bump straddling the
-        // boundary that lifts BOTH sheets to 1 within a `lap`-wide band.
-        const edge = smoothstepC(0.5 - 0.03, 0.5 + 0.03, shareH);   // crisp; 1 = home owns
-        covH = edge;
-        covA = 1 - edge;
-        if (lap > 0.001) {
-          const band = 1 - smoothstepC(0, lap, Math.abs(shareH - 0.5));  // 1 at boundary → 0 at |Δ|=lap
-          covH = Math.max(covH, band);
-          covA = Math.max(covA, band);
+        // COVERAGE TEXTURE stores the per-channel FRONT-u (from the POSSESSION TIDE).
+        // The blanket shaders read it as front(v) and work in honest u-units:
+        // vDu = u − front. home owns u<front, away owns u>front; each opaque sheet
+        // extends `lap` past the front (finite overlap), so background never shows.
+        const front = sampleGrid(A_sown, A_gx, A_gy, u, v);   // front-u for this cell
+        const du = u - front;                                  // + = away half
+        // ownerShare for the B dome colour: home colour on home side, away past front.
+        ownerShare = du < 0 ? 1 : 0;
+        covH = front;
+        covA = front;
+        // CROSSING NOTCH — calm the RELIEF (swell + xG crest) of BOTH sheets in a thin
+        // band straddling the seam, so neither has a TALL HILL exactly at the crossing
+        // for the lip to fold through (the user's interpenetration). A smooth dip that
+        // recovers to full height away from the seam: hills/spires still rise fully out
+        // in open territory; only the immediate boundary is flattened so the short lip
+        // sits on calm ground and the under sheet stays cleanly below — no poke-through,
+        // no dark sliver. notchMin = how low the relief is pressed right at the seam.
+        const notchW = Math.max(lap * 2.2, 0.09);
+        const notchMin = 0.05;                                  // ≈flat relief right at the seam
+        const nt = clamp(Math.abs(du) / notchW, 0, 1);
+        const notch = notchMin + (1 - notchMin) * (nt * nt * (3 - 2 * nt));   // smooth dip→recover
+        const reliefH = (rH * 2.0 * amp * fm + xH * crestK * fmCrest) * notch;
+        const reliefA = (rA * 2.0 * amp * fm + xA * crestK * fmCrest) * notch;
+        // PER-TEAM RELIEF — each blanket carries its OWN (notched-at-seam) height, so
+        // the two sheets are TWO DISTINCT surfaces; the visible LAP is the TOP sheet's
+        // short lip fold (vertex shader), never a merged plane.
+        hH = A_BASE + A_WOBBLE * wob + reliefH;
+        hA = A_BASE + A_WOBBLE * wob + reliefA;
+        // SEAM-BAND UNDER-SHEET CLAMP — within the seam band the UNDER sheet is held
+        // BELOW the top one (cap = top − margin, blended to none at the band edge) so
+        // no residual bump or green/blue TONGUE can stab through the short lip. Wider
+        // band + firmer margin than before so a hill-near-the-front never pokes through
+        // and leaves a sliver. Open territory (outside the band) is untouched, so hills
+        // still rise fully out there.
+        const seamW = Math.max(lap * 2.2, 0.09);
+        const near = clamp(1 - Math.abs(du) / seamW, 0, 1);   // 1 at seam → 0 at band edge
+        if (near > 0) {
+          const margin = 0.1;
+          if (homeIsTop) { const cap = hH - margin; if (hA > cap) hA = lerp(hA, cap, near); }
+          else           { const cap = hA - margin; if (hH > cap) hH = lerp(hH, cap, near); }
         }
-        totH += rH + xH * 1.5; totA += rA + xA * 1.5;   // crest weighs into who laps on top
       }
       bH.hData[idx] = hH; bH.aData[idx] = covH;
       bA.hData[idx] = hA; bA.aData[idx] = covA;
 
-      // ---- combined A height (max of covered team blankets) for cometY/baseline ----
-      let hCombined = Math.max(covH > 0.05 ? hH : 0, covA > 0.05 ? hA : 0);
+      // TRUE top-A-surface: the VISIBLE (lapping) sheet's displaced height + its seam
+      // distance, so surfaceY() (built after the loop, once lipH/BLANKET_LIFT are known)
+      // can add the exact lip fold + lift the blanket shader applies → B/C/D ride the
+      // surface we actually see. homeIsTop is the eased global top choice.
+      if (aOn) {
+        surfTopH[idx] = homeIsTop ? hH : hA;
+        // du was computed above only inside the aOn branch; recompute the seam distance
+        // from the stored front so the lip fold matches the top sheet's shader.
+        surfTopDu[idx] = u - covH;   // covH == front at this cell
+      } else {
+        surfTopH[idx] = 0; surfTopDu[idx] = 1;
+      }
+
+      // ---- combined A height for cometY/baseline --------------------------------
+      // Both sheets cover the band [front−lap, front+lap]; outside it the owner alone.
+      // The comet/baseline should ride whichever sheet is VISIBLE here (the union of
+      // the two opaque coverages = the whole pitch, so just take the taller).
+      const front2 = covH;
+      const homeVisible = u < front2 + lap;        // home covers up to front+lap
+      const awayVisible = u > front2 - lap;        // away covers down to front−lap
+      let hCombined = Math.max(homeVisible ? hH : 0, awayVisible ? hA : 0);
 
       // ---- Layer B: shared relief mesh ----
       let h = 0, rr = 0, gg = 0, bb = 0;
@@ -1108,7 +1512,12 @@ function computeField(t, dt) {
         rr += oCol.r * w; gg += oCol.g * w; bb += oCol.b * w;
       }
       const gate = clamp(h, 0, 1);
-      heightData[idx] = Math.max(h, hCombined); sumH += heightData[idx];
+      // B RIDES A: the pass-relief mesh sits ON the A blanket surface — its displaced
+      // height = the A combined surface height at this cell PLUS B's own relief, so a
+      // pass-dome rises out of the wave instead of poking up from the flat floor (and
+      // a small dome inside a tall hill is no longer swallowed by a plain max). When A
+      // is off, hCombined≈0 so B rides the flat plane as before.
+      heightData[idx] = hCombined + h; sumH += heightData[idx];
       colData[idx * 4] = rr; colData[idx * 4 + 1] = gg; colData[idx * 4 + 2] = bb; colData[idx * 4 + 3] = gate;
     }
   }
@@ -1117,37 +1526,63 @@ function computeField(t, dt) {
   material.userData.u.uBaseline.value = heightBaseline;
   heightTex.needsUpdate = true; colTex.needsUpdate = true;
   mesh.visible = bOn;
-  // team blankets: the territory is now FLAT (height ~0 except the one hill), so
-  // the baseline must be ~0 — otherwise subtracting the mean height would sink the
-  // flat sheet BELOW the pitch plane (where it gets occluded and reads black). A
-  // tiny lift keeps the flat paint just above y=0; only the focus hill + xG spire
-  // rise above it. (sumHH/sumHA/nCov* are no longer used for the baseline.)
-  // Lift must exceed the cloth wobble amplitude (max |wob|≈1.5 → A_WOBBLE·1.5) so a
-  // wobble TROUGH never dips the flat sheet below the pitch plane (y=0), which
-  // would let the dark ground show through as a black hole. (The flat partition
-  // no longer needs a per-team mean baseline.)
-  const BLANKET_LIFT = 0.12 + A_WOBBLE * 1.6;
-  bH.u.uBaseline.value = -BLANKET_LIFT; bA.u.uBaseline.value = -BLANKET_LIFT;
+  // STRADDLE THE MARKINGS PLANE (the stage4/5 weave): the cloth now sits BOTH below
+  // and above y=0. Calm/flat cloth (relief≈0) is pushed slightly BELOW the plane by
+  // A_DOWN_BIAS so the white pitch lines (drawn at y=0, depth-written) show ON TOP of
+  // it; wobble TROUGHS dip further below; only the focus hill + xG spire rise ABOVE
+  // y=0, where the cloth occludes the lines. world-Y = hb − uBaseline (+ lip), so a
+  // POSITIVE uBaseline = A_DOWN_BIAS lowers the body. The mean then sits ≈ at the
+  // plane (relief is mostly ~0 with one hill), not above it — the lines weave through.
+  const A_DOWN_BIAS = 0.18;
+  bH.u.uBaseline.value = A_DOWN_BIAS; bA.u.uBaseline.value = A_DOWN_BIAS;
   // colour-glow strength (graceful for old cfgs lacking A.glow).
   const glow = Number.isFinite(cfg.A.glow) ? cfg.A.glow : 1.0;
   bH.u.uGlow.value = glow; bA.u.uGlow.value = glow;
+  // НАХЛЁСТ ▸ глубина (u-units) → both blanket shaders (coverage cutoff + fold width).
+  bH.u.uLap.value = lap; bA.u.uLap.value = lap;
+  // КРОМКА ▸ подъём — the VISIBLE lip height by which the TOP sheet laps over the
+  // under one (graceful for old cfgs lacking A.lipH).
+  const lipH = clamp(Number.isFinite(cfg.A.lipH) ? cfg.A.lipH : 0.1, 0, 0.35);
+  bH.u.uLipH.value = lipH; bA.u.uLipH.value = lipH;
+  // BUILD THE TRUE TOP-A-SURFACE world-Y per vertex now that lipH/baseline are known.
+  // world-Y of the blanket = stored top-sheet height − A_DOWN_BIAS + the lip fold
+  // (matching the blanket vertex shader exactly: transformed.y += (hb − uBaseline) +
+  // uLipH*uTop*FOLD(du), uBaseline=+A_DOWN_BIAS). With the straddle the surface can be
+  // BELOW y=0 on calm cloth — B/C/D follow it down/up so they always sit on the cloth.
+  // The TOP sheet is home if homeIsTop (uAway=0, uTop≈seamTopHome) else away.
+  if (aOn) {
+    const topAway = homeIsTop ? 0 : 1;
+    const topUTop = homeIsTop ? seamTopHome : (1 - seamTopHome);
+    for (let k = 0; k < NV; k++) {
+      const fold = foldLip(surfTopDu[k], lap, topAway);
+      surfYData[k] = surfTopH[k] - A_DOWN_BIAS + lipH * topUTop * fold;
+    }
+  } else {
+    // no blankets: ride the B mesh / flat plane (heightData already reflects B).
+    for (let k = 0; k < NV; k++) surfYData[k] = 0;
+  }
+  // POSSESSOR ON TOP — seamTopHome was eased BEFORE the vertex loop (so the seam-band
+  // under-sheet clamp could use it). Feed it to the shaders: the top sheet gets the
+  // lip fold (uTop→1), the under sheet none (uTop→0).
+  bH.u.uTop.value = seamTopHome; bA.u.uTop.value = 1 - seamTopHome;
+  // STAGE-7 material animation clock — drifts the clay micro-texture + ember flicker.
+  // Driven by the playback clock t (match-minutes) so it's deterministic / scrub-safe.
+  const matTime = t * 0.5;
+  bH.u.uTime.value = matTime; bA.u.uTime.value = matTime;
   bH.hTex.needsUpdate = true; bH.aTex.needsUpdate = true;
   bA.hTex.needsUpdate = true; bA.aTex.needsUpdate = true;
   bH.mesh.visible = aOn; bA.mesh.visible = aOn;
-  // taller (more raised mass right now) team's sheet laps ON TOP at the overlap.
-  // HYSTERESIS: only flip who's on top when one team clearly out-masses the other
-  // (>15% margin), so the order doesn't jitter every frame when they're close.
-  if (homeOnTopState) { if (totA > totH * 1.15) homeOnTopState = false; }
-  else { if (totH > totA * 1.15) homeOnTopState = true; }
-  const homeOnTop = homeOnTopState;
-  bH.mesh.position.y = homeOnTop ? 0.012 : 0.0;
-  bA.mesh.position.y = homeOnTop ? 0.0 : 0.012;
+  // RENDER ORDER — draw the TOP sheet LAST so its raised lip composites cleanly over
+  // the under sheet (opaque, depth-tested; the real Y lip already separates them, so
+  // this just guarantees the visible top is the possessor's). Equal-ish; flip by
+  // possession with a clear margin via the smoothed seamTopHome.
+  const homeOnTop = seamTopHome >= 0.5;
   bH.mesh.renderOrder = homeOnTop ? 2 : 1;
   bA.mesh.renderOrder = homeOnTop ? 1 : 2;
+  bH.mesh.position.y = 0.0; bA.mesh.position.y = 0.0;
 }
-let homeOnTopState = true;   // hysteresis latch for the lap-on-top swap
-// clamped smoothstep helper (steep edge for the crisp front)
-function smoothstepC(a, b, x) { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); }
+let seamTopHome = 1;   // smoothed 0..1: home blanket is the TOP (lapping) sheet
+let seamTopReset = true;  // snap the top/bottom choice on scrub/resize
 
 // ============================================================================
 // C · LIVE LOCUS COMET — moving orb + fading trail, on-ball team colour.
@@ -1197,18 +1632,42 @@ function updateComet(t) {
   }
   cometTG.attributes.position.needsUpdate = true; cometTG.attributes.color.needsUpdate = true;
 }
-// world Y of the cloth surface at (u,v) if field layers are on, else the flat plane.
-function cometY(u, v) {
-  if (!(cfg.A.on || cfg.B.on) || !heightData) return LOCUS_Y;
+// JS mirror of the blanket vertex shader's FOLD(du): the short local lip the TOP
+// sheet folds up near the seam so it laps over the under sheet. `aw` = the top
+// sheet's uAway (0 home, 1 away). Must match the GLSL exactly so surfaceY tracks the
+// rendered lip.
+function foldLip(du, lap, aw) {
+  const s = aw > 0.5 ? du : -du;                 // + = own side
+  const fw = Math.max(lap * 0.6, 0.001);
+  const ow = Math.max(lap * 0.4, 0.001);
+  const own = 1 - smoothstep(0, fw, s);
+  const opp = smoothstep(-ow, 0, s);
+  return clamp(Math.min(own, opp + (s >= 0 ? 1 : 0)), 0, 1);
+}
+// world Y of the VISIBLE top-A blanket surface at (u,v) — the wave B/C/D ride. Uses
+// the precomputed surfYData (full A displacement incl. drape+wobble+hill+spire+lip,
+// top sheet picked) when A is on; falls back to the B mesh height (heightData) when
+// only B is on, and the flat plane otherwise. Same eased fields as rendering → no
+// jitter relative to the surface; snapped with the rest on scrub.
+function surfaceY(u, v) {
+  const aOn = cfg.A.on, bOn = cfg.B.on;
+  if (!(aOn || bOn) || !heightData) return LOCUS_Y;
   const fx = clamp(u, 0, 1) * (VX - 1), fy = clamp(1 - v, 0, 1) * (VY - 1);
   const i0 = Math.floor(fx), j0 = Math.floor(fy);
   const i1 = Math.min(i0 + 1, VX - 1), j1 = Math.min(j0 + 1, VY - 1);
   const tx = fx - i0, ty = fy - j0;
-  const h00 = heightData[j0 * VX + i0], h10 = heightData[j0 * VX + i1];
-  const h01 = heightData[j1 * VX + i0], h11 = heightData[j1 * VX + i1];
-  const h = lerp(lerp(h00, h10, tx), lerp(h01, h11, tx), ty);
-  return (h - heightBaseline) + LOCUS_Y;
+  const samp = (arr, sub) => {
+    const a = arr[j0 * VX + i0] - sub, b = arr[j0 * VX + i1] - sub;
+    const c = arr[j1 * VX + i0] - sub, d = arr[j1 * VX + i1] - sub;
+    return lerp(lerp(a, b, tx), lerp(c, d, tx), ty);
+  };
+  // A on → ride the true blanket surface (surfYData is already a world-Y, lift baked
+  // in). A off but B on → ride the B mesh (heightData − heightBaseline).
+  const h = aOn && surfYData ? samp(surfYData, 0) : samp(heightData, heightBaseline);
+  return h + LOCUS_Y;
 }
+// Back-compat alias: cometY === the surface the comet/accents ride.
+function cometY(u, v) { return surfaceY(u, v); }
 
 // ============================================================================
 // D · EVENT ACCENTS — instant pop + fast fade, rebuilt per frame (few in window).
@@ -1239,7 +1698,7 @@ function updateAccents(t) {
       const sign = it.team === 'home' ? 1 : -1;
       const gv = clamp(0.5 + sign * ((it.onGoalX - 1) / 2) * (7.32 / 68), 0.04, 0.96);
       const gy = clamp(it.onGoalY, 0, 1.2) * CROSSBAR_M * M2W;
-      const y0 = cometY(it.u, it.v);
+      const y0 = surfaceY(it.u, it.v) + SURF_CLEAR;   // spire/beam start ON the wave (just above the cloth)
       const col = it.isGoal ? new THREE.Color('#fff1c0') : teamColor(it.team);
       // beam length: interpolate the goal endpoint from the shot spot by beamW.
       const bx = lerp(it.u, gu, beamW), bv = lerp(it.v, gv, beamW), by = lerp(y0, gy, beamW);
@@ -1251,7 +1710,7 @@ function updateAccents(t) {
       addPoint(accentDyn, worldX(it.u), cometY(it.u, it.v) + 0.1, worldZ(it.v), 1.1 * spark * life, new THREE.Color('#ffd9a0'), 0.9 * life);
     } else if (it.type === 'CornerAwarded' && cfg.D.corners) {
       const life = clamp(1 - age / (0.7 / fade), 0, 1); if (life <= 0) continue;
-      addRing(accentDyn, worldX(it.u), cometY(it.u, it.v), worldZ(it.v), 0.6 * marker, teamColor(it.team), 0.8 * life);
+      addRing(accentDyn, worldX(it.u), surfaceY(it.u, it.v) + SURF_CLEAR, worldZ(it.v), 0.6 * marker, teamColor(it.team), 0.8 * life);
     } else if (it.type === 'Foul' && cfg.D.fouls) {
       const life = clamp(1 - age / (0.5 / fade), 0, 1); if (life <= 0) continue;
       addPoint(accentDyn, worldX(it.u), cometY(it.u, it.v) + 0.08, worldZ(it.v), 0.7 * marker * life, new THREE.Color('#ff9a8a'), 0.7 * life);
@@ -1344,12 +1803,14 @@ function expA(dt, tau) {
 }
 // time constants (seconds) for the dt-aware smoothing.
 const TAU_FRONT = 0.5;    // possession-tide boundary per channel
+const TAU_THRUST = 0.28;  // final low-pass on the COMBINED/displayed front (base+fingers) — kills the per-frame seam trembling from stepping finger weights; raised 0.22→0.28 to finish off the residual seam shimmer (seam-delta dropped ~45% busy, ~35-55% counter) while a counter still reaches ~66% of its depth within ~0.3s (still a quick stab)
 const TAU_GRID = 0.5;     // per-cell height / xG crest fields
 const TAU_HILL = 0.25;    // focus-hill centre glide
 const TAU_LOCUS = 0.25;   // low-pass on the ball locus point feeding hill+front
+const TAU_TOP = 0.4;      // possessor-on-top (which blanket laps over) transition
 // Force the A smoothing to SNAP on the next computeA (used after a scrub or a
 // slider change so the eased grids don't lag behind a jump-cut / new setting).
-function snapASmoothing() { A_smoothReset = true; focusReset = true; A_frontReset = true; locusReset = true; }
+function snapASmoothing() { A_smoothReset = true; focusReset = true; A_frontReset = true; A_frontDispReset = true; locusReset = true; seamTopReset = true; }
 
 // ---- resize -----------------------------------------------------------------
 function onResize() {
@@ -1522,11 +1983,13 @@ const LAYER_DEFS = [
     { id: 'glow', label: 'яркость цвета ▸ свечение', min: 0, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'sharp', label: 'резкость ▸ контраст', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'floor', label: 'порог ▸ скрыть низ', min: 0, max: 0.8, step: 0.02, fmt: (v) => v.toFixed(2) },
-    { id: 'lap', label: 'нахлёст ▸ перекрытие', min: 0, max: 0.4, step: 0.01, fmt: (v) => v.toFixed(2) },
+    { id: 'lap', label: 'нахлёст ▸ глубина', min: 0, max: 0.2, step: 0.005, fmt: (v) => v.toFixed(3) },
+    { id: 'lipH', label: 'кромка ▸ подъём', min: 0, max: 0.35, step: 0.01, fmt: (v) => v.toFixed(2) },
     { id: 'ownBand', label: 'мин. территория ▸ у ворот', min: 0, max: 0.35, step: 0.01, fmt: (v) => v.toFixed(2) },
     { id: 'xgW', label: 'xG ▸ ширина шпиля', min: 0.2, max: 4, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'xgH', label: 'xG ▸ высота шпиля', min: 0, max: 4, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'floodHold', label: 'гол ▸ держать заливку', min: 0, max: 8, step: 0.1, fmt: (v) => v.toFixed(1) + ' с' },
+    { id: 'thrust', label: 'выпад ▸ сила', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
   ], contribHead: 'ПОДЪЁМ ИЗ:', contributors: [
     { on: 'cOwn',  w: 'wOwn',  label: 'Владение' },
     { on: 'cXg',   w: 'wXg',   label: 'Удары · xG' },
