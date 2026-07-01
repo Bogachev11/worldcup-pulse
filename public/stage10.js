@@ -73,7 +73,11 @@ const teamColor = (team) => (team === 'away' ? COL_AWAY : COL_HOME);
 
 // GOAL-FLOOD phase durations in SECONDS of wall time (see goalFloodAt). Declared
 // here so DEFAULTS() can seed cfg.A.floodHold without a temporal-dead-zone error.
-const FLOOD_SWEEP_S = 0.5, FLOOD_RELAX_S = 2.0, FLOOD_HOLD_DEFAULT_S = 1.8;
+// SWEEP = near-instant BANG (~0.15s to full flood), brief HOLD, then a SLOW SMOOTH
+// FLATTEN over ~3s — sharp explosion then a long calm exhale that blends into the
+// post-goal lull. All in WALL seconds (see goalFloodAt), so it plays out fully under
+// the dramatic clock.
+const FLOOD_SWEEP_S = 0.15, FLOOD_RELAX_S = 3.0, FLOOD_HOLD_DEFAULT_S = 1.8;
 
 // ============================================================================
 // CONFIG — every layer's enable flag + its own knobs. This whole object is what
@@ -1243,12 +1247,17 @@ function goalFloodAt(t) {
   if (elapsed < 0 || elapsed >= total) return null;
   let amt;
   if (elapsed < sweep) {
-    const f = elapsed / sweep; amt = f * f * (3 - 2 * f);                // smooth sweep up
+    // BANG — snappy FAST-ATTACK (ease-out): the scorer's colour punches to full flood
+    // almost instantly (~0.15s), front-loaded so it reads as an explosion, not a slow
+    // wipe. 1-(1-f)^3 is ~0.9 at f=0.5 → most of the flood lands in the first ~0.07s.
+    const f = elapsed / sweep; const g1 = 1 - f; amt = 1 - g1 * g1 * g1;
   } else if (elapsed < sweep + hold) {
     amt = 1;                                                            // hold full (100%)
   } else {
+    // SLOW SMOOTH FLATTEN over ~3s — the tension exhaling. smoothstep gives a gentle
+    // ease-out→ease-in settle that blends into the post-goal lull (surface resets).
     const f = (elapsed - sweep - hold) / relax;
-    const e = f * f * (3 - 2 * f); amt = 1 - e;                         // relax back
+    const e = f * f * (3 - 2 * f); amt = 1 - e;                         // relax back (slow)
   }
   return { team: g.team, amt: clamp(amt, 0, 1) };
 }
@@ -1739,7 +1748,7 @@ window.__step = (min, dt) => {
 // is used to keep the scrub slider (wall-progress) and __setClock (match-minute)
 // coherent. Only real data feeds I(t) — no procedural decoration.
 // ============================================================================
-const DRAMA_TOTAL_S = 19.0;    // total wall-time for one pass (relaxed 15→19 for a smoother minute + room for beats)
+const DRAMA_TOTAL_S = 30.0;    // total wall-time for one pass (15→30: routine breathes more, goals still linger)
 // k — how strongly importance dilates time (multiplies I(t) which is normalised
 // to peak 1). calmFloor — the baseline "screen-time density" of routine play so
 // calm still GLIDES (never freezes) and the calm-vs-busy contrast reads. RAISED the
@@ -2027,10 +2036,24 @@ function countGoals() {
   goalsByTime = timeline.filter((it) => it.kind === 'shot' && it.isGoal).map((g) => ({ t: g.t, team: g.team }));
   teamMeta.score = { home: goalsByTime.filter((g) => g.team === 'home').length, away: goalsByTime.filter((g) => g.team === 'away').length };
 }
+// SCORE at clock t — counts every goal whose goalTime ≤ t, the EXACT same time
+// basis and goal set that goalFloodAt uses (goalFloodAt picks the latest goal with
+// g.t ≤ t and floods it). Sharing this predicate guarantees the displayed score
+// increments on the SAME frame the flood starts — the number bumps up exactly as the
+// field floods, never a beat before. Scrub-safe (pure function of t).
+function scoreAt(t) {
+  let h = 0, a = 0;
+  for (const g of goalsByTime) {
+    if (g.t <= t) { if (g.team === 'away') a++; else h++; }
+  }
+  return { home: h, away: a };
+}
 function updateHud() {
   const t = clock;
-  let gH = goalsByTime.filter((g) => g.team === 'home' && g.t <= t).length;
-  let gA = goalsByTime.filter((g) => g.team === 'away' && g.t <= t).length;
+  // Drive the HUD score from the SAME goal-time trigger as the flood (scoreAt uses the
+  // identical g.t ≤ t test on the same clock), so score + colour flood change together.
+  const sc = scoreAt(t);
+  const gH = sc.home, gA = sc.away;
   el('hScore').textContent = gH; el('aScore').textContent = gA;
   const mm = Math.floor(t);
   el('clk').textContent = mm + "'"; el('clk2').textContent = mm + "'";
