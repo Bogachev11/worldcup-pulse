@@ -92,7 +92,7 @@ const DEFAULTS = () => ({
   //  opaque sheet tucks this far PAST the front under the other). cOWN..cALL =
   //  contributor on/off; wOWN..wALL = weights.
   A: {
-    on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 1.0,
+    on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 3.0,
     colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0, lap: 0.04,
     // КРОМКА ▸ подъём — LIP HEIGHT (world-Y) of the fabric fold where the TOP
     // blanket laps OVER the under one at the seam. A SHORT, thin folded edge so the
@@ -1068,11 +1068,14 @@ function contribLift(e) {
       if (adv > 0.04) lift += A.wProg * (1.2 * clamp(adv * 2.5, 0, 1) + (e.eu > 0.66 ? 0.5 : 0));
     }
   }
-  if (A.cXg && isShot) {
-    // sharp tall crest at the shot, scaled by xg; goals tallest. Kept SEPARATE
-    // (A_xH/A_xA) so it stays a tall spire above the gentle swells.
+  if (A.cXg && isShot && !e.isGoal) {
+    // sharp tall crest at the shot, scaled by xg. Kept SEPARATE (A_xH/A_xA) so it
+    // stays a tall spire above the gentle swells. GOALS ARE EXCLUDED: a goal is
+    // expressed ONLY by the celebratory colour FLOOD (goalFloodAt), never by a
+    // height peak — so a goal (a high-xg shot) does NOT raise a relief spire. The
+    // tall spire is reserved for NON-GOAL shots (chances) only.
     const xg = clamp(e.xg || 0, 0, 1);
-    sharp += A.wXg * (1.0 + 4.5 * xg + (e.isGoal ? 2.5 : 0));
+    sharp += A.wXg * (1.0 + 4.5 * xg);
   }
   return { lift, sharp };
 }
@@ -1223,23 +1226,44 @@ function goalFloodAt(t) {
     if (goalsByTime[i].t <= t) g = goalsByTime[i]; else break;
   }
   if (!g) return null;
-  // seconds → match-minutes via the playback rate (minutes advanced per second).
-  const spd = Math.max(0.05, Number(cfg.speed) || 0.9);
+  // WALL-SECONDS ENVELOPE (screen time), not warped match-minutes. Around a goal the
+  // dramatic-time clock CRAWLS (matchT warps time so key beats get room), so a fixed
+  // number of match-minutes elapses at a wildly variable wall rate — the old
+  // match-minute envelope got CRAMPED (goal warp squeezed the whole sweep/hold/relax
+  // into a sliver of screen time). We instead measure elapsed = how many SECONDS OF
+  // WALL TIME (of the ~15s dramatic pass) have passed since the goal, via the warp's
+  // own progress mapping. Deterministic from the clock (progressOfMatchT) → scrub-safe
+  // and robust to the warp: the full BANG→flood→hold→relax always plays out in real
+  // screen seconds regardless of how the match-minute clock crawls.
+  const elapsed = wallSecondsSinceGoal(g.t, t);
+  if (!Number.isFinite(elapsed)) return null;
   const holdS = Number.isFinite(cfg.A.floodHold) ? clamp(cfg.A.floodHold, 0, 12) : FLOOD_HOLD_DEFAULT_S;
-  const sweep = FLOOD_SWEEP_S * spd, hold = holdS * spd, relax = FLOOD_RELAX_S * spd;
+  const sweep = FLOOD_SWEEP_S, hold = holdS, relax = FLOOD_RELAX_S;   // all in WALL seconds
   const total = sweep + hold + relax;
-  const elapsed = t - g.t;
   if (elapsed < 0 || elapsed >= total) return null;
   let amt;
   if (elapsed < sweep) {
     const f = elapsed / sweep; amt = f * f * (3 - 2 * f);                // smooth sweep up
   } else if (elapsed < sweep + hold) {
-    amt = 1;                                                            // hold full
+    amt = 1;                                                            // hold full (100%)
   } else {
     const f = (elapsed - sweep - hold) / relax;
     const e = f * f * (3 - 2 * f); amt = 1 - e;                         // relax back
   }
   return { team: g.team, amt: clamp(amt, 0, 1) };
+}
+
+// WALL-SECONDS since a goal — how many seconds of the ~15s dramatic pass separate
+// match-minute gt from the current match-minute t, via the warp's progress mapping.
+// One wall pass = DRAMA_TOTAL_S / spd seconds (the speed slider trims the pass), so
+// Δprogress · (DRAMA_TOTAL_S / spd) = elapsed wall seconds. Deterministic from the
+// clock (no frame state) → scrub-safe. Returns NaN if the warp isn't built yet.
+function wallSecondsSinceGoal(gt, t) {
+  if (!dramaWcum || dramaWtot <= 0) return NaN;
+  const spd = Math.max(0.05, Number(cfg.speed) || 1);
+  const passSeconds = DRAMA_TOTAL_S / spd;
+  const dProg = progressOfMatchT(t) - progressOfMatchT(gt);
+  return dProg * passSeconds;
 }
 
 // POST-GOAL LULL — after the flood recedes, a LONGER calm breather where the A
@@ -1258,14 +1282,18 @@ function goalLullAt(t) {
     if (goalsByTime[i].t <= t) g = goalsByTime[i]; else break;
   }
   if (!g) return 0;
-  const spd = Math.max(0.05, Number(cfg.speed) || 0.9);
+  // WALL-SECONDS envelope (screen time), same base as goalFloodAt so the lull opens
+  // EXACTLY where the flood window closes and never overlaps/fights it. elapsed and
+  // all phase durations are in real screen seconds, robust to the dramatic-time warp.
   const holdS = Number.isFinite(cfg.A.floodHold) ? clamp(cfg.A.floodHold, 0, 12) : FLOOD_HOLD_DEFAULT_S;
-  const floodTotal = (FLOOD_SWEEP_S + holdS + FLOOD_RELAX_S) * spd;
+  const floodTotal = FLOOD_SWEEP_S + holdS + FLOOD_RELAX_S;   // wall seconds
   const lullS = Number.isFinite(cfg.A.lull) ? clamp(cfg.A.lull, 0, 4) : 0;
   if (lullS <= 0) return 0;
-  const ramp = LULL_RAMP_S * spd, hold = lullS * spd, rel = LULL_RELEASE_S * spd;
+  const ramp = LULL_RAMP_S, hold = lullS, rel = LULL_RELEASE_S;   // wall seconds
   const lullTotal = ramp + hold + rel;
-  const e = (t - g.t) - floodTotal;            // elapsed INTO the lull window
+  const elapsed = wallSecondsSinceGoal(g.t, t);
+  if (!Number.isFinite(elapsed)) return 0;
+  const e = elapsed - floodTotal;            // elapsed INTO the lull window (wall sec)
   if (e < 0 || e >= lullTotal) return 0;
   if (e < ramp) { const f = e / ramp; return f * f * (3 - 2 * f); }        // flatten in
   if (e < ramp + hold) return 1;                                           // hold flat
@@ -1350,7 +1378,7 @@ function computeField(t, dt) {
   // cloth. Kept slow (small multiplier) so it never adds to the shaking; it is a
   // continuous drift independent of the simulation clock.
   const ph = (typeof performance !== 'undefined' ? performance.now() : Date.now()) * 0.00011;
-  const amp = clamp(cfg.A.height, 0, 3);
+  const amp = clamp(cfg.A.height, 0, 8);
   const xgH = Number.isFinite(cfg.A.xgH) ? clamp(cfg.A.xgH, 0, 4) : 1;   // xG spire height (independent of amp)
   // TERRITORY LIES FLAT. The old uniform base body raised EVERY covered cell, so
   // a team whose coverage spanned multiple zones (e.g. both wings) showed several
@@ -1720,8 +1748,14 @@ const DRAMA_CALMFLOOR = 1.0;
 // Guaranteed SCREEN-TIME (seconds of the 15s) for the distinct key beats, so two
 // beats close in match-time (two goals 1 min apart, or a goal near a big chance)
 // stay visibly SEPARATED and each reads its own moment (≥ ~0.7s ask, we give more).
-const GOAL_ROOM_S = 1.5;      // each goal owns ~this many of the 15s (the story)
-const GOAL_LULL_ROOM_S = 1.2; // the calm post-goal breather (flood recede + relief reset) gets its own room
+// A GOAL's window MUST be long enough (in screen seconds) to play the WHOLE flood
+// envelope — BANG → 100% flood → hold → relax — WITHOUT cramping, otherwise the
+// wall-seconds flood would spill into the racing post-goal minutes and look rushed.
+// So GOAL_ROOM_S is derived from the flood durations (sweep + default hold + relax)
+// plus a small margin, and the post-goal LULL beat gets its own room sized to the
+// lull envelope (ramp + hold + release). See goalFloodAt / goalLullAt (wall-seconds).
+const GOAL_ROOM_S = FLOOD_SWEEP_S + FLOOD_HOLD_DEFAULT_S + FLOOD_RELAX_S + 0.4; // ≈4.7s — the WHOLE flood (BANG→100%→hold→relax) plays out on screen
+const GOAL_LULL_ROOM_S = LULL_RAMP_S + 1.2 + LULL_RELEASE_S + 0.4;              // ≈2.8s — the calm breather + reset fits after
 const CHANCE_ROOM_S = 1.0;    // ×normalized importance → a big non-goal chance's room
 // I(t) sampling resolution (match-minutes per bin) + smoothing window (minutes).
 const DRAMA_DT = 0.05;
@@ -1850,30 +1884,40 @@ function buildDramaticClock() {
   // GUARANTEED beats: every GOAL (biggest room) + strong non-goal chances (a big
   // chance still earns its own moment). Goals are first-class — they always get the
   // most room, so a busy routine passage can never out-shine a goal.
+  // Each beat carries its own hump SIGMA (minutes). A GOAL needs a WIDE plateau so
+  // the warped clock LINGERS near it for the full flood+lull wall-seconds (BANG →
+  // 100% flood → hold → relax → lull), not a narrow spike the clock races through in
+  // ~2s (which cramped the flood). A chance keeps the tight spike so close beats stay
+  // separated. GOAL_SIG is chosen so the linger spans the whole envelope.
+  const GOAL_SIG = 0.9, CHANCE_SIG = 0.32;
   const guaranteed = [];
   for (const e of timeline) {
     if (e.kind === 'shot' && e.isGoal) {
-      guaranteed.push({ t: e.t, sec: GOAL_ROOM_S });
+      guaranteed.push({ t: e.t, sec: GOAL_ROOM_S, sig: GOAL_SIG });
       // POST-GOAL LULL room — give the breather (flood recede + relief flatten/reset)
       // its own screen-time slot just AFTER the goal so the calm штиль gets room on
-      // screen before play resumes. Small match-minute offset so it's a distinct beat.
-      guaranteed.push({ t: e.t + 0.35, sec: GOAL_LULL_ROOM_S });
+      // screen before play resumes. Offset a bit further so its wider hump sits just
+      // after the goal's, extending the lingered block through the relax + lull.
+      guaranteed.push({ t: e.t + 0.9, sec: GOAL_LULL_ROOM_S, sig: GOAL_SIG });
     }
   }
   for (const beat of dramaKeyBeats) {
     const nearGoal = guaranteed.some((g) => Math.abs(g.t - beat.t) < 1.0);
-    if (beat.w > 0.55 && !nearGoal) guaranteed.push({ t: beat.t, sec: CHANCE_ROOM_S * beat.w });
+    if (beat.w > 0.55 && !nearGoal) guaranteed.push({ t: beat.t, sec: CHANCE_ROOM_S * beat.w, sig: CHANCE_SIG });
   }
 
   // --- SEPARATION top-up: give every guaranteed beat its target screen share ---
   const densInt = () => { let s = 0; for (let b = 0; b < N; b++) s += dens[b] * DRAMA_DT; return s; };
-  // TIGHT humps + a Gaussian-weighted local measure so an adjacent beat's tail
-  // doesn't count as "this beat already has room" → close beats stay separate.
-  const SIG = 0.32, HALF = 0.75;                    // minutes: hump sigma + window half-width
+  // Per-beat humps + a Gaussian-weighted local measure so an adjacent beat's tail
+  // doesn't count as "this beat already has room" → close beats stay separate. The
+  // window half-width scales with the beat's own sigma so a wide goal plateau is
+  // measured (and filled) over its full extent.
   for (let pass = 0; pass < 4; pass++) {            // iterate so added humps re-normalise
     const Wtot0 = densInt();
     const secPerDensMin = DRAMA_TOTAL_S / Wtot0;    // 15s ÷ ∫dens → seconds per (dens·min)
     for (const g of guaranteed) {
+      const SIG = g.sig || 0.32;
+      const HALF = SIG * 2.3;                        // window half-width ~2.3σ
       const b0 = clamp(Math.floor((g.t - HALF) / DRAMA_DT), 0, N - 1);
       const b1 = clamp(Math.ceil((g.t + HALF) / DRAMA_DT), 0, N - 1);
       let localSec = 0;
@@ -2052,7 +2096,7 @@ function bindSlider(id, valId, fn) {
 // ============================================================================
 const LAYER_DEFS = [
   { key: 'A', name: 'A · активность', controls: [
-    { id: 'height', label: 'амплитуда ▸ высота', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'height', label: 'амплитуда ▸ высота', min: 0, max: 8, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'atk', label: 'скорость ▸ нарастание', min: 0.02, max: 2, step: 0.02, fmt: (v) => v.toFixed(2) },
     { id: 'rel', label: 'затухание ▸ спад', min: 0.3, max: 5, step: 0.1, fmt: (v) => v.toFixed(1) },
     { id: 'grid', label: 'детализация ▸ грид', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
