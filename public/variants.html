@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>World Cup Pulse · Variants Gallery</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@200;300;400;500;600&family=Barlow+Semi+Condensed:wght@300;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #04050a;
+    --ink: rgba(255,255,255,0.90);
+    --ink-dim: rgba(255,255,255,0.44);
+    --ink-faint: rgba(255,255,255,0.20);
+    --card: rgba(12,14,22,0.55);
+    --card-hover: rgba(20,23,34,0.72);
+    --stroke: rgba(255,255,255,0.10);
+    --stroke-hover: rgba(255,255,255,0.26);
+    --accent: #ffd166;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; min-height: 100%;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Barlow", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    background:
+      radial-gradient(120% 80% at 50% -10%, rgba(60,72,120,0.14) 0%, rgba(4,5,10,0) 60%),
+      var(--bg);
+  }
+  .wrap {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 84px 32px 96px;
+  }
+  header {
+    text-align: center;
+    margin-bottom: 62px;
+  }
+  header .kicker {
+    font-family: "Barlow Semi Condensed", "Barlow", sans-serif;
+    font-size: 12px; font-weight: 500;
+    letter-spacing: 0.42em; text-indent: 0.42em;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: 20px;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 38px; font-weight: 200;
+    letter-spacing: 0.30em; text-indent: 0.30em;
+    text-shadow: 0 0 40px rgba(255,255,255,0.12);
+  }
+  header p {
+    margin: 18px auto 0; max-width: 560px;
+    font-size: 14px; font-weight: 300; line-height: 1.6;
+    letter-spacing: 0.03em;
+    color: var(--ink-dim);
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 20px;
+  }
+  .card {
+    position: relative;
+    background: var(--card);
+    border: 1px solid var(--stroke);
+    border-radius: 16px;
+    padding: 26px 26px 22px;
+    display: flex; flex-direction: column;
+    transition: border-color 0.25s ease, background 0.25s ease, transform 0.25s ease;
+  }
+  .card:hover {
+    border-color: var(--stroke-hover);
+    background: var(--card-hover);
+    transform: translateY(-2px);
+  }
+  .card .num {
+    font-family: "Barlow Semi Condensed", sans-serif;
+    font-size: 12px; font-weight: 500;
+    letter-spacing: 0.24em;
+    color: var(--ink-faint);
+    margin-bottom: 12px;
+  }
+  .card h2 {
+    margin: 0 0 12px;
+    font-size: 20px; font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+  .card .desc {
+    margin: 0 0 22px;
+    font-size: 13.5px; font-weight: 300; line-height: 1.62;
+    letter-spacing: 0.01em;
+    color: var(--ink-dim);
+    flex: 1;
+  }
+  .links {
+    display: flex; gap: 10px;
+  }
+  .links a {
+    flex: 1;
+    text-align: center;
+    text-decoration: none;
+    font-size: 12px; font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink);
+    padding: 10px 8px;
+    border: 1px solid var(--stroke);
+    border-radius: 9px;
+    background: rgba(255,255,255,0.03);
+    transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+  }
+  .links a:hover {
+    border-color: var(--stroke-hover);
+    background: rgba(255,255,255,0.08);
+  }
+  .links a .tag {
+    display: block;
+    font-family: "Barlow Semi Condensed", sans-serif;
+    font-size: 10px; font-weight: 300;
+    letter-spacing: 0.18em;
+    color: var(--ink-faint);
+    margin-top: 3px;
+  }
+  footer {
+    margin-top: 64px;
+    text-align: center;
+    font-size: 11px; font-weight: 300;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="kicker">World Cup Pulse</div>
+    <h1>VARIANTS</h1>
+    <p>Ten readings of a single match rendered as living clay terrain. Each variant pushes one channel — colour, relief, motion or light — to the foreground. Two matches per card: France&ndash;Senegal and Iceland&ndash;Norway.</p>
+  </header>
+
+  <div class="grid" id="grid"></div>
+
+  <footer>10 variants · stage10 engine · real data only</footer>
+</div>
+
+<script>
+  const VARIANTS = [
+    { n: 1,  title: "Tectonic",        desc: "The refined default: two team plates meeting at a possession tide, threat mounds near the attacked goal, xG spires at every shot, a full-field colour flood at each goal — stage10 at its calmest, gallery-grade." },
+    { n: 2,  title: "Duel Tide",       desc: "Colour follows a transparent momentum pulse, not the ball — the tide front swings like a tug-of-war rope, so “they attacked all game, then those scored” is literally readable in how far the colour was pushed." },
+    { n: 3,  title: "Ember Threat",    desc: "Near-monochrome dark clay where territory is almost colourless and the only vivid thing is heat: threat glows as a live ember on the mounds and xG spires ignite — the match rendered as a forge." },
+    { n: 4,  title: "Paper Weave",     desc: "The match as a woven textile sampler: the pitch grid becomes warp-and-weft threads, territory two dyed fabrics meeting at a frayed possession seam — quiet, craft-object, museum-vitrine calm." },
+    { n: 5,  title: "Pressure Front",  desc: "A wide, low, near-horizon cinematic take about one thing: the attacking team’s colour tongue thrusting toward the far goal on fast breaks, hero-lit like a landscape at dusk." },
+    { n: 6,  title: "Tidal Basin",     desc: "Territory as two coloured liquids in a basin — the possession tide is a real fluid surface with a meniscus, sloshing between the goals; threat is where the liquid piles high near a goal." },
+    { n: 7,  title: "Night Vitrine",   desc: "A gallery night-shot: everything is one soft neutral clay under museum light, team identity appearing only as faint tints at the goals and in the flood — a pale sculpture that briefly bruises with colour when someone scores." },
+    { n: 8,  title: "Ridge Lines",     desc: "The match as a hand-shaded relief map: subtle contour banding reads height like a topographic survey of threat, territory tinted like map regions — a cartographer’s football match." },
+    { n: 9,  title: "Heartbeat",       desc: "The whole cloth beats like a chest — a strong systolic swell on momentum surges and dangerous moments, calm diastole in dead time, the flatline-then-explosion of a goal made visceral." },
+    { n: 10, title: "Sunrise Arena",   desc: "A warm, low-sun cinematic epilogue: the clay lit as if at golden hour, the whole 20-second story arcing from cool dawn (kickoff) to warm dusk (final whistle) — a day passing over a landscape." }
+  ];
+  const M1 = "1953888", M2 = "1990967";
+  const grid = document.getElementById("grid");
+  grid.innerHTML = VARIANTS.map(v => `
+    <div class="card">
+      <div class="num">V${v.n}</div>
+      <h2>${v.title}</h2>
+      <p class="desc">${v.desc}</p>
+      <div class="links">
+        <a href="/v${v.n}.html?id=${M1}">FRA &middot; SEN<span class="tag">match 1</span></a>
+        <a href="/v${v.n}.html?id=${M2}">ICO &middot; NOR<span class="tag">match 2</span></a>
+      </div>
+    </div>
+  `).join("");
+</script>
+</body>
+</html>

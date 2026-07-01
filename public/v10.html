@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>V10 · SUNRISE ARENA — FRA · SEN</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- Barlow (Google Fonts) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@200;300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- three.js via CDN import map (esm.sh) -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://esm.sh/three@0.160.0",
+      "three/addons/": "https://esm.sh/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <style>
+    body, .pnl, .hud-w, .btn, #title2, #camread, input, select, textarea, button, label, option {
+      font-family: 'Barlow', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    #stage { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: grab; }
+    #stage:active { cursor: grabbing; }
+    .pnl {
+      position: fixed; z-index: 30; pointer-events: auto;
+      display: flex; flex-direction: column; gap: 11px;
+      background: rgba(10,12,20,0.62); border: 1px solid var(--stroke);
+      border-radius: 12px; padding: 14px 16px; width: 316px;
+      font-size: 13px; letter-spacing: 0.03em;
+      backdrop-filter: blur(7px);
+    }
+    #panel { top: 14px; left: 14px; max-height: calc(100vh - 28px); overflow-y: auto; overflow-x: hidden; }
+    #panel::-webkit-scrollbar { width: 9px; }
+    #panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 4px; }
+    #campanel { bottom: 14px; right: 14px; width: 264px; }
+    .pnl .row { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 2px 0; }
+    .pnl label { color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.07em; font-size: 13px; }
+    .pnl .val { min-width: 54px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); font-size: 13px; font-weight: 500; }
+    #title2 { font-size: 14px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink); font-weight: 600; }
+    #camread { min-width: auto; color: #9fd; letter-spacing: 0.06em; }
+
+    /* ---- two-line control: label/value row, then full-width slider ---- */
+    .ctl { display: flex; flex-direction: column; gap: 4px; }
+    .ctl-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .ctl-head label { flex: 1; min-width: 0; }
+
+    /* ---- BIGGER, more legible range sliders (panels only) ---- */
+    .pnl input[type=range] {
+      flex: 1; min-width: 0; -webkit-appearance: none; appearance: none;
+      height: 20px; background: transparent; cursor: pointer; margin: 0;
+    }
+    .pnl input[type=range]::-webkit-slider-runnable-track {
+      height: 7px; border-radius: 4px; background: rgba(255,255,255,0.14); border: 1px solid var(--stroke);
+    }
+    .pnl input[type=range]::-moz-range-track {
+      height: 7px; border-radius: 4px; background: rgba(255,255,255,0.14); border: 1px solid var(--stroke);
+    }
+    .pnl input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none; width: 19px; height: 19px; margin-top: -7px;
+      border-radius: 50%; background: #6aa0ff; border: 2px solid #0a0e16;
+      box-shadow: 0 0 0 1px rgba(106,160,255,0.5); transition: background 0.12s, box-shadow 0.12s;
+    }
+    .pnl input[type=range]::-moz-range-thumb {
+      width: 19px; height: 19px; border-radius: 50%; background: #6aa0ff; border: 2px solid #0a0e16;
+      box-shadow: 0 0 0 1px rgba(106,160,255,0.5);
+    }
+    .pnl input[type=range]:hover::-webkit-slider-thumb { background: #8fb9ff; box-shadow: 0 0 0 4px rgba(106,160,255,0.28); }
+    .pnl input[type=range]:hover::-moz-range-thumb { background: #8fb9ff; box-shadow: 0 0 0 4px rgba(106,160,255,0.28); }
+    .pnl input[type=range]:active::-webkit-slider-thumb { background: #b6d2ff; }
+
+    /* ---- LAYER GROUPS — the builder rows ---- */
+    .layer { border: 1px solid var(--stroke); border-radius: 9px; overflow: hidden; }
+    .layer.on { border-color: rgba(120,170,255,0.45); }
+    .layer-head {
+      display: flex; align-items: center; gap: 11px; padding: 11px 12px; cursor: pointer;
+      background: rgba(255,255,255,0.03); user-select: none;
+    }
+    .layer-head:hover { background: rgba(255,255,255,0.06); }
+    .layer-head .lname { flex: 1; font-size: 14px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink); font-weight: 700; }
+    .layer.on .lname { color: #bcd6ff; }
+    .layer-head .chev { color: var(--ink-dim); font-size: 13px; transition: transform 0.15s; }
+    .layer.open .chev { transform: rotate(90deg); }
+    .layer-body { display: none; flex-direction: column; gap: 10px; padding: 11px 13px 13px; border-top: 1px solid var(--stroke); }
+    .layer.open .layer-body { display: flex; }
+    /* a real checkbox toggle */
+    .lck { width: 20px; height: 20px; border-radius: 5px; border: 1px solid var(--stroke);
+      background: rgba(255,255,255,0.04); position: relative; flex: 0 0 auto; cursor: pointer; }
+    .layer.on .lck { background: #6aa0ff; border-color: #6aa0ff; }
+    .layer.on .lck::after { content: '✓'; position: absolute; inset: 0; display: flex; align-items: center;
+      justify-content: center; color: #04060c; font-size: 14px; font-weight: 800; }
+    .sub { display: flex; align-items: center; gap: 6px; }
+    .sub label { font-size: 12px; }
+    .subtoggle { display: flex; flex-wrap: wrap; gap: 6px; }
+    .pill { cursor: pointer; border: 1px solid var(--stroke); background: rgba(255,255,255,0.04);
+      color: var(--ink-dim); border-radius: 7px; padding: 5px 10px; font-size: 12px; letter-spacing: 0.03em; }
+    .pill.on { background: rgba(106,160,255,0.22); border-color: rgba(106,160,255,0.6); color: #cfe2ff; }
+
+    /* ---- A contributor rows: checkbox + label, then a weight slider below ---- */
+    .contrib { display: flex; flex-direction: column; gap: 5px; }
+    .contrib.off { opacity: 0.45; }
+    .contrib-head { display: flex; align-items: center; gap: 9px; }
+    .contrib-head label { flex: 1; min-width: 0; text-transform: none; letter-spacing: 0.02em; font-size: 13px; cursor: pointer; }
+    .lck.sm { width: 17px; height: 17px; border-radius: 4px; }
+    .lck.sm.on { background: #6aa0ff; border-color: #6aa0ff; }
+    .lck.sm.on::after { content: '✓'; position: absolute; inset: 0; display: flex; align-items: center;
+      justify-content: center; color: #04060c; font-size: 12px; font-weight: 800; }
+    .wslider { width: 100%; }
+
+    .grp { margin-top: 2px; color: #9fd; font-size: 12px; letter-spacing: 0.14em;
+      text-transform: uppercase; border-top: 1px solid var(--stroke); padding-top: 8px; }
+    .btn { cursor: pointer; border: 1px solid var(--stroke); background: rgba(255,255,255,0.05);
+      color: var(--ink); border-radius: 7px; padding: 6px 11px; font-size: 13px; }
+    .btn:hover { border-color: rgba(255,255,255,0.3); }
+    .preset { flex: 1; font-size: 12px; letter-spacing: 0.02em; padding: 7px 5px; }
+    /* config action row (COPY · SAVE · СБРОС) */
+    .cfgbar { display: flex; gap: 8px; }
+    .cfgbar .btn { flex: 1; text-align: center; padding: 7px 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .cfgbar .btn.ok { border-color: rgba(120,220,160,0.7); color: #bff3d4; }
+
+    /* free-floating, draggable HUD widgets */
+    .hud-w {
+      position: fixed; z-index: 31; white-space: nowrap; font-variant-numeric: tabular-nums;
+      color: var(--ink); letter-spacing: 0.06em; font-size: 13px; padding: 2px 4px;
+      transform-origin: top left; user-select: none; -webkit-user-select: none;
+    }
+    .hud-w.big { font-size: 30px; font-weight: 200; letter-spacing: 0.04em; }
+    .hud-w.dim { color: var(--ink-dim); font-size: 12px; letter-spacing: 0.12em; }
+    .hud-w .home { color: var(--home-color); font-weight: 600; }
+    .hud-w .away { color: var(--away-color); font-weight: 600; }
+    .hud-w .rsz { display: none; }
+    body:not(.hud-edit) .hud-w { pointer-events: none; }
+    body.hud-edit .hud-w { pointer-events: auto; cursor: move; outline: 1px dashed rgba(120,170,255,0.7); border-radius: 4px; }
+    body.hud-edit .hud-w .rsz {
+      display: block; position: absolute; right: -6px; bottom: -6px; width: 13px; height: 13px;
+      background: #6aa0ff; border: 1px solid #04050a; border-radius: 3px; cursor: nwse-resize; pointer-events: auto;
+    }
+    /* global play bar (top centre) */
+    #playbar {
+      position: fixed; z-index: 40; top: 12px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 8px; align-items: center; padding: 6px 12px;
+      background: rgba(10,12,20,0.66); border: 1px solid var(--stroke); border-radius: 11px;
+      backdrop-filter: blur(6px); font-size: 11px; color: var(--ink-dim);
+    }
+    #playbar input[type=range] { width: 220px; accent-color: #6aa0ff; }
+    #playbar .clkv { font-variant-numeric: tabular-nums; color: var(--ink); min-width: 34px; }
+
+    /* ---- MATCH SWITCHER TABS (top centre, above the play bar) ---- */
+    #matchtabs {
+      position: fixed; z-index: 41; top: 12px; left: 14px;
+      display: flex; gap: 6px; align-items: center; padding: 5px;
+      background: rgba(10,12,20,0.66); border: 1px solid var(--stroke); border-radius: 11px;
+      backdrop-filter: blur(6px);
+    }
+    #matchtabs .mtab {
+      cursor: pointer; border: 1px solid transparent; background: transparent;
+      color: var(--ink-dim); border-radius: 8px; padding: 6px 13px;
+      font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+      transition: background 0.14s, color 0.14s, border-color 0.14s;
+    }
+    #matchtabs .mtab:hover { color: var(--ink); background: rgba(255,255,255,0.05); }
+    #matchtabs .mtab.on { background: rgba(106,160,255,0.20); border-color: rgba(106,160,255,0.55); color: #cfe2ff; }
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <!-- MATCH SWITCHER TABS -->
+  <div id="matchtabs">
+    <button class="mtab" data-id="1953888">FRA · SEN</button>
+    <button class="mtab" data-id="1990967">ICO · NOR</button>
+  </div>
+
+  <!-- GLOBAL play / scrub / speed -->
+  <div id="playbar">
+    <button id="play" class="btn">❚❚</button>
+    <button id="restart" class="btn">↺</button>
+    <input id="clock" type="range" min="0" max="100" step="0.05" value="0">
+    <span class="clkv" id="clk">0'</span>
+    <label style="text-transform:uppercase;letter-spacing:0.1em">speed</label>
+    <input id="speed" type="range" min="0.2" max="6" step="0.1" value="0.9" style="width:90px">
+    <span class="clkv" id="speedV">0.9×</span>
+  </div>
+
+  <!-- LEFT — the layer constructor -->
+  <div id="panel" class="pnl">
+    <div id="title2">STAGE 10 · CONSTRUCTOR · loading…</div>
+
+    <div class="cfgbar">
+      <button id="cfgcopy" class="btn">копировать</button>
+      <button id="cfgsave" class="btn">сохранить</button>
+      <button id="cfgreset" class="btn">сброс</button>
+    </div>
+    <textarea id="cfgPaste" readonly style="display:none;width:100%;height:84px;margin-top:2px;box-sizing:border-box;font:11px/1.35 ui-monospace,monospace;background:#0a0e16;color:#9fd;border:1px solid var(--stroke);border-radius:6px;padding:7px;resize:vertical"></textarea>
+
+    <div id="layers" style="display:flex;flex-direction:column;gap:8px"></div>
+  </div>
+
+  <!-- camera / layout -->
+  <div id="campanel" class="pnl">
+    <div class="row"><label>camera ▸ ракурс</label><span class="val" id="camread">—</span></div>
+    <div class="row">
+      <button id="copycam" class="btn">copy camera</button>
+      <button id="resetcam" class="btn">reset</button>
+    </div>
+    <div class="row" style="margin-top:2px">
+      <button id="hudedit" class="btn" style="flex:1">✥ двигать HUD</button>
+      <button id="hudsave" class="btn" style="flex:1">save</button>
+      <button id="hudreset" class="btn">reset</button>
+    </div>
+    <div class="dim" style="color:var(--ink-dim);font-size:10px">drag to orbit · wheel to zoom</div>
+  </div>
+
+  <!-- free-floating HUD widgets -->
+  <div class="hud-w" id="w_teams" data-k="teams"><span class="home" id="hAbbr">FRA</span> vs <span class="away" id="aAbbr">SEN</span><span class="rsz"></span></div>
+  <div class="hud-w big" id="w_score" data-k="score"><span id="hScore">0</span> – <span id="aScore">0</span><span class="rsz"></span></div>
+  <div class="hud-w" id="w_clock" data-k="clock"><span id="clk2">0'</span><span class="rsz"></span></div>
+
+  <noscript>This stage requires JavaScript (ES modules) and WebGL.</noscript>
+  <script type="module" src="v10.js"></script>
+</body>
+</html>
