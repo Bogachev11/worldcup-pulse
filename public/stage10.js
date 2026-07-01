@@ -73,11 +73,13 @@ const teamColor = (team) => (team === 'away' ? COL_AWAY : COL_HOME);
 
 // GOAL-FLOOD phase durations in SECONDS of wall time (see goalFloodAt). Declared
 // here so DEFAULTS() can seed cfg.A.floodHold without a temporal-dead-zone error.
-// SWEEP = near-instant BANG (~0.15s to full flood), brief HOLD, then a SLOW SMOOTH
-// FLATTEN over ~3s — sharp explosion then a long calm exhale that blends into the
-// post-goal lull. All in WALL seconds (see goalFloodAt), so it plays out fully under
-// the dramatic clock.
-const FLOOD_SWEEP_S = 0.15, FLOOD_RELAX_S = 3.0, FLOOD_HOLD_DEFAULT_S = 1.8;
+// SWEEP = a READABLE PUNCH (~0.35s to full flood — fast but NOT a 1-frame snap, so the
+// colour is seen filling), a BRIEF HOLD (~0.8s, kept short so the full-colour field is
+// never a long static freeze), then a SMOOTH MOVING EXHALE over ~2.5s where the colour
+// fades back to the two-team field AND the relief levels — the scene keeps gently
+// moving the whole time (the fade/level are functions of WALL time, so they animate
+// even while the dramatic clock dwells). All in WALL seconds (see goalFloodAt).
+const FLOOD_SWEEP_S = 0.35, FLOOD_RELAX_S = 2.5, FLOOD_HOLD_DEFAULT_S = 0.8;
 
 // ============================================================================
 // CONFIG — every layer's enable flag + its own knobs. This whole object is what
@@ -350,6 +352,12 @@ function makeBlanket(teamCol, isAway) {
     uBaseline: { value: 0 }, uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
     uTeam: { value: new THREE.Color(teamCol) },
     uGlow: { value: 1.0 },     // ЯРКОСТЬ ЦВЕТА — emissive strength of flat territory
+    // GOAL FLOOD — uniform full-field colour override. uFlood 0..1 = how strongly THIS
+    // cell's colour is blended toward the scorer colour (uFloodTeam) across the WHOLE
+    // sheet, uniformly (NOT a moving front). At uFlood=1 every visible cell is the
+    // scorer colour → instant 100% fill, no wave. Both sheets get the SAME uFlood so
+    // whichever laps on top shows the scorer colour → no residual opponent strip.
+    uFlood: { value: 0.0 }, uFloodTeam: { value: new THREE.Color(teamCol) },
     // НАХЛЁСТ ▸ глубина — finite OVERLAP depth (fraction of pitch length, u-units).
     // Each opaque sheet covers its own side AND extends this far PAST the front into
     // the opponent's territory, then ends with a clean ~1px-AA cutoff that tucks
@@ -434,6 +442,7 @@ function makeBlanket(teamCol, isAway) {
         transformed.y += (hb - uBaseline) + uLipH * vFold;`);
     shader.fragmentShader = `
       uniform vec3 uTeam; uniform float uGlow;
+      uniform float uFlood; uniform vec3 uFloodTeam;
       uniform float uLap; uniform float uAway; uniform float uTop;
       // STAGE-7 material uniforms (clay tint + sat + micro-texture + HEX pattern + ember)
       uniform vec3 uClay; uniform float uSat; uniform float uTint; uniform float uTex;
@@ -530,8 +539,18 @@ function makeBlanket(teamCol, isAway) {
         float band = 1.0 - smoothstep(0.0, max(uLap*1.6, 0.04), dist);
         float shadow = (1.0 - uTop) * band;
         col *= mix(1.0, 0.40, shadow);
+        // GOAL FLOOD — uniform full-field OVERRIDE. Blend the whole cell toward the
+        // scorer colour by uFlood (same on both sheets), so at uFlood=1 the ENTIRE
+        // pitch is instantly the scorer colour — no wave, no seam move. Saturate the
+        // flood colour slightly with uSat parity so it reads vivid like the territory.
+        col = mix(col, uFloodTeam, clamp(uFlood, 0.0, 1.0));
         diffuseColor.rgb = col;
         float covEff = covAt();
+        // During the flood, force THIS sheet to cover its whole area so the scorer
+        // colour fills 100% of the pitch with NO gap/opponent strip: the seam discard
+        // is lifted as uFlood rises, so both sheets paint fully and the visible surface
+        // is uniformly the scorer colour.
+        covEff = max(covEff, clamp(uFlood, 0.0, 1.0));
         diffuseColor.a *= covEff;
       }`);
     shader.fragmentShader = shader.fragmentShader.replace('#include <alphatest_fragment>',
@@ -584,7 +603,11 @@ function makeBlanket(teamCol, isAway) {
          // the field readable as its team colour. CRITICAL: this floor is the SAME at
          // every height (no vHd term) → flat and raised cloth glow identically, so there
          // is NO zero→non-zero emissive band.
-         vec3 emit = uTeam * (0.34 * uGlow) * litMul;
+         // During the goal flood the emissive floor follows the SCORER colour too, so
+         // the glow that keeps the flat territory vivid doesn't tint the flood with the
+         // opponent's hue on the opponent sheet — the whole field glows the scorer colour.
+         vec3 glowTeam = mix(uTeam, uFloodTeam, clamp(uFlood, 0.0, 1.0));
+         vec3 emit = glowTeam * (0.34 * uGlow) * litMul;
          // STAGE-7 GENTLE EMBER — a subtle warm crest glow, tied to REAL match intensity
          // (uIntensity) like stage7, only on the steep faces of the TALL xG spires (not
          // the gentle mounds, whose relief stays below the smoothstep floor). Kept low so
@@ -1072,12 +1095,13 @@ function contribLift(e) {
       if (adv > 0.04) lift += A.wProg * (1.2 * clamp(adv * 2.5, 0, 1) + (e.eu > 0.66 ? 0.5 : 0));
     }
   }
-  if (A.cXg && isShot && !e.isGoal) {
-    // sharp tall crest at the shot, scaled by xg. Kept SEPARATE (A_xH/A_xA) so it
-    // stays a tall spire above the gentle swells. GOALS ARE EXCLUDED: a goal is
-    // expressed ONLY by the celebratory colour FLOOD (goalFloodAt), never by a
-    // height peak — so a goal (a high-xg shot) does NOT raise a relief spire. The
-    // tall spire is reserved for NON-GOAL shots (chances) only.
+  if (A.cXg && isShot) {
+    // sharp tall crest at EVERY shot (goals INCLUDED), scaled by xg. Kept SEPARATE
+    // (A_xH/A_xA) so it stays a tall spire above the gentle swells. A GOAL now shows
+    // BOTH the instant full-field colour FLOOD (goalFloodAt) AND this height spire —
+    // goals are typically the tallest since they are high-xg chances. Non-goal shots
+    // get the spire only. The spire stands exactly at the shot's pitch spot and fades
+    // a couple seconds after (arWeight decay).
     const xg = clamp(e.xg || 0, 0, 1);
     sharp += A.wXg * (1.0 + 4.5 * xg);
   }
@@ -1098,10 +1122,14 @@ function computeA(t, dt) {
   // a much tighter radius so the chance reads as a sharp spire, not a swell.
   const radCells = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1)) * lerp(0.6, 2.2, clamp(cfg.A.blur, 0, 1));
   // xG spire WIDTH is INDEPENDENT of сглаживание/grid: derive the base sharp radius
-  // from grid only (not blur), then scale by the dedicated xgW slider.
+  // from grid only (not blur), then scale by the dedicated xgW slider. Kept a SHARP
+  // spire, but NOT sub-cell: with grid≈0.45 the coarse activity grid is ~23 cells, so
+  // a <1-cell stamp becomes a thin needle that barely survives bilinear sampling into
+  // the 160-wide render mesh (the "xG не поднимается" bug). Floor the radius near ~1
+  // cell so a shot reads as a clear, distinct spire that stands proud of the mounds.
   const xgW = Number.isFinite(cfg.A.xgW) ? clamp(cfg.A.xgW, 0.2, 4) : 1;
-  const baseSharp = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1)) * 0.3;
-  const sharpRad = Math.max(0.5, baseSharp * xgW);
+  const baseSharp = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1)) * 0.55;
+  const sharpRad = Math.max(1.0, baseSharp * xgW);
   const win = eventsInWindow(t, rel * 5 + atk * 3);
   for (const e of win) {
     const env = arWeight(t - e.t, atk, rel);
@@ -1139,18 +1167,14 @@ function computeA(t, dt) {
   // Snap on scrub/resize so the deterministic per-t front is exact.
   const kf = A_frontReset ? 1 : expA(dt, TAU_FRONT); A_frontReset = false;
   for (let j = 0; j < gy; j++) A_front[j] += (A_frontRaw[j] - A_front[j]) * kf;
-  // GOAL FLOOD override — the scoring team's colour sweeps to fill the WHOLE pitch
-  // then recedes. Push EVERY channel's front toward the scorer's far end as amt
-  // rises: home (own goal u≈0) floods front→1 (home owns all); away floods →0.
-  // Deterministic from clock via goalFloodAt → scrub-safe; overrides bands only
-  // during the flood.
-  const flood = goalFloodAt(t);
-  let floodFront = NaN;
-  if (flood && flood.amt > 0.001) {
-    const target = flood.team === 'home' ? 1 : 0;   // front value that gives the scorer the whole pitch
-    floodFront = target;
-  }
-  // Build the EFFECTIVE per-channel front (eased front + goal-flood wash) and store
+  // GOAL FLOOD — the scoring team's colour fills the WHOLE pitch AT ONCE (a uniform
+  // full-field colour OVERRIDE), then fades back. This is NO LONGER a moving front /
+  // wave: the front (seam) is left ALONE, and the flood is applied purely as a colour
+  // blend in the blanket shaders (mix(territoryColour, scorerColour, floodAmt) on EVERY
+  // cell, uniformly). See the uFlood/uFloodTeam plumbing after the vertex loop in
+  // computeField. So at floodAmt=1 the ENTIRE pitch is the scorer colour instantly,
+  // 100% coverage, no wave, no residual opponent strip. Deterministic via goalFloodAt.
+  // Build the EFFECTIVE per-channel front (eased front only — no flood wash) and store
   // it — as a FRONT-u VALUE, not a home-share — into A_own. The blanket shaders work
   // in honest u-units: vDu = u − front(v), so coverage cutoffs + the owner lip live
   // directly in pitch-length fractions (the НАХЛЁСТ depth slider). Bilinear sampling
@@ -1179,8 +1203,8 @@ function computeA(t, dt) {
       const target = lerp(fr, endU, conf);
       if (target < fr) fr = target;
     }
-    if (!Number.isNaN(floodFront)) fr = lerp(fr, floodFront, flood.amt);   // flood wash
-    A_frontEff[j] = fr;   // raw COMBINED front this frame (eased base + fingers + flood)
+    A_frontEff[j] = fr;   // raw COMBINED front this frame (eased base + fingers). NO flood
+                          // wash — the flood is a uniform colour override, not a front move.
   }
   // FINAL temporal low-pass on the COMBINED/displayed front. The combine above is
   // re-evaluated fresh each frame; when a fast pass enters/leaves the recent window
@@ -1247,10 +1271,10 @@ function goalFloodAt(t) {
   if (elapsed < 0 || elapsed >= total) return null;
   let amt;
   if (elapsed < sweep) {
-    // BANG — snappy FAST-ATTACK (ease-out): the scorer's colour punches to full flood
-    // almost instantly (~0.15s), front-loaded so it reads as an explosion, not a slow
-    // wipe. 1-(1-f)^3 is ~0.9 at f=0.5 → most of the flood lands in the first ~0.07s.
-    const f = elapsed / sweep; const g1 = 1 - f; amt = 1 - g1 * g1 * g1;
+    // PUNCH — a fast but READABLE fill over ~0.35s (NOT a 1-frame snap). smoothstep
+    // eases in→out so the colour is visibly seen sweeping to full over a third of a
+    // second — a punch, not an instant snap, not a slow wipe.
+    const f = elapsed / sweep; amt = f * f * (3 - 2 * f);
   } else if (elapsed < sweep + hold) {
     amt = 1;                                                            // hold full (100%)
   } else {
@@ -1275,15 +1299,16 @@ function wallSecondsSinceGoal(gt, t) {
   return dProg * passSeconds;
 }
 
-// POST-GOAL LULL — after the flood recedes, a LONGER calm breather where the A
-// relief FLATTENS toward ~0 (the surface "выпрямилось, обнулилось") for a beat,
-// then normal play resumes. Returns 0..1 = how flat the relief is pressed at clock
-// t (0 = full relief, 1 = fully flattened). Deterministic from the clock (elapsed =
-// t − goalTime) → scrub-safe, no frame state. The lull window opens right where the
-// flood window closes: [floodTotal, floodTotal + lullTotal]. Phases: ramp DOWN the
-// relief (~0.5s), HOLD flat (cfg.A.lull), release back (~0.7s). Authored in seconds
-// of wall time → converted to match-minutes via the playback rate like the flood.
-const LULL_RAMP_S = 0.5, LULL_RELEASE_S = 0.7;
+// POST-GOAL HEIGHT LEVELING — the relief LEVELS/flattens CONCURRENTLY with the colour
+// flood (not after it), so the whole goal beat is ONE smooth moving calm-down: as the
+// scorer colour punches in, the mounds+spires flatten; through the colour exhale the
+// field stays calm; then, as the colour returns to the two-team field, the height
+// smoothly RECOVERS — all continuously MOVING (these are functions of WALL time, so
+// they animate even while the dramatic clock dwells → never a dead freeze). Returns
+// 0..1 = how flat the relief is pressed at clock t (0 = full relief, 1 = fully level).
+// Windows overlap the flood: flatten during sweep+hold, hold flat through the relax
+// exhale, recover over a short tail just after. Deterministic from the clock → scrub-safe.
+const LULL_RELEASE_S = 1.0;
 function goalLullAt(t) {
   if (!goalsByTime || !goalsByTime.length) return 0;
   let g = null;
@@ -1291,22 +1316,19 @@ function goalLullAt(t) {
     if (goalsByTime[i].t <= t) g = goalsByTime[i]; else break;
   }
   if (!g) return 0;
-  // WALL-SECONDS envelope (screen time), same base as goalFloodAt so the lull opens
-  // EXACTLY where the flood window closes and never overlaps/fights it. elapsed and
-  // all phase durations are in real screen seconds, robust to the dramatic-time warp.
   const holdS = Number.isFinite(cfg.A.floodHold) ? clamp(cfg.A.floodHold, 0, 12) : FLOOD_HOLD_DEFAULT_S;
-  const floodTotal = FLOOD_SWEEP_S + holdS + FLOOD_RELAX_S;   // wall seconds
-  const lullS = Number.isFinite(cfg.A.lull) ? clamp(cfg.A.lull, 0, 4) : 0;
-  if (lullS <= 0) return 0;
-  const ramp = LULL_RAMP_S, hold = lullS, rel = LULL_RELEASE_S;   // wall seconds
-  const lullTotal = ramp + hold + rel;
   const elapsed = wallSecondsSinceGoal(g.t, t);
   if (!Number.isFinite(elapsed)) return 0;
-  const e = elapsed - floodTotal;            // elapsed INTO the lull window (wall sec)
-  if (e < 0 || e >= lullTotal) return 0;
-  if (e < ramp) { const f = e / ramp; return f * f * (3 - 2 * f); }        // flatten in
-  if (e < ramp + hold) return 1;                                           // hold flat
-  const f = (e - ramp - hold) / rel; const s = f * f * (3 - 2 * f); return 1 - s;  // release
+  const flattenEnd = FLOOD_SWEEP_S + holdS;        // relief fully level by end of hold
+  const holdEnd = flattenEnd + FLOOD_RELAX_S;      // stays level through the colour exhale
+  const total = holdEnd + LULL_RELEASE_S;          // then recovers over the tail
+  if (elapsed < 0 || elapsed >= total) return 0;
+  if (elapsed < flattenEnd) {                      // FLATTEN in, tracking the flood punch
+    const f = clamp(elapsed / Math.max(flattenEnd, 1e-3), 0, 1); return f * f * (3 - 2 * f);
+  }
+  if (elapsed < holdEnd) return 1;                 // HOLD level through the exhale
+  const f = (elapsed - holdEnd) / LULL_RELEASE_S;  // RECOVER height (smooth, moving)
+  const s = f * f * (3 - 2 * f); return 1 - s;
 }
 
 // bilinear sample a grid at normalized (u,v) (v already flipped by caller convention)
@@ -1544,6 +1566,15 @@ function computeField(t, dt) {
   // colour-glow strength (graceful for old cfgs lacking A.glow).
   const glow = Number.isFinite(cfg.A.glow) ? cfg.A.glow : 1.0;
   bH.u.uGlow.value = glow; bA.u.uGlow.value = glow;
+  // GOAL FLOOD → uniform full-field colour override. Feed the SAME flood amt +
+  // scorer colour to BOTH sheets: mix(territory, scorer, amt) on every cell, so the
+  // whole pitch turns the scorer colour AT ONCE (no wave). amt is driven directly by
+  // goalFloodAt (flood2, computed above) — NOT temporally low-passed — so the colour
+  // BANGS in lockstep with the score bump (scoreAt uses the same g.t≤t on this clock).
+  const floodAmt = flood2 && flood2.amt > 0 ? flood2.amt : 0;
+  const floodCol = flood2 ? (flood2.team === 'home' ? COL_HOME : COL_AWAY) : COL_HOME;
+  bH.u.uFlood.value = floodAmt; bA.u.uFlood.value = floodAmt;
+  bH.u.uFloodTeam.value.copy(floodCol); bA.u.uFloodTeam.value.copy(floodCol);
   // НАХЛЁСТ ▸ глубина (u-units) → both blanket shaders (coverage cutoff + fold width).
   bH.u.uLap.value = lap; bA.u.uLap.value = lap;
   // КРОМКА ▸ подъём — the VISIBLE lip height by which the TOP sheet laps over the
@@ -1773,10 +1804,10 @@ const DRAMA_MAX_MIN_PER_SEC = 13.0;  // ≤ 13 match-minutes per screen-second a
 // envelope — BANG → 100% flood → hold → relax — WITHOUT cramping, otherwise the
 // wall-seconds flood would spill into the racing post-goal minutes and look rushed.
 // So GOAL_ROOM_S is derived from the flood durations (sweep + default hold + relax)
-// plus a small margin, and the post-goal LULL beat gets its own room sized to the
-// lull envelope (ramp + hold + release). See goalFloodAt / goalLullAt (wall-seconds).
-const GOAL_ROOM_S = FLOOD_SWEEP_S + FLOOD_HOLD_DEFAULT_S + FLOOD_RELAX_S + 0.4; // ≈4.7s — the WHOLE flood (BANG→100%→hold→relax) plays out on screen
-const GOAL_LULL_ROOM_S = LULL_RAMP_S + 1.2 + LULL_RELEASE_S + 0.4;              // ≈2.8s — the calm breather + reset fits after
+// plus a small margin, and the post-goal beat gets a little extra room for the height
+// RECOVERY tail so the leveling→recover finishes on screen. See goalFloodAt/goalLullAt.
+const GOAL_ROOM_S = FLOOD_SWEEP_S + FLOOD_HOLD_DEFAULT_S + FLOOD_RELAX_S + 0.4; // the WHOLE flood (PUNCH→100%→hold→exhale) plays out on screen
+const GOAL_LULL_ROOM_S = LULL_RELEASE_S + 0.8;                                  // the height-recovery tail gets its own room just after
 const CHANCE_ROOM_S = 1.0;    // ×normalized importance → a big non-goal chance's room
 // I(t) sampling resolution (match-minutes per bin) + smoothing window (minutes).
 const DRAMA_DT = 0.05;
@@ -1796,31 +1827,19 @@ function buildImportanceCurve() {
   const I = new Float32Array(N);          // raw importance accumulator (per bin)
   const binOf = (t) => clamp(Math.floor(t / DRAMA_DT), 0, N - 1);
 
-  // helper: is a pitch point in the attacking final-third / penalty box, in the
-  // shared (mirrored) pitch frame. u is the along-pitch coord; each team attacks
-  // toward its OWN goal-opposite end. In toUV() home maps x→u directly and away is
-  // flipped, so BOTH teams attack toward u→1 (endX large). Final third ≈ u>0.66,
-  // box ≈ u>0.83 & v in the central band.
-  const inFinalThird = (u) => u > 0.66;
-  const inBox = (u, v) => u > 0.83 && v > 0.21 && v < 0.79;
-
   // Deposit a weighted, spatially-instant impulse at match-time t.
   const add = (t, w) => { if (w > 0) I[binOf(t)] += w; };
 
-  // Track the last turnover time per team to detect FAST forward transitions
-  // (a quick sequence after winning the ball that reached danger).
-  let lastTurnover = { home: -99, away: -99 };
-  const TURNOVER_TYPES = new Set(['Interception', 'Tackle', 'BallRecovery', 'Dispossessed', 'Clearance']);
-
   for (let i = 0; i < timeline.length; i++) {
     const e = timeline[i];
-    // turnover bookkeeping: the winning team is `e.team` for a recovery/tackle/
-    // interception; a Dispossessed marks the OTHER team winning it.
-    if (TURNOVER_TYPES.has(e.type)) {
-      const winner = (e.type === 'Dispossessed') ? (e.team === 'home' ? 'away' : 'home') : e.team;
-      lastTurnover[winner] = e.t;
-    }
-
+    // VISIBLE-BEATS ONLY — the dramatic-time warp must slow ONLY where something is
+    // actually on screen: a GOAL (the full-field colour flood) or a SHOT (the xG height
+    // spire, goals included). Box-entries, final-third arrivals, fast transitions,
+    // momentum, cards and penalties have NO visual now, so they must NOT dilate time
+    // (that caused the clock to "hang on 38' where nothing happens"). Their weights are
+    // ZEROED — only shots/goals feed I(t). The dilation is made ASYMMETRIC downstream
+    // (buildDramaticClock): minimal room BEFORE the beat, room AT and AFTER it, where
+    // the flood/spire actually plays.
     if (e.kind === 'shot') {
       const xg = Number.isFinite(e.xg) ? e.xg : 0;
       if (e.isGoal) {
@@ -1833,27 +1852,9 @@ function buildImportanceCurve() {
       }
       continue;
     }
-
-    // box entry / final-third arrival via a completed forward pass or carry that
-    // ENDS in the box / final third (endpoint eu,ev present).
-    if (Number.isFinite(e.eu)) {
-      const enteredBox = inBox(e.eu, e.ev) && !inBox(e.u, e.v);
-      const enteredFT = inFinalThird(e.eu) && !inFinalThird(e.u);
-      if (enteredBox || enteredFT) {
-        let w = enteredBox ? 4.0 : 2.0;
-        if (e.long || e.through) w *= 1.4;   // incisive ball
-        // FAST TRANSITION: this arrival came shortly after this team won the ball
-        // → a quick counter that reached danger. Boost it (that's a key beat).
-        const sinceWin = e.t - (lastTurnover[e.team] ?? -99);
-        if (sinceWin >= 0 && sinceWin < 0.28) w *= 2.2;   // ~<17s real → snappy break
-        add(e.t, w);
-      }
-    }
-
-    // cards / penalties if present (smaller). WhoScored types vary; cover the
-    // common ones that appear in this feed.
-    if (e.type === 'Card' || e.type === 'YellowCard' || e.type === 'RedCard') add(e.t, 4.0);
-    if (e.type === 'Penalty' || e.situation === 'Penalty') add(e.t, 8.0);
+    // (box-entry / final-third / transition / card / penalty importance intentionally
+    //  removed — they are INVISIBLE beats; keeping them zeroed keeps the minute
+    //  running continuously through routine and slowing only at a flood/spire.)
   }
 
   // Light Gaussian smooth → each episode becomes a localized hump (not a spike).
@@ -1910,22 +1911,35 @@ function buildDramaticClock() {
   // 100% flood → hold → relax → lull), not a narrow spike the clock races through in
   // ~2s (which cramped the flood). A chance keeps the tight spike so close beats stay
   // separated. GOAL_SIG is chosen so the linger spans the whole envelope.
-  const GOAL_SIG = 0.9, CHANCE_SIG = 0.32;
+  // ASYMMETRIC dilation — each beat's hump has a SMALL sigma BEFORE the event (minimal
+  // pre-event slow-down, so the minute doesn't drag on the approach where nothing is on
+  // screen yet) and a LARGER sigma AT/AFTER it (the room where the flood/spire actually
+  // plays). sigPre ≪ sigPost. So the clock runs continuously into the beat, then dwells
+  // ON and AFTER the visual. This is what stops the "hang before the goal on an empty
+  // minute" — the pre-event side is tight.
+  // STRICT: near-ZERO pre-event sigma → the approach runs continuously right up to the
+  // event (no slow-down before the goal/spire is on screen). All the room is AT/AFTER.
+  const GOAL_SIG_PRE = 0.06, GOAL_SIG_POST = 1.0;
+  const CHANCE_SIG_PRE = 0.05, CHANCE_SIG_POST = 0.42;
   const guaranteed = [];
   for (const e of timeline) {
     if (e.kind === 'shot' && e.isGoal) {
-      guaranteed.push({ t: e.t, sec: GOAL_ROOM_S, sig: GOAL_SIG });
+      guaranteed.push({ t: e.t, sec: GOAL_ROOM_S, sigPre: GOAL_SIG_PRE, sigPost: GOAL_SIG_POST });
       // POST-GOAL LULL room — give the breather (flood recede + relief flatten/reset)
       // its own screen-time slot just AFTER the goal so the calm штиль gets room on
       // screen before play resumes. Offset a bit further so its wider hump sits just
-      // after the goal's, extending the lingered block through the relax + lull.
-      guaranteed.push({ t: e.t + 0.9, sec: GOAL_LULL_ROOM_S, sig: GOAL_SIG });
+      // after the goal's, extending the lingered block through the relax + lull. Its
+      // pre-side is also small so it doesn't slow the approach.
+      guaranteed.push({ t: e.t + 0.9, sec: GOAL_LULL_ROOM_S, sigPre: GOAL_SIG_PRE, sigPost: GOAL_SIG_POST });
     }
   }
   for (const beat of dramaKeyBeats) {
     const nearGoal = guaranteed.some((g) => Math.abs(g.t - beat.t) < 1.0);
-    if (beat.w > 0.55 && !nearGoal) guaranteed.push({ t: beat.t, sec: CHANCE_ROOM_S * beat.w, sig: CHANCE_SIG });
+    if (beat.w > 0.55 && !nearGoal) guaranteed.push({ t: beat.t, sec: CHANCE_ROOM_S * beat.w, sigPre: CHANCE_SIG_PRE, sigPost: CHANCE_SIG_POST });
   }
+  // asymmetric gaussian weight at bin-offset dt (dt<0 = before the beat → tight sigPre;
+  // dt≥0 = at/after → wide sigPost).
+  const asymG = (dt, sigPre, sigPost) => { const s = dt < 0 ? sigPre : sigPost; return Math.exp(-(dt * dt) / (2 * s * s)); };
 
   // --- SPEED CAP (applied FIRST, on the base routine density) — floor the per-bin
   // density so no bin plays faster than DRAMA_MAX_MIN_PER_SEC match-minutes per
@@ -1958,18 +1972,18 @@ function buildDramaticClock() {
     const Wtot0 = densInt();
     const secPerDensMin = DRAMA_TOTAL_S / Wtot0;    // 15s ÷ ∫dens → seconds per (dens·min)
     for (const g of guaranteed) {
-      const SIG = g.sig || 0.32;
-      const HALF = SIG * 2.3;                        // window half-width ~2.3σ
-      const b0 = clamp(Math.floor((g.t - HALF) / DRAMA_DT), 0, N - 1);
-      const b1 = clamp(Math.ceil((g.t + HALF) / DRAMA_DT), 0, N - 1);
+      const sigPre = g.sigPre || 0.28, sigPost = g.sigPost || 0.42;
+      const HALF_PRE = sigPre * 2.3, HALF_POST = sigPost * 2.3;   // asymmetric window
+      const b0 = clamp(Math.floor((g.t - HALF_PRE) / DRAMA_DT), 0, N - 1);
+      const b1 = clamp(Math.ceil((g.t + HALF_POST) / DRAMA_DT), 0, N - 1);
       let localSec = 0;
-      for (let b = b0; b <= b1; b++) { const dt = b * DRAMA_DT - g.t; const wt = Math.exp(-(dt * dt) / (2 * SIG * SIG)); localSec += dens[b] * DRAMA_DT * secPerDensMin * wt; }
+      for (let b = b0; b <= b1; b++) { const dt = b * DRAMA_DT - g.t; const wt = asymG(dt, sigPre, sigPost); localSec += dens[b] * DRAMA_DT * secPerDensMin * wt; }
       if (localSec < g.sec) {
-        // solve amp so the ADDED (Gaussian-weighted) screen-seconds reaches target.
+        // solve amp so the ADDED (asym-Gaussian-weighted) screen-seconds reaches target.
         let gArea = 0;
-        for (let b = b0; b <= b1; b++) { const dt = b * DRAMA_DT - g.t; const gv = Math.exp(-(dt * dt) / (2 * SIG * SIG)); gArea += gv * DRAMA_DT * secPerDensMin * gv; }
+        for (let b = b0; b <= b1; b++) { const dt = b * DRAMA_DT - g.t; const gv = asymG(dt, sigPre, sigPost); gArea += gv * DRAMA_DT * secPerDensMin * gv; }
         const amp = (g.sec - localSec) / Math.max(gArea, 1e-4);
-        for (let b = b0; b <= b1; b++) { const dt = b * DRAMA_DT - g.t; dens[b] += amp * Math.exp(-(dt * dt) / (2 * SIG * SIG)); }
+        for (let b = b0; b <= b1; b++) { const dt = b * DRAMA_DT - g.t; dens[b] += amp * asymG(dt, sigPre, sigPost); }
       }
     }
   }
