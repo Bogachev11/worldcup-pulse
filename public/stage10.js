@@ -69,6 +69,7 @@ let ballLocus = null;                       // locus anchors for ballAt()
 let teamMeta = { home: { abbr: 'FRA' }, away: { abbr: 'SEN' }, score: { home: 0, away: 0 }, duration: 100 };
 
 let clock = 0, playing = true;
+let wallProgress = 0;   // 0..1 across one ~15s dramatic pass; drives the warped clock
 
 const COL_HOME = new THREE.Color(FRA_HEX);
 const COL_AWAY = new THREE.Color(SEN_HEX);
@@ -83,7 +84,9 @@ const FLOOD_SWEEP_S = 0.5, FLOOD_RELAX_S = 2.0, FLOOD_HOLD_DEFAULT_S = 1.8;
 // gets serialised to the URL hash / COPY CONFIG and restored from a preset.
 // ============================================================================
 const DEFAULTS = () => ({
-  speed: 0.9,
+  // 1.0 = the intended ~15s dramatic-time pass (DRAMA_TOTAL_S). The slider is now a
+  // global tempo trim on that pass, not a linear match-minute rate.
+  speed: 1.0,
   // A · TWO TEAM BLANKETS (одеяла) — one cloth per team, meeting at an
   //  activity-shaped front with a small НАХЛЁСТ overlap. Height per team = amplitude
   //  · Σ ENABLED contributors through the asymmetric atk/rel envelope on the grid.
@@ -186,6 +189,7 @@ async function init() {
   timeline = buildTimelineFromDoc(tlDoc);
   ballLocus = buildBallLocus(timeline);
   countGoals();
+  buildDramaticClock();      // importance curve I(t) + warped playback mapping W(t)
 
   setupThree();
   buildCloth();
@@ -1826,13 +1830,23 @@ function onResize() {
 }
 
 // ---- main loop --------------------------------------------------------------
+// Playback is DRAMATIC-TIME: wallProgress advances linearly over DRAMA_TOTAL_S
+// seconds of wall time (÷ cfg.speed lets the user still stretch/compress the whole
+// portrait), and the match-minute `clock` is the WARPED mapping matchT(progress).
+// So the clock crawls around key beats and races through routine, and one pass of
+// the whole match takes ~15s. At the end we LOOP (restart) → a living portrait.
 let lastNow = performance.now();
 function loop(now) {
   const dt = Math.min(0.1, Math.max(0, (now - lastNow) / 1000));
   lastNow = now;
   if (playing) {
-    clock += dt * cfg.speed;
-    if (clock >= teamMeta.duration) { clock = teamMeta.duration; playing = false; el('play').textContent = '▶'; }
+    // cfg.speed (default 0.9) scales the pass duration: effective total =
+    // DRAMA_TOTAL_S / cfg.speed. 1.0× ⇒ ~15s; leaving the slider as a global
+    // tempo trim. dt is real wall seconds.
+    const spd = Math.max(0.05, Number(cfg.speed) || 1);
+    wallProgress += (dt / DRAMA_TOTAL_S) * spd;
+    if (wallProgress >= 1) { wallProgress -= 1; _dramaCursor = 0; snapASmoothing(); }  // LOOP
+    clock = matchT(wallProgress);
   }
   renderFrame(clock, dt);
   controls.update();
@@ -1849,6 +1863,8 @@ function loop(now) {
 // with small advancing min + dt reproduces the live glide deterministically.
 window.__setClock = (min) => {
   clock = clamp(+min || 0, 0, teamMeta.duration);
+  wallProgress = progressOfMatchT(clock);   // keep the warped scrubber coherent
+  _dramaCursor = 0;
   playing = false; const pb = el('play'); if (pb) pb.textContent = '▶';
   _ballCursor = 0; snapASmoothing();
   renderFrame(clock);
@@ -1859,12 +1875,229 @@ window.__setClock = (min) => {
 };
 window.__step = (min, dt) => {
   clock = clamp(+min || 0, 0, teamMeta.duration);
+  wallProgress = progressOfMatchT(clock);
   playing = false;
   renderFrame(clock, Number.isFinite(+dt) ? +dt : 0.016);
   controls.update();
   composer.render();
   updateHud();
 };
+
+// ============================================================================
+// DRAMATIC-TIME PLAYBACK — "the whole match in ~15 seconds", but NOT uniform
+// fast-forward. We build a per-match IMPORTANCE curve I(t) from the real event
+// stream, then WARP the playback clock so that the 15s of wall time is allocated
+// ∝ (calmFloor + k·I(t)): routine minutes RACE past, key beats (goals, big
+// chances, dangerous counters) get artificial ROOM (slow-mo). The match-minute +
+// score HUD ride this warped clock, so the minute flies during calm and crawls
+// around key episodes — that ticking anchor is the intended read.
+//
+// The warp is a monotone mapping matchT(progress) : [0,1]→[0,fullT]. Its inverse
+// is used to keep the scrub slider (wall-progress) and __setClock (match-minute)
+// coherent. Only real data feeds I(t) — no procedural decoration.
+// ============================================================================
+const DRAMA_TOTAL_S = 15.0;    // total wall-time for one pass of the whole match
+// k — how strongly importance dilates time (multiplies I(t) which is normalised
+// to peak 1). calmFloor — the baseline "screen-time density" of routine play so
+// calm still GLIDES (never freezes) and the calm-vs-busy contrast reads.
+const DRAMA_K = 9.0;
+const DRAMA_CALMFLOOR = 1.0;
+// Guaranteed SCREEN-TIME (seconds of the 15s) for the distinct key beats, so two
+// beats close in match-time (two goals 1 min apart, or a goal near a big chance)
+// stay visibly SEPARATED and each reads its own moment (≥ ~0.7s ask, we give more).
+const GOAL_ROOM_S = 1.5;      // each goal owns ~this many of the 15s (the story)
+const CHANCE_ROOM_S = 1.0;    // ×normalized importance → a big non-goal chance's room
+// I(t) sampling resolution (match-minutes per bin) + smoothing window (minutes).
+const DRAMA_DT = 0.05;
+const DRAMA_SMOOTH_MIN = 0.55;   // short Gaussian: each episode → a localized hump
+
+// warp state (built per loaded match)
+let dramaN = 0;                 // number of bins
+let dramaWcum = null;           // cumulative screen-time weight W at each bin edge (len N+1)
+let dramaWtot = 0;              // W(fullT)
+let dramaKeyBeats = [];         // {t, w} detected peaks (for reporting / separation)
+
+// Weight the real events into a per-time importance curve, normalise, smooth.
+function buildImportanceCurve() {
+  const T = teamMeta.duration || 100;
+  const N = Math.max(8, Math.ceil(T / DRAMA_DT));
+  dramaN = N;
+  const I = new Float32Array(N);          // raw importance accumulator (per bin)
+  const binOf = (t) => clamp(Math.floor(t / DRAMA_DT), 0, N - 1);
+
+  // helper: is a pitch point in the attacking final-third / penalty box, in the
+  // shared (mirrored) pitch frame. u is the along-pitch coord; each team attacks
+  // toward its OWN goal-opposite end. In toUV() home maps x→u directly and away is
+  // flipped, so BOTH teams attack toward u→1 (endX large). Final third ≈ u>0.66,
+  // box ≈ u>0.83 & v in the central band.
+  const inFinalThird = (u) => u > 0.66;
+  const inBox = (u, v) => u > 0.83 && v > 0.21 && v < 0.79;
+
+  // Deposit a weighted, spatially-instant impulse at match-time t.
+  const add = (t, w) => { if (w > 0) I[binOf(t)] += w; };
+
+  // Track the last turnover time per team to detect FAST forward transitions
+  // (a quick sequence after winning the ball that reached danger).
+  let lastTurnover = { home: -99, away: -99 };
+  const TURNOVER_TYPES = new Set(['Interception', 'Tackle', 'BallRecovery', 'Dispossessed', 'Clearance']);
+
+  for (let i = 0; i < timeline.length; i++) {
+    const e = timeline[i];
+    // turnover bookkeeping: the winning team is `e.team` for a recovery/tackle/
+    // interception; a Dispossessed marks the OTHER team winning it.
+    if (TURNOVER_TYPES.has(e.type)) {
+      const winner = (e.type === 'Dispossessed') ? (e.team === 'home' ? 'away' : 'home') : e.team;
+      lastTurnover[winner] = e.t;
+    }
+
+    if (e.kind === 'shot') {
+      const xg = Number.isFinite(e.xg) ? e.xg : 0;
+      if (e.isGoal) {
+        add(e.t, 26);                       // GOAL — highest weight (big)
+      } else {
+        // dangerous shot ∝ xG; on-target bonus (SavedShot / ShotOnPost were on
+        // frame; MissedShots was off). Baseline so even a low-xg shot is a beat.
+        const onTarget = (e.type === 'SavedShot' || e.type === 'ShotOnPost' || e.outcome === 'Successful');
+        add(e.t, 3.0 + 14.0 * xg + (onTarget ? 3.0 : 0));
+      }
+      continue;
+    }
+
+    // box entry / final-third arrival via a completed forward pass or carry that
+    // ENDS in the box / final third (endpoint eu,ev present).
+    if (Number.isFinite(e.eu)) {
+      const enteredBox = inBox(e.eu, e.ev) && !inBox(e.u, e.v);
+      const enteredFT = inFinalThird(e.eu) && !inFinalThird(e.u);
+      if (enteredBox || enteredFT) {
+        let w = enteredBox ? 4.0 : 2.0;
+        if (e.long || e.through) w *= 1.4;   // incisive ball
+        // FAST TRANSITION: this arrival came shortly after this team won the ball
+        // → a quick counter that reached danger. Boost it (that's a key beat).
+        const sinceWin = e.t - (lastTurnover[e.team] ?? -99);
+        if (sinceWin >= 0 && sinceWin < 0.28) w *= 2.2;   // ~<17s real → snappy break
+        add(e.t, w);
+      }
+    }
+
+    // cards / penalties if present (smaller). WhoScored types vary; cover the
+    // common ones that appear in this feed.
+    if (e.type === 'Card' || e.type === 'YellowCard' || e.type === 'RedCard') add(e.t, 4.0);
+    if (e.type === 'Penalty' || e.situation === 'Penalty') add(e.t, 8.0);
+  }
+
+  // Light Gaussian smooth → each episode becomes a localized hump (not a spike).
+  const sigmaBins = Math.max(1, DRAMA_SMOOTH_MIN / DRAMA_DT);
+  const rad = Math.ceil(sigmaBins * 3);
+  const kern = [];
+  let ksum = 0;
+  for (let d = -rad; d <= rad; d++) { const g = Math.exp(-(d * d) / (2 * sigmaBins * sigmaBins)); kern.push(g); ksum += g; }
+  const Is = new Float32Array(N);
+  for (let b = 0; b < N; b++) {
+    let acc = 0;
+    for (let d = -rad; d <= rad; d++) {
+      const j = b + d; if (j < 0 || j >= N) continue;
+      acc += I[j] * kern[d + rad];
+    }
+    Is[b] = acc / ksum;
+  }
+  // normalise to peak 1 (so DRAMA_K is a clean dilation multiplier).
+  let peak = 0; for (let b = 0; b < N; b++) if (Is[b] > peak) peak = Is[b];
+  if (peak > 0) for (let b = 0; b < N; b++) Is[b] /= peak;
+
+  // record the key beats (local maxima above a threshold) for reporting +
+  // separation bookkeeping.
+  dramaKeyBeats = [];
+  for (let b = 1; b < N - 1; b++) {
+    if (Is[b] > 0.28 && Is[b] >= Is[b - 1] && Is[b] > Is[b + 1]) {
+      dramaKeyBeats.push({ t: b * DRAMA_DT, w: Is[b] });
+    }
+  }
+  return Is;
+}
+
+// Build the cumulative screen-time-weight W(t) = ∫ (calmFloor + k·I) dt, then the
+// clock is played by inverting W(t)/W(total) = progress. To guarantee SEPARATION we
+// take a list of GUARANTEED beats (every goal, plus strong non-goal chances) each
+// with a target screen-time in seconds, and ADD a compact Gaussian hump at each so
+// its local screen-time reaches that target. The humps are TIGHT (small sigma) so
+// two beats close in match-time (e.g. two goals 1 min apart) keep DISTINCT humps —
+// they're pushed apart in W-space and never collapse into one instant. calmFloor
+// keeps routine gliding between them.
+function buildDramaticClock() {
+  const Is = buildImportanceCurve();
+  const N = dramaN;
+  // per-bin density d(b) = calmFloor + k·I. (screen-seconds per match-minute, up
+  // to a global scale we normalise away when mapping progress.)
+  const dens = new Float32Array(N);
+  for (let b = 0; b < N; b++) dens[b] = DRAMA_CALMFLOOR + DRAMA_K * Is[b];
+
+  // GUARANTEED beats: every GOAL (biggest room) + strong non-goal chances (a big
+  // chance still earns its own moment). Goals are first-class — they always get the
+  // most room, so a busy routine passage can never out-shine a goal.
+  const guaranteed = [];
+  for (const e of timeline) { if (e.kind === 'shot' && e.isGoal) guaranteed.push({ t: e.t, sec: GOAL_ROOM_S }); }
+  for (const beat of dramaKeyBeats) {
+    const nearGoal = guaranteed.some((g) => Math.abs(g.t - beat.t) < 1.0);
+    if (beat.w > 0.55 && !nearGoal) guaranteed.push({ t: beat.t, sec: CHANCE_ROOM_S * beat.w });
+  }
+
+  // --- SEPARATION top-up: give every guaranteed beat its target screen share ---
+  const densInt = () => { let s = 0; for (let b = 0; b < N; b++) s += dens[b] * DRAMA_DT; return s; };
+  // TIGHT humps + a Gaussian-weighted local measure so an adjacent beat's tail
+  // doesn't count as "this beat already has room" → close beats stay separate.
+  const SIG = 0.32, HALF = 0.75;                    // minutes: hump sigma + window half-width
+  for (let pass = 0; pass < 4; pass++) {            // iterate so added humps re-normalise
+    const Wtot0 = densInt();
+    const secPerDensMin = DRAMA_TOTAL_S / Wtot0;    // 15s ÷ ∫dens → seconds per (dens·min)
+    for (const g of guaranteed) {
+      const b0 = clamp(Math.floor((g.t - HALF) / DRAMA_DT), 0, N - 1);
+      const b1 = clamp(Math.ceil((g.t + HALF) / DRAMA_DT), 0, N - 1);
+      let localSec = 0;
+      for (let b = b0; b <= b1; b++) { const dt = b * DRAMA_DT - g.t; const wt = Math.exp(-(dt * dt) / (2 * SIG * SIG)); localSec += dens[b] * DRAMA_DT * secPerDensMin * wt; }
+      if (localSec < g.sec) {
+        // solve amp so the ADDED (Gaussian-weighted) screen-seconds reaches target.
+        let gArea = 0;
+        for (let b = b0; b <= b1; b++) { const dt = b * DRAMA_DT - g.t; const gv = Math.exp(-(dt * dt) / (2 * SIG * SIG)); gArea += gv * DRAMA_DT * secPerDensMin * gv; }
+        const amp = (g.sec - localSec) / Math.max(gArea, 1e-4);
+        for (let b = b0; b <= b1; b++) { const dt = b * DRAMA_DT - g.t; dens[b] += amp * Math.exp(-(dt * dt) / (2 * SIG * SIG)); }
+      }
+    }
+  }
+
+  // cumulative W at each bin edge (len N+1), W[0]=0.
+  dramaWcum = new Float32Array(N + 1);
+  let acc = 0;
+  for (let b = 0; b < N; b++) { acc += dens[b] * DRAMA_DT; dramaWcum[b + 1] = acc; }
+  dramaWtot = acc;
+}
+
+// matchT(progress) — invert W: find match-minute t where W(t)/Wtot = progress.
+// progress in [0,1] (wall-progress). Returns match-minutes in [0, fullT].
+let _dramaCursor = 0;
+function matchT(progress) {
+  if (!dramaWcum || dramaWtot <= 0) return clamp(progress, 0, 1) * (teamMeta.duration || 100);
+  const p = clamp(progress, 0, 1);
+  const target = p * dramaWtot;
+  const N = dramaN;
+  // reset cursor if we jumped backwards.
+  if (_dramaCursor >= N || dramaWcum[_dramaCursor] > target) _dramaCursor = 0;
+  while (_dramaCursor < N && dramaWcum[_dramaCursor + 1] < target) _dramaCursor++;
+  const b = clamp(_dramaCursor, 0, N - 1);
+  const w0 = dramaWcum[b], w1 = dramaWcum[b + 1];
+  const f = w1 > w0 ? (target - w0) / (w1 - w0) : 0;
+  return clamp((b + f) * DRAMA_DT, 0, teamMeta.duration || 100);
+}
+// inverse: given a match-minute, the wall-progress that lands on it (for the scrub
+// slider position + __setClock coherence). Binary-searchable but N is small.
+function progressOfMatchT(t) {
+  if (!dramaWcum || dramaWtot <= 0) return clamp(t / (teamMeta.duration || 100), 0, 1);
+  const N = dramaN;
+  const bf = clamp(t / DRAMA_DT, 0, N);
+  const b = Math.min(N - 1, Math.floor(bf));
+  const f = bf - b;
+  const w = lerp(dramaWcum[b], dramaWcum[b + 1], f);
+  return clamp(w / dramaWtot, 0, 1);
+}
 
 // ============================================================================
 // HUD / camera (cloned from stage9)
@@ -1881,7 +2114,9 @@ function updateHud() {
   el('hScore').textContent = gH; el('aScore').textContent = gA;
   const mm = Math.floor(t);
   el('clk').textContent = mm + "'"; el('clk2').textContent = mm + "'";
-  if (document.activeElement !== el('clock')) el('clock').value = String((t / teamMeta.duration) * 100);
+  // the scrubber tracks WALL-PROGRESS through the 15s dramatic pass (not linear
+  // match-minutes), so its position matches how long each moment holds on screen.
+  if (document.activeElement !== el('clock')) el('clock').value = String(wallProgress * 100);
 }
 function updateCamReadout() {
   if (!controls) return;
@@ -1897,12 +2132,16 @@ function updateCamReadout() {
 function bindGlobalUI() {
   const playBtn = el('play');
   playBtn.addEventListener('click', () => {
-    if (!playing && clock >= teamMeta.duration) clock = 0;
     playing = !playing; playBtn.textContent = playing ? '❚❚' : '▶';
   });
-  el('restart').addEventListener('click', () => { clock = 0; playing = true; playBtn.textContent = '❚❚'; });
+  el('restart').addEventListener('click', () => {
+    wallProgress = 0; _dramaCursor = 0; clock = matchT(0); playing = true; playBtn.textContent = '❚❚'; snapASmoothing();
+  });
   el('clock').addEventListener('input', () => {
-    clock = (+el('clock').value / 100) * teamMeta.duration; playing = false; playBtn.textContent = '▶'; _ballCursor = 0; snapASmoothing();
+    // slider is WALL-PROGRESS 0..100 through the dramatic pass → warp to match-min.
+    wallProgress = clamp(+el('clock').value / 100, 0, 1);
+    _dramaCursor = 0; clock = matchT(wallProgress);
+    playing = false; playBtn.textContent = '▶'; _ballCursor = 0; snapASmoothing();
   });
   // seed the slider from the loaded cfg BEFORE binding, so bindSlider's initial
   // apply() reads the restored value instead of clobbering cfg.speed with the HTML
