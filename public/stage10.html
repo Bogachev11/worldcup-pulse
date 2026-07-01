@@ -146,10 +146,32 @@
     }
     #playbar input[type=range] { width: 220px; accent-color: #6aa0ff; }
     #playbar .clkv { font-variant-numeric: tabular-nums; color: var(--ink); min-width: 34px; }
+
+    /* ---- MATCH SWITCHER TABS (top centre, above the play bar) ---- */
+    #matchtabs {
+      position: fixed; z-index: 41; top: 12px; left: 14px;
+      display: flex; gap: 6px; align-items: center; padding: 5px;
+      background: rgba(10,12,20,0.66); border: 1px solid var(--stroke); border-radius: 11px;
+      backdrop-filter: blur(6px);
+    }
+    #matchtabs .mtab {
+      cursor: pointer; border: 1px solid transparent; background: transparent;
+      color: var(--ink-dim); border-radius: 8px; padding: 6px 13px;
+      font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+      transition: background 0.14s, color 0.14s, border-color 0.14s;
+    }
+    #matchtabs .mtab:hover { color: var(--ink); background: rgba(255,255,255,0.05); }
+    #matchtabs .mtab.on { background: rgba(106,160,255,0.20); border-color: rgba(106,160,255,0.55); color: #cfe2ff; }
   </style>
 </head>
 <body>
   <canvas id="stage"></canvas>
+
+  <!-- MATCH SWITCHER TABS -->
+  <div id="matchtabs">
+    <button class="mtab" data-id="1953888">FRA · SEN</button>
+    <button class="mtab" data-id="1990967">ICO · NOR</button>
+  </div>
 
   <!-- GLOBAL play / scrub / speed -->
   <div id="playbar">

@@ -24,9 +24,12 @@ import { clamp, lerp, smoothstep } from './claybattle.js';
 const ID = new URLSearchParams(location.search).get('id') || '1953888';
 const el = (id) => document.getElementById(id);
 
-// FRA / SEN colours (per the brief).
-const FRA_HEX = '#387ef0';
-const SEN_HEX = '#0c954e';
+// TEAM COLOURS — derived per match from the loaded timeline doc (home/away .color).
+// FRA/SEN default fallbacks match the brief (#387ef0 / #0c954e); ICO/NOR (and any
+// other match) get their own real data colours. Populated in init() from tlDoc, so
+// switching matches via the tabs recolours the two blankets correctly.
+let FRA_HEX = '#387ef0';   // home colour (fallback = France blue)
+let SEN_HEX = '#0c954e';   // away colour (fallback = Senegal green)
 
 // baked-in default camera (reuse stage9's tuned ракурс)
 const DEFAULT_CAM = { pos: [-11.962, 18.664, 17.842], target: [-0.621, 1.826, 0.268] };
@@ -38,25 +41,18 @@ function applyDefaultCamera() {
 
 // ---- pitch / mesh dims ------------------------------------------------------
 const WORLD_X = 16, WORLD_Z = 9.6;       // pitch footprint
-const M2W = WORLD_Z / 68;                 // metres → world units
-const CROSSBAR_M = 2.44;
-// the displayed cloth mesh (smooth) — sampled from the low-res field grids.
+// the blanket meshes (smooth) — sampled from the low-res field grids.
 const GX = 160, GY = 96;
 const VX = GX + 1, VY = GY + 1, NV = VX * VY;
 
 const worldX = (u) => (u - 0.5) * WORLD_X;
 const worldZ = (v) => (0.5 - v) * WORLD_Z;
-const LOCUS_Y = 0.02;
-const SURF_CLEAR = 0.06;   // small clearance so accents sit JUST above the cloth, no z-fight
 
 // ---- scene state ------------------------------------------------------------
 let renderer, scene, camera, controls, composer;
 let bloomPass, gradePass, smaaPass;
-let mesh, material, keyLight;
+let keyLight;
 let pitchPlane, pitchMat;
-let heightTex, heightData;                 // per-vertex displaced height (mesh res)
-let colTex, colData;                        // per-vertex RGB (mesh res)
-let heightBaseline = 0;
 // TRUE top-A-surface world-Y per vertex (mesh res) — the height of whichever blanket
 // sheet is VISIBLE (laps on top) at each cell, INCLUDING base drape + cloth wobble +
 // focus hill + xG spire + the seam LIP fold + BLANKET_LIFT, in the SAME world units
@@ -116,10 +112,10 @@ const DEFAULTS = () => ({
     // lighting it would render dark; this glow term makes it read VIVID team
     // colour regardless of height. 0 = lit only, ~1 = strong glow.
     glow: 1.0,
-    // xG SPIRE — regulated INDEPENDENTLY of сглаживание (which only widens the
-    // activity swell grain) and of amplitude. xgW = spire WIDTH (scales the xG
-    // stamp radius), xgH = spire HEIGHT (scales the crest term). Defaults = 1.0
-    // reproduce the current sharp tall spire.
+    // xG SPIRE (kept — but ONLY at real shots). xgW = spire WIDTH (scales the xG
+    // stamp radius), xgH = spire HEIGHT (scales the crest term). The spire stands
+    // at each REAL shot's pitch spot and fades a couple seconds after; NO spire
+    // appears anywhere there was no shot.
     xgW: 1.0, xgH: 1.0,
     // ФОКУС ▸ зона игры — radius of the spatial focus mask that anchors the
     // HEIGHT relief to the single live play locus (ballAt(t)). Tight = one
@@ -130,6 +126,12 @@ const DEFAULTS = () => ({
     // scorer's colour over the whole pitch, in SECONDS of wall time (at the
     // current speed). Default 3s (was ~1.2). Sweep-in/relax are fixed.
     floodHold: FLOOD_HOLD_DEFAULT_S,
+    // ГОЛ ▸ ПАУЗА (штиль после гола) — after the flood recedes, a LONGER calm
+    // breather where the colour settles AND the relief flattens toward ~0 (the
+    // surface "выпрямилось, обнулилось") for this many SECONDS of wall time, then
+    // normal play resumes. Coordinated with the dramatic clock so the goal beat
+    // gets its room. 0 = no post-goal lull (old behaviour).
+    lull: 1.2,
     // ВЫПАД ▸ сила — THRUST FINGER strength. A FAST FORWARD pass by the attacking
     // team makes the colour front STAB FORWARD as a sharp, narrow FINGER of that
     // team's colour into the opponent half (in the PLANE of the blanket — the
@@ -141,9 +143,12 @@ const DEFAULTS = () => ({
     // lets the SLOW territorial base catch up and consolidate. 0 = off (front stays
     // the smooth lateral tide). Default keeps counters clearly visible but not noisy.
     thrust: 1.0,
-    // contributors (☑ default = true): which signals RAISE a team's blanket
+    // contributors (☑ default = true): which signals RAISE a team's blanket.
+    // The general relief (Владение/Продвижение/…) is now capped to GENTLE LOW
+    // MOUNDS — the ONLY tall spires in the scene are the real xG shot crests
+    // (cXg, placed exactly at each shot's pitch spot; see contribLift/computeA).
     cOwn: true,  wOwn: 1.0,   // Владение — on-ball control density
-    cXg: true,   wXg: 1.0,    // Удары · xG — sharp tall crest at the shot, ×xg
+    cXg: true,   wXg: 1.0,    // Удары · xG — sharp tall crest at the REAL shot spot, ×xg
     cProg: true, wProg: 1.0,  // Продвижение — final-third / box entries, forward passes
     cPass: false, wPass: 1.0, // Пасы — pass density
     cDuel: false, wDuel: 1.0, // Единоборства — Tackle/Aerial/Challenge/Interception/Dispossessed
@@ -186,6 +191,12 @@ async function init() {
   teamMeta.home = tlDoc.home || teamMeta.home;
   teamMeta.away = tlDoc.away || teamMeta.away;
   teamMeta.duration = Number.isFinite(tlDoc.fullT) ? tlDoc.fullT : 100;
+  // Per-match REAL team colours (FRA/SEN default fallbacks). Set BEFORE buildCloth so
+  // the two blankets are constructed with the right colours; also update COL_HOME/AWAY.
+  const isHex = (s) => typeof s === 'string' && /^#?[0-9a-fA-F]{6}$/.test(s);
+  if (isHex(teamMeta.home.color)) FRA_HEX = teamMeta.home.color;
+  if (isHex(teamMeta.away.color)) SEN_HEX = teamMeta.away.color;
+  COL_HOME.set(FRA_HEX); COL_AWAY.set(SEN_HEX);
   timeline = buildTimelineFromDoc(tlDoc);
   ballLocus = buildBallLocus(timeline);
   countGoals();
@@ -254,7 +265,7 @@ function setupThree() {
   controls.maxPolarAngle = Math.PI * 0.495;
   controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
 
-  keyLight = new THREE.DirectionalLight(0xffffff, 3.0);
+  keyLight = new THREE.DirectionalLight(0xffffff, 3.1);   // stage7: 1.0 + light(0.7)*3.0
   keyLight.position.set(-9, 14, 7);
   keyLight.castShadow = true;
   keyLight.shadow.mapSize.set(2048, 2048);
@@ -266,7 +277,7 @@ function setupThree() {
 
   scene.add(new THREE.DirectionalLight(0x9fc0ff, 0.6).translateX(8).translateY(5).translateZ(-7));
   const rim = scene.children[scene.children.length - 1]; rim.position.set(8, 5, -7);
-  scene.add(new THREE.HemisphereLight(0x6f86b0, 0x0a0d16, 0.55));
+  scene.add(new THREE.HemisphereLight(0x6f86b0, 0x0a0d16, 0.47));   // stage7: 0.25 + amb(0.16)*1.4
 }
 
 function makeGradientTexture() {
@@ -279,97 +290,19 @@ function makeGradientTexture() {
 }
 
 // ============================================================================
-// SHARED CLOTH (Layer B surface) — a single thin sheet displaced by heightTex,
-// coloured by colTex. Written from layer B; also carries the combined A+B height
-// so C/D accents + cometY ride the visible surface. Layer A renders as two
-// SEPARATE team blankets (see buildTeamBlankets) composited over this.
+// SCENE BUILD — the ONLY field layer is A (the two team blankets). Layers B
+// (пасы), C (мяч/comet) and D (события) were REMOVED ("убрать, пока вообще не
+// нужны"): no shared B cloth mesh, no comet, no event accents. We still allocate
+// the per-vertex surface buffers below because computeField uses surfTop* to build
+// the true blanket surface world-Y (surfYData) each frame.
 // ============================================================================
 function buildCloth() {
-  const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, GX, GY);
-  geo.rotateX(-Math.PI / 2);
-
-  heightData = new Float32Array(NV);
-  surfYData = new Float32Array(NV);          // true top-A-surface world-Y per vertex (B/C/D ride this)
+  surfYData = new Float32Array(NV);          // true top-A-surface world-Y per vertex
   surfTopH = new Float32Array(NV);           // visible top sheet's displaced height (pre-baseline/lip)
   surfTopDu = new Float32Array(NV);          // signed seam distance (u-units) at each vertex, for the lip fold
-  heightTex = new THREE.DataTexture(heightData, VX, VY, THREE.RedFormat, THREE.FloatType);
-  heightTex.magFilter = THREE.LinearFilter; heightTex.minFilter = THREE.LinearFilter;
-  heightTex.needsUpdate = true;
-
-  colData = new Float32Array(NV * 4);        // RGB + A(brightness gate)
-  colTex = new THREE.DataTexture(colData, VX, VY, THREE.RGBAFormat, THREE.FloatType);
-  colTex.magFilter = THREE.LinearFilter; colTex.minFilter = THREE.LinearFilter;
-  colTex.needsUpdate = true;
-
-  material = new THREE.MeshStandardMaterial({
-    color: 0xffffff, roughness: 0.95, metalness: 0.12, envMapIntensity: 1.1,
-    transparent: true,
-  });
-  const u = {
-    uHeight: { value: heightTex },
-    uColTex: { value: colTex },
-    uTexel: { value: new THREE.Vector2(1 / VX, 1 / VY) },
-    uHScale: { value: 1.0 },
-    uBaseline: { value: 0 },
-    uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
-    uClay: { value: new THREE.Color('#3a3f4a') },
-  };
-  material.userData.u = u;
-  material.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, u);
-    shader.vertexShader = `
-      uniform sampler2D uHeight; uniform vec2 uTexel; uniform float uHScale;
-      uniform float uBaseline; uniform vec2 uWorld;
-      varying float vHd; varying vec2 vUvN;
-      float H10(vec2 uv){ float h = texture2D(uHeight, uv).r * uHScale; if(!(h==h)) h=0.0; return h; }
-    ` + shader.vertexShader;
-    shader.vertexShader = shader.vertexShader.replace('#include <beginnormal_vertex>',
-      `#include <beginnormal_vertex>
-        vUvN = uv;
-        float hl = H10(uv - vec2(uTexel.x,0.0)); float hr = H10(uv + vec2(uTexel.x,0.0));
-        float hd = H10(uv - vec2(0.0,uTexel.y)); float hu = H10(uv + vec2(0.0,uTexel.y));
-        float dx = (uWorld.x*uTexel.x)*2.0; float dz = (uWorld.y*uTexel.y)*2.0;
-        objectNormal = normalize(vec3(-(hr-hl)/max(dx,1e-4), 1.0, -(hu-hd)/max(dz,1e-4)));`);
-    shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>',
-      `#include <begin_vertex>
-        float h10 = H10(uv); vHd = h10; transformed.y += (h10 - uBaseline);`);
-    shader.fragmentShader = `
-      uniform sampler2D uColTex; uniform vec3 uClay;
-      varying float vHd; varying vec2 vUvN;
-    ` + shader.fragmentShader;
-    shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>',
-      `#include <color_fragment>
-      {
-        vec4 cd = texture2D(uColTex, vUvN);
-        // The B relief rises out of the VIVID flat territory below it, so it must
-        // glow the SAME vivid team colour — otherwise a lit-only dome reads as a
-        // dark navy "hole" inside the bright field. Saturate the (dim, ×w) team
-        // colour back to full chroma so the dome is uniformly vivid, shape coming
-        // from the height shading + emissive, never from a brightness dip.
-        vec3 chroma = cd.rgb / max(max(cd.r, max(cd.g, cd.b)), 1e-4);  // full-sat team hue
-        vec3 baseCol = mix(uClay, chroma, clamp(length(cd.rgb)*4.0, 0.0, 1.0));
-        diffuseColor.rgb = baseCol;
-        diffuseColor.a *= clamp(cd.a, 0.0, 1.0);   // B fades out where it has no relief
-      }`);
-    shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>',
-      `#include <emissivemap_fragment>
-      {
-        vec4 cd = texture2D(uColTex, vUvN);
-        // Strong emissive at the full-saturation team hue so a B dome over a team's
-        // territory GLOWS that vivid colour (no dark hole), matching the flat field.
-        vec3 chroma = cd.rgb / max(max(cd.r, max(cd.g, cd.b)), 1e-4);
-        float on = clamp(length(cd.rgb)*4.0, 0.0, 1.0);
-        totalEmissiveRadiance += chroma * on * 0.95 * clamp(cd.a, 0.0, 1.0);
-      }`);
-  };
-  mesh = new THREE.Mesh(geo, material);
-  mesh.castShadow = true; mesh.receiveShadow = true; mesh.renderOrder = 0;
-  scene.add(mesh);
 
   buildTeamBlankets();
   buildPitchPlane();
-  buildAccentLayer();
-  buildCometLayer();
 }
 
 // ============================================================================
@@ -395,7 +328,9 @@ function makeBlanket(teamCol, isAway) {
   // the per-sheet owner LIP resolve which sheet laps on top — no transparency sort,
   // no z-fighting.
   const mat = new THREE.MeshStandardMaterial({
-    color: 0xffffff, roughness: 0.92, metalness: 0.1, envMapIntensity: 1.1,
+    // STAGE-7 PBR TUNE — roughness~1.0 / metalness~0.81 / envMapIntensity~1.24 so the
+    // clay reads as matte stone lit by the IBL, not plastic.
+    color: 0xffffff, roughness: 1.0, metalness: 0.81, envMapIntensity: 1.24,
     transparent: false, alphaTest: 0.5, depthWrite: true, depthTest: true,
     side: THREE.DoubleSide,
     // tiny opposite-sign depth bias so that at the exact seam line (du=0, where the
@@ -424,17 +359,27 @@ function makeBlanket(teamCol, isAway) {
     uLipH: { value: 0.1 },
     uTop: { value: isAway ? 0.0 : 1.0 },
     uAway: { value: isAway ? 1.0 : 0.0 },  // 1 = this sheet owns u>front (away half)
-    // ---- STAGE-7 CLAY/STONE MATERIAL LOOK (ported) -------------------------
+    // ---- STAGE-7 CLAY/STONE MATERIAL LOOK (faithfully ported) ---------------
     // A believable clay/stone base (uClay) TINTED by this sheet's team colour
     // (uTeam), with natural saturation (uSat), a subtle clay micro-texture
-    // (uTex) that also modulates roughness, and a fiery glowing-crest ember on
-    // the high relief (uGlowCol × intensity). Values are stage7's tuned defaults.
+    // (uTex) that also modulates roughness, a tactile HEX surface PATTERN
+    // (uPattern=4 "гексагончики" — uDetail depth, uDetailScale density, with
+    // cavity-AO + micro-normal so it reads as real recessed volume), and a gentle
+    // fiery ember (uGlowCol × real match intensity uIntensity). Values are
+    // stage7's tuned defaults. CRITICAL: NONE of these are driven by height (vHd);
+    // the material is UNIFORM regardless of relief → no zero→non-zero band.
     uClay: { value: new THREE.Color('#6a6560') },  // neutral clay/stone base
     uSat: { value: 0.86 },                          // natural saturation (no neon)
     uTint: { value: 1.0 },                          // how strongly clay is tinted by team
     uTex: { value: 0.86 },                          // clay micro-texture amount
     uGlowCol: { value: new THREE.Color('#f0d8c1') }, // ember crest colour
     uEmber: { value: 1.0 },                          // ember crest strength (stage7 glow feel)
+    uIntensity: { value: 0 },                        // REAL match intensity → gentle ember
+    uWobble: { value: 0.42 },                        // stage7 seam-warp meander (unused for the colour band; kept for parity)
+    uAO: { value: 0.42 },                            // stage7 cavity/curvature AO amount
+    uDetail: { value: 1.1 },                         // HEX pattern depth/strength (stage7)
+    uDetailScale: { value: 2.58 },                   // HEX pattern density/frequency (stage7)
+    uPattern: { value: 4 },                          // 4 = HEX ("гексагончики") — the stage7 look
     uTime: { value: 0 },                            // animates micro-texture + ember flicker
   };
   mat.userData.u = u;
@@ -486,9 +431,12 @@ function makeBlanket(teamCol, isAway) {
     shader.fragmentShader = `
       uniform vec3 uTeam; uniform float uGlow;
       uniform float uLap; uniform float uAway; uniform float uTop;
-      // STAGE-7 material uniforms (clay tint + sat + micro-texture + ember crest)
+      // STAGE-7 material uniforms (clay tint + sat + micro-texture + HEX pattern + ember)
       uniform vec3 uClay; uniform float uSat; uniform float uTint; uniform float uTex;
-      uniform vec3 uGlowCol; uniform float uEmber; uniform float uTime;
+      uniform vec3 uGlowCol; uniform float uEmber; uniform float uIntensity;
+      uniform float uWobble; uniform float uAO;
+      uniform float uDetail; uniform float uDetailScale; uniform float uPattern;
+      uniform float uTime;
       varying float vHd; varying vec2 vUvN; varying float vDu; varying float vFold;
       // --- stage7 smooth value-noise + fbm (continuous → stable derivatives,
       //     no firefly speckle) for the clay micro-texture ---
@@ -502,6 +450,29 @@ function makeBlanket(teamCol, isAway) {
         float s=0.0, a=0.5;
         for (int k=0;k<4;k++){ s += a*vn_s10(p); p = p*2.03 + vec2(11.3,7.7); a *= 0.5; }
         return s;
+      }
+      // STAGE-7 FINE VOLUMETRIC SURFACE PATTERN — a tactile relief HEIGHT in [0,1].
+      // Built ONLY from continuous primitives so its screen-space derivative is smooth
+      // → a stable bump WITHOUT firefly speckle. Default uPattern=4 = HEX ("гексагончики").
+      const float PI_s10 = 3.14159265;
+      float pat_s10(vec2 p){
+        if (uPattern < 0.5) {            // GRID
+          float lx = abs(sin(PI_s10 * p.x));
+          float ly = abs(sin(PI_s10 * p.y));
+          return smoothstep(0.0, 0.45, min(lx, ly));
+        } else if (uPattern < 1.5) {     // WEAVE
+          return 0.5 + 0.5 * sin(p.x * 6.2831853) * sin(p.y * 6.2831853);
+        } else if (uPattern < 2.5) {     // LINES
+          return 0.5 + 0.5 * sin(p.y * 6.2831853);
+        } else if (uPattern < 3.5) {     // DOTS
+          return (0.5 + 0.5*cos(p.x*6.2831853)) * (0.5 + 0.5*cos(p.y*6.2831853));
+        } else if (uPattern < 4.5) {     // HEX-ish — three rotated sine waves
+          float a = sin(p.x*6.2831853);
+          float b = sin((p.x*0.5 + p.y*0.8660254)*6.2831853);
+          float c = sin((p.x*0.5 - p.y*0.8660254)*6.2831853);
+          return clamp(0.5 + 0.22*(a+b+c), 0.0, 1.0);
+        }
+        return fbm_s10(p * 0.9);         // GRAIN
       }
       // OPAQUE finite-overlap coverage. vDu = u − front(v) (u-units). This sheet
       // covers its OWN side fully AND extends uLap past the front into the
@@ -525,25 +496,26 @@ function makeBlanket(teamCol, isAway) {
       {
         // STAGE-7 CLAY/STONE LOOK, kept SINGLE-TEAM (no cross-team mix — territories
         // stay crisp). The surface is a believable clay/stone (uClay) TINTED by THIS
-        // sheet's team colour. Because each blanket is one team, we tint strongly over
-        // its territory and only relax toward bare clay at the very lowest/flattest
-        // relief so it reads as tinted clay, not flat paint.
+        // sheet's team colour. CRITICAL: the tint is UNIFORM across the territory and
+        // does NOT depend on height (vHd). Flat cloth and raised cloth are the SAME
+        // clay+team+hex material, so there is NO visible zero→non-zero colour band.
         vec3 team = uTeam;
         // gentle saturation control (natural, not neon) — stage7 uSat.
         float lum = dot(team, vec3(0.299, 0.587, 0.114));
         team = max(mix(vec3(lum), team, uSat), 0.0);
-        // strong tint over own territory; ease slightly toward clay only where the
-        // relief is essentially flat (gives the lowest ground a stony, not painted,
-        // read). tintAmt stays high everywhere there is any swell.
-        float relief = clamp(vHd * 0.6, 0.0, 1.0);            // 0 flat → 1 with relief
-        // strong on relief, but let the clay/stone show through more on flat ground so
-        // the field reads as TINTED CLAY (stage7), not flat saturated paint.
-        float tintAmt = clamp(uTint * (0.66 + 0.30 * relief), 0.0, 1.0);
+        // UNIFORM tint — same everywhere on the sheet (no relief term). stage7 tint.
+        float tintAmt = clamp(uTint, 0.0, 1.0);
         vec3 col = mix(uClay, team, tintAmt);
         // subtle clay micro-texture, amount = uTex (stage7 marble fbm). Kills the
         // plastic flat-matte look without speckle (continuous fbm).
         float marble = fbm_s10(vUvN * 22.0 + vec2(0.0, uTime * 0.05));
         col *= (1.0 - 0.5 * uTex) + uTex * marble;
+        // STAGE-7 CAVITY AO from the HEX pattern: the pattern grooves (low pat)
+        // sink into shadow so the "гексагончики" lattice reads as real recessed
+        // volume, not a decal. Same for both sheets, uniform in height.
+        float pc = pat_s10(vUvN * (46.0 * uDetailScale));
+        float cavity = 1.0 - uDetail * 0.5 * (1.0 - pc);
+        col *= clamp(cavity, 0.3, 1.0);
         // CONTACT SHADOW on the UNDER sheet: where THIS sheet is the under one
         // (uTop→0), darken the strip that lies BENEATH the top sheet's raised lip —
         // i.e. across the overlap band near the seam — so the top sheet's lapping
@@ -567,8 +539,33 @@ function makeBlanket(teamCol, isAway) {
     shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>',
       `#include <roughnessmap_fragment>
        {
-         float marble = fbm_s10(vUvN * 22.0 + vec2(0.0, uTime * 0.05));
-         roughnessFactor = clamp(roughnessFactor + uTex * 0.22 * (0.5 - marble), 0.16, 1.0);
+         // STAGE-7 MICRO-ROUGHNESS: the HEX pattern grooves read slightly ROUGHER
+         // (matte recess) than the raised cells; floor kept well above 0 so nothing
+         // turns shiny. Uniform in height → no plastic tell, no band.
+         float pr = pat_s10(vUvN * (46.0 * uDetailScale));
+         roughnessFactor = clamp(roughnessFactor + uDetail * 0.22 * (0.5 - pr), 0.16, 1.0);
+       }`);
+    // STAGE-7 MICRO-NORMAL: perturb the shading normal by the screen-space gradient
+    // of the SMOOTH HEX pattern height, so grazing IBL catches the fine hex relief and
+    // it feels like real clay/stone, not smooth CG plastic. Continuous pat → stable.
+    shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_maps>',
+      `#include <normal_fragment_maps>
+       {
+         float amp = uDetail * 0.3;
+         if (amp > 0.0001) {
+           vec2 mp = vUvN * (46.0 * uDetailScale);
+           float hC = pat_s10(mp);
+           vec3 dpdx = dFdx(-vViewPosition);
+           vec3 dpdy = dFdy(-vViewPosition);
+           float dhx = dFdx(hC);
+           float dhy = dFdy(hC);
+           vec3 r1 = cross(dpdy, normal);
+           vec3 r2 = cross(normal, dpdx);
+           float det = dot(dpdx, r1);
+           vec3 surfGrad = (abs(det) > 1e-8) ? (dhx * r1 + dhy * r2) / det : vec3(0.0);
+           surfGrad = clamp(surfGrad, vec3(-4.0), vec3(4.0));
+           normal = normalize(normal - amp * surfGrad);
+         }
        }`);
     shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>',
       `#include <emissivemap_fragment>
@@ -578,23 +575,23 @@ function makeBlanket(teamCol, isAway) {
          float band = 1.0 - smoothstep(0.0, max(uLap*1.6, 0.04), dist);
          float shadow = (1.0 - uTop) * band;
          float litMul = mix(1.0, 0.40, shadow);
-         // (1) GENTLE TEAM-COLOUR GLOW FLOOR — the territory lies FLAT on the pitch,
-         // so lit shading alone would render it dark. A modest team-hue emissive keeps
-         // the flat field readable as its team colour (kept LOW so the clay tint +
-         // lighting + micro-texture do the heavy lifting and it isn't a flat neon wash).
+         // GENTLE TEAM-COLOUR GLOW FLOOR — the territory lies FLAT on the pitch, so lit
+         // shading alone would render it dark. A modest, UNIFORM team-hue emissive keeps
+         // the field readable as its team colour. CRITICAL: this floor is the SAME at
+         // every height (no vHd term) → flat and raised cloth glow identically, so there
+         // is NO zero→non-zero emissive band.
          vec3 emit = uTeam * (0.34 * uGlow) * litMul;
-         // (2) STAGE-7 FIERY GLOWING-CREST EMBER — the emissive highlight that rises
-         // on the CREST / steep high relief so hills & spires GLOW like stage7 (not a
-         // flat uniform emissive). Tied to height (vHd) and surface steepness; a warm
-         // ember colour (uGlowCol) layered with a tiny continuous flicker.
+         // STAGE-7 GENTLE EMBER — a subtle warm crest glow, tied to REAL match intensity
+         // (uIntensity) like stage7, only on the steep faces of the TALL xG spires (not
+         // the gentle mounds, whose relief stays below the smoothstep floor). Kept low so
+         // it reads as a gentle stage7 ember, never a strong plastic per-height glow.
          vec3 Nw = normalize(vNormal);
          float steep = 1.0 - clamp(Nw.y, 0.0, 1.0);
-         // vHd here is the blanket relief in world-Y (swells ~2, spires up to ~5),
-         // so the ember turns on across crests and tops out on tall spires.
-         float hot = smoothstep(0.6, 2.6, vHd) * smoothstep(0.12, 0.62, steep);
+         float hot = smoothstep(1.2, 3.0, vHd) * smoothstep(0.14, 0.6, steep);
          float flick = 0.82 + 0.18 * vn_s10(vUvN * 40.0 + uTime * 0.7);
-         vec3 hi = uGlowCol * (1.0 + smoothstep(1.6, 3.4, vHd) * 0.5);
-         emit += hi * hot * uEmber * 1.3 * flick * litMul;
+         float ember = uEmber * mix(0.18, 1.0, clamp(uIntensity, 0.0, 1.0));
+         vec3 hi = uGlowCol * (1.0 + smoothstep(2.0, 3.6, vHd) * 0.5);
+         emit += hi * hot * ember * 0.9 * flick * litMul;
          totalEmissiveRadiance += emit;
        }`);
   };
@@ -810,7 +807,6 @@ let focusCX = NaN, focusCZ = NaN, focusReset = true;   // eased focus-hill centr
 // between discrete events; this glides so the hill + front feed off a gentle
 // point. Snapped on scrub via locusReset.
 let locusU = NaN, locusV = NaN, locusReset = true;
-let B_gx = 0, B_gy = 0, B_h = null, B_hH = null, B_hA = null;
 
 function ensureA(gx, gy) {
   if (gx === A_gx && gy === A_gy) return;
@@ -844,11 +840,6 @@ function smoothA(k) {
     A_sxH[i] += (A_xH[i] - A_sxH[i]) * kk;
     A_sxA[i] += (A_xA[i] - A_sxA[i]) * kk;
   }
-}
-function ensureB(gx, gy) {
-  if (gx === B_gx && gy === B_gy) return;
-  B_gx = gx; B_gy = gy; const n = gx * gy;
-  B_h = new Float32Array(n); B_hH = new Float32Array(n); B_hA = new Float32Array(n);
 }
 
 // stamp a soft gaussian (radius radCells) into a grid at (u,v).
@@ -1251,31 +1242,34 @@ function goalFloodAt(t) {
   return { team: g.team, amt: clamp(amt, 0, 1) };
 }
 
-// Recompute layer B's grid (finer pass relief). aggr 0 = each pass a small sharp
-// bump; aggr 1 = broad smoothed density.
-function computeB(t) {
-  const atk = Math.max(0.02, cfg.B.atk);
-  const rel = Math.max(0.1, cfg.B.rel);
-  const { gx, gy } = gridDims(1, 40, 40);     // B is always fine
-  ensureB(gx, gy);
-  B_h.fill(0); B_hH.fill(0); B_hA.fill(0);
-  // aggregation knob → stamp radius (sharp small bumps ↔ smoothed density)
-  const radCells = lerp(0.9, 4.2, clamp(cfg.B.aggr, 0, 1));
-  const amp = lerp(1.0, 0.55, clamp(cfg.B.aggr, 0, 1));   // keep total mass ~steady
-  const win = eventsInWindow(t, rel * 5 + atk * 3);
-  for (const e of win) {
-    if (e.kind !== 'pass') continue;
-    let w = arWeight(t - e.t, atk, rel) * amp;
-    if (w < 0.02) continue;
-    if (cfg.B.longw > 0) {                                  // optional long-pass weighting
-      const lenW = 1 + cfg.B.longw * (e.long ? 1.2 : clamp(e.len / 40, 0, 1));
-      w *= lenW;
-    }
-    stamp(B_h, gx, gy, e.u, e.v, w, radCells);
-    if (e.team === 'home') stamp(B_hH, gx, gy, e.u, e.v, w, radCells);
-    else stamp(B_hA, gx, gy, e.u, e.v, w, radCells);
+// POST-GOAL LULL — after the flood recedes, a LONGER calm breather where the A
+// relief FLATTENS toward ~0 (the surface "выпрямилось, обнулилось") for a beat,
+// then normal play resumes. Returns 0..1 = how flat the relief is pressed at clock
+// t (0 = full relief, 1 = fully flattened). Deterministic from the clock (elapsed =
+// t − goalTime) → scrub-safe, no frame state. The lull window opens right where the
+// flood window closes: [floodTotal, floodTotal + lullTotal]. Phases: ramp DOWN the
+// relief (~0.5s), HOLD flat (cfg.A.lull), release back (~0.7s). Authored in seconds
+// of wall time → converted to match-minutes via the playback rate like the flood.
+const LULL_RAMP_S = 0.5, LULL_RELEASE_S = 0.7;
+function goalLullAt(t) {
+  if (!goalsByTime || !goalsByTime.length) return 0;
+  let g = null;
+  for (let i = 0; i < goalsByTime.length; i++) {
+    if (goalsByTime[i].t <= t) g = goalsByTime[i]; else break;
   }
-  return win.length > 0;
+  if (!g) return 0;
+  const spd = Math.max(0.05, Number(cfg.speed) || 0.9);
+  const holdS = Number.isFinite(cfg.A.floodHold) ? clamp(cfg.A.floodHold, 0, 12) : FLOOD_HOLD_DEFAULT_S;
+  const floodTotal = (FLOOD_SWEEP_S + holdS + FLOOD_RELAX_S) * spd;
+  const lullS = Number.isFinite(cfg.A.lull) ? clamp(cfg.A.lull, 0, 4) : 0;
+  if (lullS <= 0) return 0;
+  const ramp = LULL_RAMP_S * spd, hold = lullS * spd, rel = LULL_RELEASE_S * spd;
+  const lullTotal = ramp + hold + rel;
+  const e = (t - g.t) - floodTotal;            // elapsed INTO the lull window
+  if (e < 0 || e >= lullTotal) return 0;
+  if (e < ramp) { const f = e / ramp; return f * f * (3 - 2 * f); }        // flatten in
+  if (e < ramp + hold) return 1;                                           // hold flat
+  const f = (e - ramp - hold) / rel; const s = f * f * (3 - 2 * f); return 1 - s;  // release
 }
 
 // bilinear sample a grid at normalized (u,v) (v already flipped by caller convention)
@@ -1289,13 +1283,11 @@ function sampleGrid(grid, gx, gy, u, v) {
   return lerp(lerp(a, b, tx), lerp(c, d, tx), ty);
 }
 
-// Rebuild the field surfaces at time t: TWO team A blankets (height + crisp
-// coverage) plus the shared B relief. Folds A+B into heightData so accents ride.
+// Rebuild the field surface at time t: TWO team A blankets (height + crisp
+// coverage). B/C/D are removed, so this only drives the two blankets.
 function computeField(t, dt) {
-  const aOn = cfg.A.on, bOn = cfg.B.on;
-  let bMax = 1e-4;
+  const aOn = cfg.A.on;
   if (aOn) computeA(t, dt);
-  if (bOn) { computeB(t); for (let k = 0; k < B_h.length; k++) bMax = Math.max(bMax, B_h[k]); }
 
   // The hill + front feed off the TIME-LOW-PASSED locus (smoothedBall) so the
   // raw ballAt teleports between discrete events don't jerk the relief.
@@ -1354,7 +1346,6 @@ function computeField(t, dt) {
     }
     return clamp(m + focusFloor, 0, 1);
   };
-  const cH = COL_HOME, cA = COL_AWAY;
   // fabric wobble phase — VERY gentle undulation so each blanket drapes like
   // cloth. Kept slow (small multiplier) so it never adds to the shaking; it is a
   // continuous drift independent of the simulation clock.
@@ -1387,6 +1378,13 @@ function computeField(t, dt) {
   seamTopHome += (topTargetHome - seamTopHome) * kTop;
   const homeIsTop = seamTopHome >= 0.5;
 
+  // POST-GOAL LULL — 0..1 how flat the relief is pressed right now (deterministic
+  // from the clock). During the lull the whole A relief (mounds + xG spire) melts
+  // toward ~0 for a beat, so the surface "выпрямилось, обнулилось" after the goal
+  // flood, then recovers. reliefMul multiplies every vertex's relief below.
+  const lullFlat = goalLullAt(t);
+  const reliefMul = 1 - lullFlat;
+
   // normalisation for the two A height grids (shared so relative team height is
   // honest). Read the SMOOTHED grids — that's what we render — so the normaliser
   // tracks the eased fields and doesn't itself jump frame-to-frame.
@@ -1396,7 +1394,7 @@ function computeField(t, dt) {
   }
 
   const bH = blankets.home, bA = blankets.away;
-  let idx = 0, sumH = 0;
+  let idx = 0;
   for (let j = 0; j < VY; j++) {
     const v = j / (VY - 1);
     for (let i = 0; i < VX; i++, idx++) {
@@ -1406,7 +1404,6 @@ function computeField(t, dt) {
 
       // ---- Layer A: per-team blanket height + crisp coverage ----
       let hH = 0, hA = 0, covH = 0, covA = 0;
-      let ownerShare = 0.5;   // A partition home-share at this cell (for B dome colour)
       if (aOn) {
         // height from contributors (per team), normalised + floor + gamma.
         // All sampling reads the SMOOTHED grids so the surface glides.
@@ -1414,23 +1411,26 @@ function computeField(t, dt) {
         let rA = sampleGrid(A_shA, A_gx, A_gy, u, v) / aMax;
         if (flr > 0) { rH = clamp((rH - flr) / (1 - flr), 0, 1); rA = clamp((rA - flr) / (1 - flr), 0, 1); }
         if (gamma !== 1) { rH = Math.pow(rH, gamma); rA = Math.pow(rA, gamma); }
-        // xG SHARP crest added ON TOP of the swell (not normalised/floored) so a
-        // chance reads as a tall spire well above the GENTLE control swells: swells
-        // are kept low (×1.5) and the crest towers (×2.6, uncapped by xg).
+        // xG SHARP crest added ON TOP of the swell (not normalised/floored). This
+        // is the ONLY tall SPIRE in the scene, and it stands ONLY where a REAL shot
+        // landed (A_sxH/A_sxA are stamped exactly at each shot's pitch spot and fade
+        // a couple seconds after — see contribLift/computeA). Away from shots there
+        // is NO spire, only the gentle mounds below.
         const xH = sampleGrid(A_sxH, A_gx, A_gy, u, v);
         const xA = sampleGrid(A_sxA, A_gx, A_gy, u, v);
-        // FOCUS mask: dissolve detached far swells, keep ONE coherent hill at the
-        // locus. Gates BOTH teams' swells (both cluster around the ball; the
-        // possessing team rises higher via the Владение contributor). The xG crest
-        // uses a SOFTENED mask (√, lifted) so a shot near the locus stays a tall
-        // spire and is never flattened away.
+        // GENTLE-MOUND mask for the general (non-shot) relief. The old code used the
+        // focus mask to concentrate a TALL hill at the ball locus — that spurious
+        // peak (where no shot was) is exactly what the user disliked. We now KEEP the
+        // general relief broad and LOW: a soft floor + a mild focus lift, so play
+        // reads as rolling low mounds, never a spire. Only the xG crest towers.
         const wx = worldX(u), wz = worldZ(v);
         const fm = focusMask(wx, wz);
-        // crest is its own TIGHT spatial spike (A_sxH/A_sxA), so it doesn't need
-        // the focus gate to stay coherent. Keep it mostly UNGATED (floor 0.55) so a
-        // recent shot always reads as a tall spire even when the live locus has
-        // already moved off the shot spot — only softly attenuated far from play.
-        const fmCrest = clamp(0.55 + 0.45 * Math.sqrt(fm), 0, 1);
+        const moundMask = clamp(0.55 + 0.45 * fm, 0, 1);   // broad low mound (no sharp hill)
+        // crest is its own TIGHT spatial spike (A_sxH/A_sxA) at the shot spot, so it
+        // doesn't need the focus gate to stay coherent — keep it UNGATED so a recent
+        // shot reads as a crisp tall spire exactly where it happened, wherever the
+        // live locus has drifted to.
+        const fmCrest = 1.0;
         // xG spire HEIGHT is INDEPENDENT of A.amplitude: the crest term is scaled
         // by the dedicated xgH slider (× a fixed base so amp doesn't gate it).
         const crestK = 2.6 * xgH;
@@ -1440,8 +1440,6 @@ function computeField(t, dt) {
         // extends `lap` past the front (finite overlap), so background never shows.
         const front = sampleGrid(A_sown, A_gx, A_gy, u, v);   // front-u for this cell
         const du = u - front;                                  // + = away half
-        // ownerShare for the B dome colour: home colour on home side, away past front.
-        ownerShare = du < 0 ? 1 : 0;
         covH = front;
         covA = front;
         // CROSSING NOTCH — calm the RELIEF (swell + xG crest) of BOTH sheets in a thin
@@ -1455,8 +1453,11 @@ function computeField(t, dt) {
         const notchMin = 0.05;                                  // ≈flat relief right at the seam
         const nt = clamp(Math.abs(du) / notchW, 0, 1);
         const notch = notchMin + (1 - notchMin) * (nt * nt * (3 - 2 * nt));   // smooth dip→recover
-        const reliefH = (rH * 2.0 * amp * fm + xH * crestK * fmCrest) * notch;
-        const reliefA = (rA * 2.0 * amp * fm + xA * crestK * fmCrest) * notch;
+        // GENTLE MOUND cap (×0.5) so the general territory relief is a soft low swell,
+        // NEVER a spire; the xG crest (×crestK) is the only tall feature. reliefMul
+        // melts the whole relief toward 0 during the post-goal lull (штиль).
+        const reliefH = (rH * 0.5 * amp * moundMask + xH * crestK * fmCrest) * notch * reliefMul;
+        const reliefA = (rA * 0.5 * amp * moundMask + xA * crestK * fmCrest) * notch * reliefMul;
         // PER-TEAM RELIEF — each blanket carries its OWN (notched-at-seam) height, so
         // the two sheets are TWO DISTINCT surfaces; the visible LAP is the TOP sheet's
         // short lip fold (vertex shader), never a merged plane.
@@ -1492,44 +1493,8 @@ function computeField(t, dt) {
         surfTopH[idx] = 0; surfTopDu[idx] = 1;
       }
 
-      // ---- combined A height for cometY/baseline --------------------------------
-      // Both sheets cover the band [front−lap, front+lap]; outside it the owner alone.
-      // The comet/baseline should ride whichever sheet is VISIBLE here (the union of
-      // the two opaque coverages = the whole pitch, so just take the taller).
-      const front2 = covH;
-      const homeVisible = u < front2 + lap;        // home covers up to front+lap
-      const awayVisible = u > front2 - lap;        // away covers down to front−lap
-      let hCombined = Math.max(homeVisible ? hH : 0, awayVisible ? hA : 0);
-
-      // ---- Layer B: shared relief mesh ----
-      let h = 0, rr = 0, gg = 0, bb = 0;
-      if (bOn) {
-        let b = sampleGrid(B_h, B_gx, B_gy, u, v) / bMax;
-        if (cfg.B.sharp !== 1) b = Math.pow(b, clamp(cfg.B.sharp, 0.3, 4));
-        h += b * 1.4 * cfg.B.height;
-        // A B dome rises out of A's flat territory, so colour it the OWNER'S colour
-        // at this cell (from the A partition `shareH`), NOT B's own pass blend —
-        // otherwise a mixed pass cluster tints the dome cyan/green inside a blue
-        // zone. Keeps each territory ONE uniform colour, dome included.
-        const oCol = ownerShare >= 0.5 ? cH : cA;
-        const w = clamp(b * 0.6 * clamp(cfg.B.opacity, 0, 2), 0, 1);
-        rr += oCol.r * w; gg += oCol.g * w; bb += oCol.b * w;
-      }
-      const gate = clamp(h, 0, 1);
-      // B RIDES A: the pass-relief mesh sits ON the A blanket surface — its displaced
-      // height = the A combined surface height at this cell PLUS B's own relief, so a
-      // pass-dome rises out of the wave instead of poking up from the flat floor (and
-      // a small dome inside a tall hill is no longer swallowed by a plain max). When A
-      // is off, hCombined≈0 so B rides the flat plane as before.
-      heightData[idx] = hCombined + h; sumH += heightData[idx];
-      colData[idx * 4] = rr; colData[idx * 4 + 1] = gg; colData[idx * 4 + 2] = bb; colData[idx * 4 + 3] = gate;
     }
   }
-  heightBaseline = sumH / NV;
-  // shared B mesh
-  material.userData.u.uBaseline.value = heightBaseline;
-  heightTex.needsUpdate = true; colTex.needsUpdate = true;
-  mesh.visible = bOn;
   // STRADDLE THE MARKINGS PLANE (the stage4/5 weave): the cloth now sits BOTH below
   // and above y=0. Calm/flat cloth (relief≈0) is pushed slightly BELOW the plane by
   // A_DOWN_BIAS so the white pitch lines (drawn at y=0, depth-written) show ON TOP of
@@ -1562,7 +1527,6 @@ function computeField(t, dt) {
       surfYData[k] = surfTopH[k] - A_DOWN_BIAS + lipH * topUTop * fold;
     }
   } else {
-    // no blankets: ride the B mesh / flat plane (heightData already reflects B).
     for (let k = 0; k < NV; k++) surfYData[k] = 0;
   }
   // POSSESSOR ON TOP — seamTopHome was eased BEFORE the vertex loop (so the seam-band
@@ -1573,6 +1537,11 @@ function computeField(t, dt) {
   // Driven by the playback clock t (match-minutes) so it's deterministic / scrub-safe.
   const matTime = t * 0.5;
   bH.u.uTime.value = matTime; bA.u.uTime.value = matTime;
+  // REAL MATCH INTENSITY → gentle stage7 ember (scrub-safe, from event density in a
+  // short window). Normalised against a nominal busy rate so it sits in ~0..1.
+  const intWin = eventsInWindow(t, 0.35);
+  const intensity = clamp(intWin.length / 18, 0, 1);
+  bH.u.uIntensity.value = intensity; bA.u.uIntensity.value = intensity;
   bH.hTex.needsUpdate = true; bH.aTex.needsUpdate = true;
   bA.hTex.needsUpdate = true; bA.aTex.needsUpdate = true;
   bH.mesh.visible = aOn; bA.mesh.visible = aOn;
@@ -1589,57 +1558,10 @@ let seamTopHome = 1;   // smoothed 0..1: home blanket is the TOP (lapping) sheet
 let seamTopReset = true;  // snap the top/bottom choice on scrub/resize
 
 // ============================================================================
-// C · LIVE LOCUS COMET — moving orb + fading trail, on-ball team colour.
-// ============================================================================
-let cometGroup, cometOrb, cometCore, cometTrail, cometTG, cometTPos, cometTCol;
-const TRAIL_N = 120;
-function buildCometLayer() {
-  cometGroup = new THREE.Group(); cometGroup.visible = false; scene.add(cometGroup);
-  const orbMat = new THREE.SpriteMaterial({ map: discTex(), color: 0xffffff, transparent: true,
-    blending: THREE.AdditiveBlending, depthWrite: false });
-  cometOrb = new THREE.Sprite(orbMat); cometOrb.scale.setScalar(1.6); cometGroup.add(cometOrb);
-  const coreMat = new THREE.SpriteMaterial({ map: discTex(), color: 0xffffff, transparent: true,
-    blending: THREE.AdditiveBlending, depthWrite: false });
-  cometCore = new THREE.Sprite(coreMat); cometCore.scale.setScalar(0.6); cometGroup.add(cometCore);
-  cometTG = new THREE.BufferGeometry();
-  cometTPos = new Float32Array(TRAIL_N * 3); cometTCol = new Float32Array(TRAIL_N * 3);
-  cometTG.setAttribute('position', new THREE.BufferAttribute(cometTPos, 3));
-  cometTG.setAttribute('color', new THREE.BufferAttribute(cometTCol, 3));
-  const trailMat = new THREE.PointsMaterial({ size: 0.85, map: discTex(), vertexColors: true,
-    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
-  cometTrail = new THREE.Points(cometTG, trailMat); cometGroup.add(cometTrail);
-}
-function updateComet(t) {
-  if (!cfg.C.on) { cometGroup.visible = false; return; }
-  cometGroup.visible = true;
-  const hop = clamp(cfg.C.hop, 0, 4);
-  const b = ballAt(t);
-  const yTop = cometY(b.u, b.v) + 0.12 + 0.5 * hop;     // amplitude: how high the orb rides
-  cometOrb.position.set(worldX(b.u), yTop, worldZ(b.v));
-  cometCore.position.copy(cometOrb.position);
-  cometOrb.material.color.copy(teamColor(b.team));
-  cometOrb.scale.setScalar(1.6 * cfg.C.size);
-  cometCore.scale.setScalar(0.6 * cfg.C.size);
-  cometOrb.material.opacity = clamp(cfg.C.bright, 0, 2);
-  cometCore.material.opacity = clamp(cfg.C.bright, 0, 2);
-  cometTrail.material.size = 0.85 * clamp(cfg.C.twidth, 0.1, 4);   // trail width
-  const fadePow = clamp(cfg.C.fade, 0.2, 4);                       // trail fade rate
-  const span = Math.max(0.05, cfg.C.trail);
-  const c = new THREE.Color();
-  for (let i = 0; i < TRAIL_N; i++) {
-    const tt = t - (i / TRAIL_N) * span;
-    const bb = ballAt(tt);
-    cometTPos[i * 3] = worldX(bb.u); cometTPos[i * 3 + 1] = cometY(bb.u, bb.v) + 0.1 + 0.5 * hop; cometTPos[i * 3 + 2] = worldZ(bb.v);
-    const fade = Math.pow(1 - i / TRAIL_N, fadePow) * clamp(cfg.C.bright, 0, 2);
-    c.copy(teamColor(bb.team));
-    cometTCol[i * 3] = c.r * fade; cometTCol[i * 3 + 1] = c.g * fade; cometTCol[i * 3 + 2] = c.b * fade;
-  }
-  cometTG.attributes.position.needsUpdate = true; cometTG.attributes.color.needsUpdate = true;
-}
 // JS mirror of the blanket vertex shader's FOLD(du): the short local lip the TOP
 // sheet folds up near the seam so it laps over the under sheet. `aw` = the top
-// sheet's uAway (0 home, 1 away). Must match the GLSL exactly so surfaceY tracks the
-// rendered lip.
+// sheet's uAway (0 home, 1 away). Must match the GLSL exactly so surfYData tracks the
+// rendered lip. (Still used by computeField to build the blanket surface world-Y.)
 function foldLip(du, lap, aw) {
   const s = aw > 0.5 ? du : -du;                 // + = own side
   const fw = Math.max(lap * 0.6, 0.001);
@@ -1648,126 +1570,21 @@ function foldLip(du, lap, aw) {
   const opp = smoothstep(-ow, 0, s);
   return clamp(Math.min(own, opp + (s >= 0 ? 1 : 0)), 0, 1);
 }
-// world Y of the VISIBLE top-A blanket surface at (u,v) — the wave B/C/D ride. Uses
-// the precomputed surfYData (full A displacement incl. drape+wobble+hill+spire+lip,
-// top sheet picked) when A is on; falls back to the B mesh height (heightData) when
-// only B is on, and the flat plane otherwise. Same eased fields as rendering → no
-// jitter relative to the surface; snapped with the rest on scrub.
-function surfaceY(u, v) {
-  const aOn = cfg.A.on, bOn = cfg.B.on;
-  if (!(aOn || bOn) || !heightData) return LOCUS_Y;
-  const fx = clamp(u, 0, 1) * (VX - 1), fy = clamp(1 - v, 0, 1) * (VY - 1);
-  const i0 = Math.floor(fx), j0 = Math.floor(fy);
-  const i1 = Math.min(i0 + 1, VX - 1), j1 = Math.min(j0 + 1, VY - 1);
-  const tx = fx - i0, ty = fy - j0;
-  const samp = (arr, sub) => {
-    const a = arr[j0 * VX + i0] - sub, b = arr[j0 * VX + i1] - sub;
-    const c = arr[j1 * VX + i0] - sub, d = arr[j1 * VX + i1] - sub;
-    return lerp(lerp(a, b, tx), lerp(c, d, tx), ty);
-  };
-  // A on → ride the true blanket surface (surfYData is already a world-Y, lift baked
-  // in). A off but B on → ride the B mesh (heightData − heightBaseline).
-  const h = aOn && surfYData ? samp(surfYData, 0) : samp(heightData, heightBaseline);
-  return h + LOCUS_Y;
-}
-// Back-compat alias: cometY === the surface the comet/accents ride.
-function cometY(u, v) { return surfaceY(u, v); }
 
-// ============================================================================
-// D · EVENT ACCENTS — instant pop + fast fade, rebuilt per frame (few in window).
-// Shots = spike + beam to goal mouth; duels = sparks; corners = marker; fouls = mark.
-// ============================================================================
-let accentGroup, accentDyn;
-const DUEL_TYPES = new Set(['Tackle', 'Interception', 'Aerial', 'Challenge']);
-function buildAccentLayer() {
-  accentGroup = new THREE.Group(); accentGroup.visible = false; scene.add(accentGroup);
-  accentDyn = new THREE.Group(); accentGroup.add(accentDyn);
-}
-function clearGroup(g) { while (g.children.length) { const m = g.children.pop(); m.geometry && m.geometry.dispose(); m.material && m.material.dispose(); } }
-function updateAccents(t) {
-  if (!cfg.D.on) { accentGroup.visible = false; clearGroup(accentDyn); return; }
-  accentGroup.visible = true;
-  clearGroup(accentDyn);
-  const fade = Math.max(0.2, cfg.D.fade);
-  const amp = clamp(cfg.D.amp, 0, 4);        // shot-spike amplitude
-  const beamW = clamp(cfg.D.beam, 0, 2);     // beam length (fraction toward goal)
-  const spark = clamp(cfg.D.spark, 0.1, 4);  // duel spark size
-  const marker = clamp(cfg.D.marker, 0.1, 4);// corner/foul marker size
-  const win = eventsInWindow(t, 0.6 / fade + 0.2);
-  for (const it of win) {
-    const age = t - it.t;
-    if (it.kind === 'shot' && cfg.D.shots) {
-      const life = clamp(1 - age / (0.45 / fade), 0, 1); if (life <= 0) continue;
-      const gu = it.team === 'home' ? 0.99 : 0.01;
-      const sign = it.team === 'home' ? 1 : -1;
-      const gv = clamp(0.5 + sign * ((it.onGoalX - 1) / 2) * (7.32 / 68), 0.04, 0.96);
-      const gy = clamp(it.onGoalY, 0, 1.2) * CROSSBAR_M * M2W;
-      const y0 = surfaceY(it.u, it.v) + SURF_CLEAR;   // spire/beam start ON the wave (just above the cloth)
-      const col = it.isGoal ? new THREE.Color('#fff1c0') : teamColor(it.team);
-      // beam length: interpolate the goal endpoint from the shot spot by beamW.
-      const bx = lerp(it.u, gu, beamW), bv = lerp(it.v, gv, beamW), by = lerp(y0, gy, beamW);
-      addBeam(accentDyn, worldX(it.u), y0, worldZ(it.v), worldX(bx), by, worldZ(bv), col, 0.85 * life);
-      addSpike(accentDyn, worldX(it.u), y0, worldZ(it.v), (1.0 + (it.xg || 0) * 3) * amp, col, 0.9 * life);
-      addPoint(accentDyn, worldX(it.u), y0 + 0.15, worldZ(it.v), (it.isGoal ? 3.2 : 2.0) * amp * life, col, life);
-    } else if (it.kind === 'event' && DUEL_TYPES.has(it.type) && cfg.D.duels) {
-      const life = clamp(1 - age / (0.28 / fade), 0, 1); if (life <= 0) continue;
-      addPoint(accentDyn, worldX(it.u), cometY(it.u, it.v) + 0.1, worldZ(it.v), 1.1 * spark * life, new THREE.Color('#ffd9a0'), 0.9 * life);
-    } else if (it.type === 'CornerAwarded' && cfg.D.corners) {
-      const life = clamp(1 - age / (0.7 / fade), 0, 1); if (life <= 0) continue;
-      addRing(accentDyn, worldX(it.u), surfaceY(it.u, it.v) + SURF_CLEAR, worldZ(it.v), 0.6 * marker, teamColor(it.team), 0.8 * life);
-    } else if (it.type === 'Foul' && cfg.D.fouls) {
-      const life = clamp(1 - age / (0.5 / fade), 0, 1); if (life <= 0) continue;
-      addPoint(accentDyn, worldX(it.u), cometY(it.u, it.v) + 0.08, worldZ(it.v), 0.7 * marker * life, new THREE.Color('#ff9a8a'), 0.7 * life);
-    }
-  }
-}
-
-// ---- primitive helpers ------------------------------------------------------
-let _discTex = null;
-function makeDiscTexture() {
-  const c = document.createElement('canvas'); c.width = c.height = 64;
-  const g = c.getContext('2d');
-  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-  grad.addColorStop(0.0, 'rgba(255,255,255,1)'); grad.addColorStop(0.35, 'rgba(255,255,255,0.85)');
-  grad.addColorStop(1.0, 'rgba(255,255,255,0)');
-  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
-  return new THREE.CanvasTexture(c);
-}
-function discTex() { return _discTex || (_discTex = makeDiscTexture()); }
-function addPoint(parent, x, y, z, size, col, alpha) {
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([x, y, z]), 3));
-  const m = new THREE.PointsMaterial({ size, map: discTex(), color: col, transparent: true,
-    opacity: alpha, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
-  parent.add(new THREE.Points(g, m));
-}
-function addRing(parent, x, y, z, r, col, alpha) {
-  const g = new THREE.RingGeometry(r * 0.78, r, 40); g.rotateX(-Math.PI / 2);
-  const m = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: alpha,
-    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
-  const mesh = new THREE.Mesh(g, m); mesh.position.set(x, y + 0.05, z); parent.add(mesh);
-}
-function addBeam(parent, x0, y0, z0, x1, y1, z1, col, alpha) {
-  const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x0, y0 + 0.1, z0), new THREE.Vector3(x1, y1 + LOCUS_Y, z1)]);
-  const m = new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: alpha, blending: THREE.AdditiveBlending, depthWrite: false });
-  parent.add(new THREE.Line(g, m));
-}
-function addSpike(parent, x, y, z, h, col, alpha) {
-  const g = new THREE.ConeGeometry(0.18, h, 14);
-  const m = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: alpha, blending: THREE.AdditiveBlending, depthWrite: false });
-  const mesh = new THREE.Mesh(g, m); mesh.position.set(x, y + h * 0.5, z); parent.add(mesh);
-}
 // ============================================================================
 // POST chain (cloned from stage9)
 // ============================================================================
 function setupComposer() {
   composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
-  bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.5, 0.4, 0.5);
+  // STAGE-7 POST — soft UnrealBloom on the bright crests/ember (gentle, not a haze),
+  // then the vignette/exposure/contrast/saturation grade, SMAA, output. Values are
+  // stage7's tuned defaults so the look matches (pleasant IBL, no plastic wash).
+  bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.12, 0.3, 0.52);
   composer.addPass(bloomPass);
   gradePass = new ShaderPass(GradeShader);
-  gradePass.uniforms.uVig.value = 1.1; gradePass.uniforms.uExpo.value = 1.35;
-  gradePass.uniforms.uContr.value = 1.1; gradePass.uniforms.uGsat.value = 1.18;
+  gradePass.uniforms.uVig.value = 1.28; gradePass.uniforms.uExpo.value = 1.72;
+  gradePass.uniforms.uContr.value = 1.12; gradePass.uniforms.uGsat.value = 1.3;
   composer.addPass(gradePass);
   smaaPass = new SMAAPass(1, 1); composer.addPass(smaaPass);
   composer.addPass(new OutputPass());
@@ -1792,10 +1609,8 @@ const GradeShader = {
 // we pass dt = Infinity → every exp filter resolves a = 1 - exp(-∞) = 1 → snap.
 function renderFrame(t, dt) {
   const D = Number.isFinite(dt) ? Math.max(0, dt) : Infinity;
-  if (cfg.A.on || cfg.B.on) computeField(t, D);
-  else mesh.visible = false;
-  updateComet(t);
-  updateAccents(t);
+  // Only Layer A remains (the two team blankets). B/C/D are removed.
+  computeField(t, D);
 }
 // Frame-rate-independent exponential smoothing factor for a given time constant
 // tau (seconds): state += (target - state) * expA(dt, tau). dt = Infinity → 1
@@ -1906,6 +1721,7 @@ const DRAMA_CALMFLOOR = 1.0;
 // beats close in match-time (two goals 1 min apart, or a goal near a big chance)
 // stay visibly SEPARATED and each reads its own moment (≥ ~0.7s ask, we give more).
 const GOAL_ROOM_S = 1.5;      // each goal owns ~this many of the 15s (the story)
+const GOAL_LULL_ROOM_S = 1.2; // the calm post-goal breather (flood recede + relief reset) gets its own room
 const CHANCE_ROOM_S = 1.0;    // ×normalized importance → a big non-goal chance's room
 // I(t) sampling resolution (match-minutes per bin) + smoothing window (minutes).
 const DRAMA_DT = 0.05;
@@ -2035,7 +1851,15 @@ function buildDramaticClock() {
   // chance still earns its own moment). Goals are first-class — they always get the
   // most room, so a busy routine passage can never out-shine a goal.
   const guaranteed = [];
-  for (const e of timeline) { if (e.kind === 'shot' && e.isGoal) guaranteed.push({ t: e.t, sec: GOAL_ROOM_S }); }
+  for (const e of timeline) {
+    if (e.kind === 'shot' && e.isGoal) {
+      guaranteed.push({ t: e.t, sec: GOAL_ROOM_S });
+      // POST-GOAL LULL room — give the breather (flood recede + relief flatten/reset)
+      // its own screen-time slot just AFTER the goal so the calm штиль gets room on
+      // screen before play resumes. Small match-minute offset so it's a distinct beat.
+      guaranteed.push({ t: e.t + 0.35, sec: GOAL_LULL_ROOM_S });
+    }
+  }
   for (const beat of dramaKeyBeats) {
     const nearGoal = guaranteed.some((g) => Math.abs(g.t - beat.t) < 1.0);
     if (beat.w > 0.55 && !nearGoal) guaranteed.push({ t: beat.t, sec: CHANCE_ROOM_S * beat.w });
@@ -2129,7 +1953,23 @@ function updateCamReadout() {
 // ============================================================================
 // GLOBAL UI — play / restart / scrub / speed / camera / copy config / presets
 // ============================================================================
+// MATCH SWITCHER TABS — highlight the tab for the current ?id= and, on click, switch
+// match by reloading with the new id (the simplest robust way; the whole timeline +
+// dramatic clock rebuild on load). ID is the current match id parsed at boot.
+function bindMatchTabs() {
+  const tabs = document.querySelectorAll('#matchtabs .mtab');
+  for (const tab of tabs) {
+    const id = tab.dataset.id;
+    if (id === ID) tab.classList.add('on');
+    tab.addEventListener('click', () => {
+      if (id === ID) return;                 // already on this match
+      location.search = '?id=' + id;         // reload with the new match
+    });
+  }
+}
+
 function bindGlobalUI() {
+  bindMatchTabs();
   const playBtn = el('play');
   playBtn.addEventListener('click', () => {
     playing = !playing; playBtn.textContent = playing ? '❚❚' : '▶';
@@ -2228,42 +2068,16 @@ const LAYER_DEFS = [
     { id: 'xgW', label: 'xG ▸ ширина шпиля', min: 0.2, max: 4, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'xgH', label: 'xG ▸ высота шпиля', min: 0, max: 4, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'floodHold', label: 'гол ▸ держать заливку', min: 0, max: 8, step: 0.1, fmt: (v) => v.toFixed(1) + ' с' },
+    { id: 'lull', label: 'гол ▸ пауза (штиль)', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) + ' с' },
     { id: 'thrust', label: 'выпад ▸ сила', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
   ], contribHead: 'ПОДЪЁМ ИЗ:', contributors: [
     { on: 'cOwn',  w: 'wOwn',  label: 'Владение' },
-    { on: 'cXg',   w: 'wXg',   label: 'Удары · xG' },
+    { on: 'cXg',   w: 'wXg',   label: 'Удары · xG (шпиль)' },
     { on: 'cProg', w: 'wProg', label: 'Продвижение' },
     { on: 'cPass', w: 'wPass', label: 'Пасы' },
     { on: 'cDuel', w: 'wDuel', label: 'Единоборства' },
     { on: 'cDrib', w: 'wDrib', label: 'Обводки' },
     { on: 'cAll',  w: 'wAll',  label: 'Общая активность' },
-  ] },
-  { key: 'B', name: 'B · пасы', controls: [
-    { id: 'height', label: 'амплитуда ▸ высота', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'atk', label: 'скорость ▸ нарастание', min: 0.02, max: 2, step: 0.02, fmt: (v) => v.toFixed(2) },
-    { id: 'rel', label: 'затухание ▸ спад', min: 0.3, max: 5, step: 0.1, fmt: (v) => v.toFixed(1) },
-    { id: 'aggr', label: 'слитность ▸ агрегация', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
-    { id: 'longw', label: 'вес длинных ▸ длина', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'opacity', label: 'интенсивность ▸ цвет', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'sharp', label: 'резкость ▸ контраст', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-  ] },
-  { key: 'C', name: 'C · мяч', controls: [
-    { id: 'hop', label: 'амплитуда ▸ подъём', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'size', label: 'размер шара ▸ орб', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'trail', label: 'длина хвоста ▸ сек', min: 0.05, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'twidth', label: 'толщина хвоста ▸ ширина', min: 0.1, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'bright', label: 'яркость ▸ свечение', min: 0.2, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'fade', label: 'затухание ▸ хвост', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-  ] },
-  { key: 'D', name: 'D · события', controls: [
-    { id: 'amp', label: 'амплитуда ▸ пик удара', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'beam', label: 'луч к воротам ▸ длина', min: 0, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'spark', label: 'искры ▸ единоборства', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'marker', label: 'маркеры ▸ угл./фолы', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'fade', label: 'затухание ▸ время жизни', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-  ], toggles: [
-    { id: 'shots', label: 'удары' }, { id: 'duels', label: 'единоборства' },
-    { id: 'corners', label: 'угловые' }, { id: 'fouls', label: 'фолы' },
   ] },
 ];
 
