@@ -1739,12 +1739,24 @@ window.__step = (min, dt) => {
 // is used to keep the scrub slider (wall-progress) and __setClock (match-minute)
 // coherent. Only real data feeds I(t) — no procedural decoration.
 // ============================================================================
-const DRAMA_TOTAL_S = 15.0;    // total wall-time for one pass of the whole match
+const DRAMA_TOTAL_S = 19.0;    // total wall-time for one pass (relaxed 15→19 for a smoother minute + room for beats)
 // k — how strongly importance dilates time (multiplies I(t) which is normalised
 // to peak 1). calmFloor — the baseline "screen-time density" of routine play so
-// calm still GLIDES (never freezes) and the calm-vs-busy contrast reads.
-const DRAMA_K = 9.0;
-const DRAMA_CALMFLOOR = 1.0;
+// calm still GLIDES (never freezes) and the calm-vs-busy contrast reads. RAISED the
+// floor (1→3) and LOWERED k (9→6) so the peak:floor density ratio drops from ~10:1
+// to ~3:1 — routine now gets far more relative screen time and the match-minute
+// SWEEPS continuously through it instead of teleporting a big chunk in a sliver.
+const DRAMA_K = 6.0;
+const DRAMA_CALMFLOOR = 3.0;
+// HARD CEILING on local playback speed — the maximum match-minutes consumed per
+// SCREEN-SECOND at any point. Even the flattest routine can't leap more than this
+// per second of wall time, so the minute always reads as a fast-but-SMOOTH
+// fast-forward, never a jump. Enforced by flooring the per-bin density (screen-sec
+// per match-min) to 1/MAX so speed = 1/dens ≤ MAX. See applySpeedCap in buildDramaticClock.
+const DRAMA_MAX_MIN_PER_SEC = 13.0;  // ≤ 13 match-minutes per screen-second anywhere.
+// At 13/s the fastest routine advances ~1.3 match-min per 0.1s frame — a brisk but
+// visibly CONTINUOUS fast-forward, no teleport — while leaving more of the budget for
+// the goal/chance dilations so beats still linger ~3s.
 // Guaranteed SCREEN-TIME (seconds of the 15s) for the distinct key beats, so two
 // beats close in match-time (two goals 1 min apart, or a goal near a big chance)
 // stay visibly SEPARATED and each reads its own moment (≥ ~0.7s ask, we give more).
@@ -1906,6 +1918,27 @@ function buildDramaticClock() {
     if (beat.w > 0.55 && !nearGoal) guaranteed.push({ t: beat.t, sec: CHANCE_ROOM_S * beat.w, sig: CHANCE_SIG });
   }
 
+  // --- SPEED CAP (applied FIRST, on the base routine density) — floor the per-bin
+  // density so no bin plays faster than DRAMA_MAX_MIN_PER_SEC match-minutes per
+  // screen-second. Local speed = Wtot / (dens[b] · DRAMA_TOTAL_S), so speed ≤ MAX ⇔
+  // dens[b] ≥ Wtot / (DRAMA_TOTAL_S · MAX). Wtot depends on dens → iterate to converge.
+  // Doing this BEFORE the beat top-up means the flattest routine is already held to a
+  // smooth fast-forward (the minute never teleports), and the goal/chance humps are
+  // then added ON TOP of that floor so beats still reclaim their guaranteed room.
+  {
+    let Wtot = 0; for (let b = 0; b < N; b++) Wtot += dens[b] * DRAMA_DT;
+    for (let pass = 0; pass < 6; pass++) {
+      const minDens = Wtot / (DRAMA_TOTAL_S * DRAMA_MAX_MIN_PER_SEC);
+      let changed = false, newTot = 0;
+      for (let b = 0; b < N; b++) {
+        if (dens[b] < minDens) { dens[b] = minDens; changed = true; }
+        newTot += dens[b] * DRAMA_DT;
+      }
+      Wtot = newTot;
+      if (!changed) break;
+    }
+  }
+
   // --- SEPARATION top-up: give every guaranteed beat its target screen share ---
   const densInt = () => { let s = 0; for (let b = 0; b < N; b++) s += dens[b] * DRAMA_DT; return s; };
   // Per-beat humps + a Gaussian-weighted local measure so an adjacent beat's tail
@@ -1929,6 +1962,25 @@ function buildDramaticClock() {
         const amp = (g.sec - localSec) / Math.max(gArea, 1e-4);
         for (let b = b0; b <= b1; b++) { const dt = b * DRAMA_DT - g.t; dens[b] += amp * Math.exp(-(dt * dt) / (2 * SIG * SIG)); }
       }
+    }
+  }
+
+  // --- SPEED CAP (final enforcement) — the beat top-up above added density, growing
+  // Wtot, which nudges the required floor up; re-floor so routine bins that fell
+  // behind are lifted back to the cap. Beats keep their (much higher) humps untouched.
+  // This makes the ceiling a HARD guarantee: no bin plays faster than the cap → the
+  // minute never teleports, even in the opening/closing routine stretches.
+  {
+    let Wtot = 0; for (let b = 0; b < N; b++) Wtot += dens[b] * DRAMA_DT;
+    for (let pass = 0; pass < 6; pass++) {
+      const minDens = Wtot / (DRAMA_TOTAL_S * DRAMA_MAX_MIN_PER_SEC);
+      let changed = false, newTot = 0;
+      for (let b = 0; b < N; b++) {
+        if (dens[b] < minDens) { dens[b] = minDens; changed = true; }
+        newTot += dens[b] * DRAMA_DT;
+      }
+      Wtot = newTot;
+      if (!changed) break;
     }
   }
 
