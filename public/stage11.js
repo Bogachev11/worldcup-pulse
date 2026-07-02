@@ -1235,8 +1235,10 @@ function buildTideFront(t, gx, gy, band) {
   // supplies the smooth glide between minutes. No heavy window that would blunt real swings.
   const mom = momentumAt(t);   // −1..+1  (+ = home on top)
   // momentum target front-u: 0.5 + big amplitude · mom (near-goal at the extremes).
-  const MOM_AMP = 0.5;                        // |mom|=1 → front at 0.5±0.5 (right onto the goal band; the ownBand clamp keeps a sliver)
-  const momFront = 0.5 + MOM_AMP * mom;
+  // Steepen the map so even a MODERATE momentum lean pushes the front DEEP toward the
+  // attacking goal (a linear map made mid-range mom a timid nudge); |mom|=1 → hard at
+  // the goal band. This is what makes the territory swing END-TO-END, not around centre.
+  const momFront = 0.5 + 0.5 * Math.sign(mom) * Math.pow(Math.abs(mom), 0.65);
   _dbgMomFront = momFront; _dbgBallMean = ballMean;   // verification read-out only
   // per-channel ball front (channels with no nearby ball fall back to the window mean).
   for (let j = 0; j < gy; j++) {
@@ -1257,7 +1259,7 @@ function buildTideFront(t, gx, gy, band) {
   // front only perturbs it (per-channel tongues + the current phase within the momentum
   // window). High wMom so a strong lean actually pushes the front DEEP toward the goal,
   // not a timid nudge — this is what makes the territory swing side-to-side like the pulse.
-  const wMom = 0.68;   // backbone weight — the swing driver (momentum). Ball keeps enough
+  const wMom = 0.9;    // backbone weight — the swing driver (momentum). Ball keeps enough
                        // voice that sustained territorial CAMPING (real recent ball depth)
                        // also reads: a side that parks the ball in the opponent half shows a
                        // deep front even when the per-minute momentum swing is modest.
@@ -1521,7 +1523,7 @@ function computeA(t, dt) {
   // be able to yank the whole boundary from deep-in-away-half all the way back across the
   // pitch (that's what made the front collapse toward centre). So CAP how far a finger can
   // pull the front PAST the backbone toward its attacker — beyond that, it just tongues.
-  const THRUST_MAX_PULL = 0.22;   // max u-units a finger advances the front past the backbone
+  const THRUST_MAX_PULL = 0.10;   // max u-units a finger advances the front past the backbone — LOWERED 0.22→0.10: both teams pass forward constantly, so ±0.22 fingers were cancelling the momentum backbone's swing and pinning the front near centre. A finger is now a small local tongue that DOESN'T yank the gross boundary off the momentum backbone.
   for (let j = 0; j < gy; j++) {
     let fr = A_front[j];
     const base = A_front[j];       // the momentum-backed slow base for this channel
@@ -2044,8 +2046,8 @@ function expA(dt, tau) {
   return 1 - Math.exp(-dt / Math.max(1e-3, tau));
 }
 // time constants (seconds) for the dt-aware smoothing.
-const TAU_FRONT = 0.7;    // possession-tide boundary per channel — raised 0.5→0.7 for CHANGE #2: the CHANGE #1 momentum backbone + BALL_GAIN sharpen the per-channel front, so a slightly heavier temporal low-pass removes the re-introduced per-frame jitter. The big END-TO-END swing is driven by the momentum backbone (per-minute cadence), which glides regardless of this τ, so the front stays SMOOTH yet still swings with full amplitude (not frozen).
-const TAU_THRUST = 0.28;  // final low-pass on the COMBINED/displayed front (base+fingers) — kills the per-frame seam trembling from stepping finger weights; raised 0.22→0.28 to finish off the residual seam shimmer (seam-delta dropped ~45% busy, ~35-55% counter) while a counter still reaches ~66% of its depth within ~0.3s (still a quick stab)
+const TAU_FRONT = 0.18;   // possession-tide boundary per channel — LOWERED so the momentum backbone's end-to-end swing isn't damped toward centre (the backbone is smooth per-minute, so jitter stays low even here). was 0.7 for CHANGE #2: the CHANGE #1 momentum backbone + BALL_GAIN sharpen the per-channel front, so a slightly heavier temporal low-pass removes the re-introduced per-frame jitter. The big END-TO-END swing is driven by the momentum backbone (per-minute cadence), which glides regardless of this τ, so the front stays SMOOTH yet still swings with full amplitude (not frozen).
+const TAU_THRUST = 0.14;  // final low-pass on the COMBINED/displayed front (base+fingers) — kills the per-frame seam trembling from stepping finger weights; raised 0.22→0.28 to finish off the residual seam shimmer (seam-delta dropped ~45% busy, ~35-55% counter) while a counter still reaches ~66% of its depth within ~0.3s (still a quick stab)
 const TAU_GRID = 0.5;     // per-cell height / xG crest fields
 const TAU_HILL = 0.25;    // focus-hill centre glide
 const TAU_LOCUS = 0.25;   // low-pass on the ball locus point feeding hill+front
