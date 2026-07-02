@@ -1344,38 +1344,47 @@ function buildThrustFingers(t, gx, gy, band) {
   // track each team's previous on-ball touch time to estimate "fast" (short gap).
   for (let wi = 0; wi < win.length; wi++) {
     const e = win[wi];
-    if (e.kind !== 'pass' || !Number.isFinite(e.eu)) continue;
+    const isShot = e.kind === 'shot';
+    const isPass = e.kind === 'pass' && Number.isFinite(e.eu);
+    if (!isShot && !isPass) continue;
     const isH = e.team === 'home';
     if (!isH && e.team !== 'away') continue;
-    // forward gain in the team's attacking frame (already mirrored). home attacks
-    // u→1, away attacks u→0.
-    const fwd = isH ? (e.eu - e.u) : (e.u - e.eu);
-    if (fwd < THRUST_MIN_FWD) continue;
     const age = t - e.t;
     const env = arWeight(age, atkMin, relMin);   // fast attack + fast decay
     if (env < 0.03) continue;
-    // SPEED multiplier — short gap since the team's previous on-ball touch ⇒ a
-    // quick forward pass right after regaining/receiving = a counter. Scan back a
-    // little for the team's prior touch time.
+    // the team's prior on-ball touch time → "fast counter" estimate (short gap = quick
+    // forward move right after regaining/receiving).
     let prevT = -Infinity;
     for (let k = wi - 1; k >= 0; k--) {
       const pe = win[k];
       if (pe.team === e.team && (ONBALL_TYPES.has(pe.type) || pe.isTouch)) { prevT = pe.t; break; }
     }
-    const gap = e.t - prevT;                       // match-minutes since prior touch
-    // gap small (≲ ~0.08 min ≈ 5s of match time) → fast; convert to a 1..1.6 boost.
-    const fastBoost = 1 + 0.6 * clamp(1 - gap / 0.12, 0, 1);
-    // through/long multipliers.
-    const thruBoost = e.through ? 1.8 : 1;
-    const longBoost = e.long ? 1.4 : 1;
-    // overall finger weight: forward distance is primary, the rest multiply.
-    const w = clamp(fwd * 3.0, 0, 1.2) * fastBoost * thruBoost * longBoost * env * strength;
+    const gap = e.t - prevT;
+    const fast = clamp(1 - gap / 0.12, 0, 1);      // 1 = quick after regaining
+    // STAGE11 — a THRUST is a SHARP LOCAL ACCENT at a REAL DANGER ZONE (the user: the
+    // sharp in-plane lunges were lost when the edge went even). We accent exactly the
+    // zones the data flags as dangerous: a SHOT (∝ xg), a pass REACHING the final
+    // third/box, a THROUGH ball, or a FAST counter gaining ground. Ordinary midfield
+    // forward passes no longer finger (that is what made the edge roll up even).
+    let fv, endU, w;
+    if (isShot) {
+      fv = Number.isFinite(e.ev) ? e.ev : (Number.isFinite(e.v) ? e.v : 0.5);
+      endU = isH ? hi : lo;                        // stab to the goal band
+      const xg = clamp(e.xg || 0, 0, 1);
+      w = (0.7 + 2.6 * xg) * env * strength;       // a real chance = a strong tongue
+    } else {
+      const fwd = isH ? (e.eu - e.u) : (e.u - e.eu);
+      if (fwd < THRUST_MIN_FWD) continue;
+      const deep = isH ? (e.eu >= 0.60) : (e.eu <= 0.40);   // reached the final third
+      if (!deep && !e.through && !(fast > 0.4 && fwd > 0.12)) continue;   // DANGER GATE
+      const fastBoost = 1 + 0.6 * fast;
+      const thruBoost = e.through ? 1.8 : 1;
+      const longBoost = e.long ? 1.4 : 1;
+      w = clamp(fwd * 3.0, 0, 1.2) * fastBoost * thruBoost * longBoost * env * strength;
+      fv = e.ev;
+      endU = clamp(e.eu, lo, hi);
+    }
     if (w < 0.02) continue;
-    // end depth the finger reaches, clamped to the opponent band so it never crosses
-    // the defender's own-goal band.
-    const endU = clamp(e.eu, lo, hi);
-    // lateral channels around the pass END's v (where the finger tip lands).
-    const fv = e.ev;
     const jLo = Math.max(0, Math.floor((1 - (fv + reach)) * (gy - 1)));
     const jHi = Math.min(gy - 1, Math.ceil((1 - (fv - reach)) * (gy - 1)));
     for (let j = jLo; j <= jHi; j++) {
@@ -1523,7 +1532,7 @@ function computeA(t, dt) {
   // be able to yank the whole boundary from deep-in-away-half all the way back across the
   // pitch (that's what made the front collapse toward centre). So CAP how far a finger can
   // pull the front PAST the backbone toward its attacker — beyond that, it just tongues.
-  const THRUST_MAX_PULL = 0.10;   // max u-units a finger advances the front past the backbone — LOWERED 0.22→0.10: both teams pass forward constantly, so ±0.22 fingers were cancelling the momentum backbone's swing and pinning the front near centre. A finger is now a small local tongue that DOESN'T yank the gross boundary off the momentum backbone.
+  const THRUST_MAX_PULL = 0.35;   // max u-units a finger advances the front past the backbone. Fingers are now DANGER-GATED (only real chances: shots ∝xg, box-reaching/through/fast passes) + NARROW (1-2 channels), so they're sparse sharp tongues at real danger zones — they can stab DEEP into the box without cancelling the momentum backbone's gross swing (which ordinary forward passes used to do at ±0.22 across the whole edge).
   for (let j = 0; j < gy; j++) {
     let fr = A_front[j];
     const base = A_front[j];       // the momentum-backed slow base for this channel
