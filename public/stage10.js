@@ -253,7 +253,8 @@ function setupThree() {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   scene = new THREE.Scene();
-  scene.background = makeGradientTexture();
+  buildSky();                       // dynamic score-tinted gradient sky (see updateSky)
+  scene.background = skyTex;
   scene.fog = new THREE.FogExp2(0x05070d, 0.035);
 
   const pmrem = new THREE.PMREMGenerator(renderer);
@@ -286,13 +287,129 @@ function setupThree() {
   scene.add(new THREE.HemisphereLight(0x6f86b0, 0x0a0d16, 0.47));   // stage7: 0.25 + amb(0.16)*1.4
 }
 
-function makeGradientTexture() {
-  const c = document.createElement('canvas'); c.width = 16; c.height = 256;
-  const g = c.getContext('2d');
-  const grad = g.createLinearGradient(0, 0, 0, 256);
-  grad.addColorStop(0.0, '#0a1020'); grad.addColorStop(0.55, '#070a12'); grad.addColorStop(1.0, '#020308');
-  g.fillStyle = grad; g.fillRect(0, 0, 16, 256);
-  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; return tex;
+// ============================================================================
+// SKY — an ambient SCORE indicator (the feature the user loved). A soft vertical
+// gradient behind the pitch whose COLOUR leans toward the CURRENTLY-LEADING team's
+// hue, strength ∝ the score margin; a DRAW / 0-0 stays neutral-dark. It EASES toward
+// the new leader over ~1s after a goal. On a CARD it briefly FLASHES the sky the card
+// colour then settles. Kept SUBTLE — a tint of the void, gallery-grade, never garish.
+// The sky also faintly tints the scene fog so the whole piece feels lit by that sky.
+// ============================================================================
+let skyCanvas = null, skyCtx = null, skyTex = null;
+// eased sky tint state (0..1 lean toward home(+)/away(−) leader) + card flash.
+let skyLeanEased = 0;        // −1 (away leads big) .. +1 (home leads big), eased
+let skyLeanReset = true;     // snap on scrub
+let skyFlash = 0;            // 0..1 card-flash intensity (eased down each frame)
+const skyFlashCol = new THREE.Color('#ffd24a');   // current flash colour (yellow default)
+let _lastCardT = -1;         // most-recent card time already flashed (for live playback)
+// dark neutral void endpoints (top→bottom) — the base gallery sky.
+const SKY_TOP = new THREE.Color('#0a1020');
+const SKY_MID = new THREE.Color('#070a12');
+const SKY_BOT = new THREE.Color('#020308');
+function buildSky() {
+  skyCanvas = document.createElement('canvas'); skyCanvas.width = 16; skyCanvas.height = 256;
+  skyCtx = skyCanvas.getContext('2d');
+  skyTex = new THREE.CanvasTexture(skyCanvas);
+  skyTex.colorSpace = THREE.SRGBColorSpace;
+  paintSky(0, new THREE.Color('#000000'), 0);   // initial neutral paint
+}
+const _sc0 = new THREE.Color(), _sc1 = new THREE.Color(), _sc2 = new THREE.Color();
+const _tintCol = new THREE.Color();
+// paint the gradient: lean (−1..+1) picks the leader colour + strength; tintCol is the
+// leader hue; flash (0..1) washes the whole sky toward the card colour.
+function paintSky(lean, tintCol, flash) {
+  const g = skyCtx.createLinearGradient(0, 0, 0, 256);
+  const strength = Math.abs(lean);
+  // tint amount — gallery-subtle but READABLE: a leader at max margin lifts the sky
+  // meaningfully toward its hue, strongest near the horizon (bottom, behind the pitch)
+  // and fading up so the top stays a deep void. A draw/0-0 (strength≈0) leaves the base
+  // neutral gradient. (Raised from the near-invisible first pass so the lean actually
+  // reads through the fog + vignette.)
+  const topT = 0.14 * strength, midT = 0.34 * strength, botT = 0.58 * strength;
+  _sc0.copy(SKY_TOP).lerp(tintCol, topT);
+  _sc1.copy(SKY_MID).lerp(tintCol, midT);
+  _sc2.copy(SKY_BOT).lerp(tintCol, botT);
+  // CARD FLASH — a brief wash of the whole sky toward the card colour, strongest here so
+  // it clearly reads then settles back (skyFlash eases to 0 in updateSky).
+  const f = clamp(flash, 0, 1) * 0.6;
+  if (f > 0) { _sc0.lerp(skyFlashCol, f); _sc1.lerp(skyFlashCol, f * 0.85); _sc2.lerp(skyFlashCol, f * 0.7); }
+  g.addColorStop(0.0, '#' + _sc0.getHexString());
+  g.addColorStop(0.55, '#' + _sc1.getHexString());
+  g.addColorStop(1.0, '#' + _sc2.getHexString());
+  skyCtx.fillStyle = g; skyCtx.fillRect(0, 0, 16, 256);
+  if (skyTex) skyTex.needsUpdate = true;
+}
+// Update the sky each frame from the current SCORE (leader + margin) at clock t, ease
+// the tint toward it (~1s), decay any card flash, detect new cards to flash, and gently
+// tint the fog so the whole scene feels lit by the sky. Deterministic tint TARGET from
+// t (scrub-safe); the ease + flash decay are dt-smoothed (snap on scrub via dt=Inf).
+function updateSky(t, dt) {
+  const sc = scoreAt(t);
+  const margin = sc.home - sc.away;                  // + = home leads
+  // lean magnitude grows with margin but saturates (a 3-goal lead isn't 3× a 1-goal
+  // lead visually) — sqrt-ish curve, capped at 1.
+  const mag = clamp(Math.abs(margin) / 2, 0, 1);
+  const target = margin === 0 ? 0 : Math.sign(margin) * (0.4 + 0.6 * mag);
+  const a = expA(dt, 1.0);                            // ~1s ease toward the new leader
+  if (skyLeanReset || a >= 1) { skyLeanEased = target; skyLeanReset = false; }
+  else skyLeanEased += (target - skyLeanEased) * a;
+  // leader hue for the current eased lean (blend the two team colours so a swing passes
+  // through neutral rather than snapping between hues).
+  const lean = skyLeanEased;
+  if (lean >= 0) _tintCol.copy(COL_HOME);
+  else _tintCol.copy(COL_AWAY);
+  // CARD FLASH detection — during live playback fire a flash when the clock crosses a
+  // card event. On scrub/snap we still show a flash if we land within the flash window
+  // of a card (deterministic), so a captured card frame reads.
+  detectCardFlash(t, dt);
+  // decay the flash smoothly (dt-aware) — a card flash settles over ~0.9s.
+  const fa = expA(dt, 0.45);
+  if (fa >= 1) skyFlash = _snapFlash(t);
+  else skyFlash += (0 - skyFlash) * fa;
+  paintSky(lean, _tintCol, skyFlash);
+  // fog tint so the whole piece feels lit by the sky — the fog fills the far background
+  // (it overrides the gradient in the distance), so this is what actually carries the
+  // leader colour into the visible void around the pitch. Leans up to ~45% toward the
+  // leader hue at full margin, else the base deep fog; a card flash washes it too.
+  if (scene && scene.fog) {
+    _tintCol.copy(SKY_BOT).lerp(lean >= 0 ? COL_HOME : COL_AWAY, 0.45 * Math.abs(lean));
+    if (skyFlash > 0.01) _tintCol.lerp(skyFlashCol, skyFlash * 0.5);
+    scene.fog.color.copy(_tintCol);
+  }
+}
+// CARD FLASH — the harvested data carries only a generic 'Card' event (no yellow/red
+// qualifier survives the FotMob/WhoScored harvest), so every card flashes YELLOW. The
+// hook reads skyFlashCol, so if a RedCard/SecondYellow type is ever harvested we can
+// colour it red here. See report.
+function detectCardFlash(t, dt) {
+  if (!cardEvents || !cardEvents.length) return;
+  // live playback: fire once when the clock passes a card time.
+  if (Number.isFinite(dt) && dt > 0) {
+    for (const c of cardEvents) {
+      if (c.t > _lastCardT && c.t <= t && (t - c.t) < 0.5) {
+        skyFlashCol.set(c.red ? '#ff2a2a' : '#ffd24a');
+        skyFlash = 1; _lastCardT = c.t;
+      }
+    }
+    if (t < _lastCardT) _lastCardT = -1;   // looped/rewound → allow re-fire
+  }
+}
+// On a SNAP render (scrub/__setClock, dt=Inf) return the deterministic flash intensity
+// if t lands within a card's flash window, so a captured card frame reads.
+function _snapFlash(t) {
+  if (!cardEvents || !cardEvents.length) return 0;
+  let best = 0;
+  for (const c of cardEvents) {
+    // flash window in MATCH-MINUTES ≈ 0.9s of wall time from the card.
+    const w = wallSecondsSinceGoal ? null : null;   // (kept simple below)
+    const elapsedWall = wallSecondsSinceGoal(c.t, t);
+    if (Number.isFinite(elapsedWall) && elapsedWall >= 0 && elapsedWall < 0.9) {
+      skyFlashCol.set(c.red ? '#ff2a2a' : '#ffd24a');
+      const f = 1 - (elapsedWall / 0.9);
+      if (f > best) best = f;
+    }
+  }
+  return best;
 }
 
 // ============================================================================
@@ -1128,8 +1245,12 @@ function computeA(t, dt) {
   // the 160-wide render mesh (the "xG не поднимается" bug). Floor the radius near ~1
   // cell so a shot reads as a clear, distinct spire that stands proud of the mounds.
   const xgW = Number.isFinite(cfg.A.xgW) ? clamp(cfg.A.xgW, 0.2, 4) : 1;
-  const baseSharp = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1)) * 0.55;
-  const sharpRad = Math.max(1.0, baseSharp * xgW);
+  const baseSharp = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1)) * 0.9;
+  // FLOOR the spire radius near ~2 cells (was 1): a ~1-cell gaussian on the coarse
+  // activity grid (~23 cells) barely survived bilinear sampling into the 160-wide render
+  // mesh — the interpolated peak collapsed, so "xG не поднимается". A ~2-cell base makes
+  // each shot a distinct MOUND/SPIRE that stands clearly proud of the surrounding cloth.
+  const sharpRad = Math.max(2.0, baseSharp * xgW);
   const win = eventsInWindow(t, rel * 5 + atk * 3);
   for (const e of win) {
     const env = arWeight(t - e.t, atk, rel);
@@ -1319,8 +1440,13 @@ function goalLullAt(t) {
   const holdS = Number.isFinite(cfg.A.floodHold) ? clamp(cfg.A.floodHold, 0, 12) : FLOOD_HOLD_DEFAULT_S;
   const elapsed = wallSecondsSinceGoal(g.t, t);
   if (!Number.isFinite(elapsed)) return 0;
-  const flattenEnd = FLOOD_SWEEP_S + holdS;        // relief fully level by end of hold
-  const holdEnd = flattenEnd + FLOOD_RELAX_S;      // stays level through the colour exhale
+  // FLATTEN IN LOCKSTEP WITH THE COLOUR PUNCH — the relief levels over (a hair past) the
+  // colour SWEEP, so the instant the whole pitch turns the scorer colour it is ALSO a
+  // clean FLAT sheet: no lumpy mounds/ridges showing through the fill (the old bug where
+  // the relief only leveled by the end of HOLD, so the flood-in looked patchy). By ~end
+  // of sweep the surface is fully level; it then stays level through the hold + exhale.
+  const flattenEnd = FLOOD_SWEEP_S * 1.15;         // relief fully level ~as the colour finishes filling
+  const holdEnd = FLOOD_SWEEP_S + holdS + FLOOD_RELAX_S;  // stays level through hold + the colour exhale
   const total = holdEnd + LULL_RELEASE_S;          // then recovers over the tail
   if (elapsed < 0 || elapsed >= total) return 0;
   if (elapsed < flattenEnd) {                      // FLATTEN in, tracking the flood punch
@@ -1345,6 +1471,9 @@ function sampleGrid(grid, gx, gy, u, v) {
 // Rebuild the field surface at time t: TWO team A blankets (height + crisp
 // coverage). B/C/D are removed, so this only drives the two blankets.
 function computeField(t, dt) {
+  // SKY — ambient score indicator + card flash (updated every frame from the score at
+  // clock t; eased tint + flash decay use the dt filter, snap on scrub).
+  updateSky(t, dt);
   const aOn = cfg.A.on;
   if (aOn) computeA(t, dt);
 
@@ -1491,8 +1620,10 @@ function computeField(t, dt) {
         // live locus has drifted to.
         const fmCrest = 1.0;
         // xG spire HEIGHT is INDEPENDENT of A.amplitude: the crest term is scaled
-        // by the dedicated xgH slider (× a fixed base so amp doesn't gate it).
-        const crestK = 2.6 * xgH;
+        // by the dedicated xgH slider (× a fixed base so amp doesn't gate it). RAISED
+        // 2.6→4.2 so every shot's mound clearly STANDS as a readable rise (the user
+        // "stopped seeing xG as a rise"); goals (highest xg → tallest) tower plainly.
+        const crestK = 4.2 * xgH;
         // COVERAGE TEXTURE stores the per-channel FRONT-u (from the POSSESSION TIDE).
         // The blanket shaders read it as front(v) and work in honest u-units:
         // vDu = u − front. home owns u<front, away owns u>front; each opaque sheet
@@ -1515,8 +1646,16 @@ function computeField(t, dt) {
         // GENTLE MOUND cap (×0.5) so the general territory relief is a soft low swell,
         // NEVER a spire; the xG crest (×crestK) is the only tall feature. reliefMul
         // melts the whole relief toward 0 during the post-goal lull (штиль).
-        const reliefH = (rH * 0.5 * amp * moundMask + xH * crestK * fmCrest) * notch * reliefMul;
-        const reliefA = (rA * 0.5 * amp * moundMask + xA * crestK * fmCrest) * notch * reliefMul;
+        // The general mounds get the full seam NOTCH (so no tall hill sits under the lip
+        // fold). The xG CREST gets only a GENTLE notch (crestNotch, floored high) so a
+        // shot spire still rises clearly even in the rare case a shot lands near the
+        // possession seam — a shot must always read as a rise. Both melt in the lull.
+        const crestNotch = 0.6 + 0.4 * notch;   // ≥0.6 everywhere → spire never fully suppressed
+        // AMPLITUDE CEILING 8 — a high-xG (goal) crest could otherwise tower absurdly;
+        // clamp each sheet's relief so the spire reads tall but bounded.
+        let reliefH = (rH * 0.5 * amp * moundMask * notch + xH * crestK * fmCrest * crestNotch) * reliefMul;
+        let reliefA = (rA * 0.5 * amp * moundMask * notch + xA * crestK * fmCrest * crestNotch) * reliefMul;
+        reliefH = Math.min(reliefH, 8); reliefA = Math.min(reliefA, 8);
         // PER-TEAM RELIEF — each blanket carries its OWN (notched-at-seam) height, so
         // the two sheets are TWO DISTINCT surfaces; the visible LAP is the TOP sheet's
         // short lip fold (vertex shader), never a merged plane.
@@ -1697,7 +1836,7 @@ const TAU_LOCUS = 0.25;   // low-pass on the ball locus point feeding hill+front
 const TAU_TOP = 0.4;      // possessor-on-top (which blanket laps over) transition
 // Force the A smoothing to SNAP on the next computeA (used after a scrub or a
 // slider change so the eased grids don't lag behind a jump-cut / new setting).
-function snapASmoothing() { A_smoothReset = true; focusReset = true; A_frontReset = true; A_frontDispReset = true; locusReset = true; seamTopReset = true; }
+function snapASmoothing() { A_smoothReset = true; focusReset = true; A_frontReset = true; A_frontDispReset = true; locusReset = true; seamTopReset = true; skyLeanReset = true; }
 
 // ---- resize -----------------------------------------------------------------
 function onResize() {
@@ -2046,9 +2185,17 @@ function progressOfMatchT(t) {
 // HUD / camera (cloned from stage9)
 // ============================================================================
 let goalsByTime = [];
+let cardEvents = [];   // {t, team, red} — drives the SKY card-flash (see updateSky)
 function countGoals() {
   goalsByTime = timeline.filter((it) => it.kind === 'shot' && it.isGoal).map((g) => ({ t: g.t, team: g.team }));
   teamMeta.score = { home: goalsByTime.filter((g) => g.team === 'home').length, away: goalsByTime.filter((g) => g.team === 'away').length };
+  // CARD events for the sky flash. The harvest only emits a generic 'Card' type (no
+  // yellow/red qualifier), so `red` is inferred from any explicit red-ish type/outcome
+  // if one ever appears; otherwise a card flashes yellow. See report.
+  cardEvents = timeline
+    .filter((it) => /Card/.test(it.type || '') || it.type === 'RedCard' || it.type === 'YellowCard' || it.type === 'SecondYellow')
+    .map((c) => ({ t: c.t, team: c.team, red: /Red|Second/.test(c.type || '') }))
+    .sort((a, b) => a.t - b.t);
 }
 // SCORE at clock t — counts every goal whose goalTime ≤ t, the EXACT same time
 // basis and goal set that goalFloodAt uses (goalFloodAt picks the latest goal with
