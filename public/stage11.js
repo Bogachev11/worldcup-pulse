@@ -607,6 +607,11 @@ function makeBlanket(teamCol, isAway) {
   const aData = new Float32Array(NV);    // coverage alpha 0..1
   const aTex = new THREE.DataTexture(aData, VX, VY, THREE.RedFormat, THREE.FloatType);
   aTex.magFilter = THREE.LinearFilter; aTex.minFilter = THREE.LinearFilter; aTex.needsUpdate = true;
+  // CORNER-WAVE tint strength 0..1 per vertex — where a corner ripple crest passes over
+  // this sheet, the fragment shader blends the surface toward the ATTACKING colour (uCornerCol).
+  const cData = new Float32Array(NV);
+  const cTex = new THREE.DataTexture(cData, VX, VY, THREE.RedFormat, THREE.FloatType);
+  cTex.magFilter = THREE.LinearFilter; cTex.minFilter = THREE.LinearFilter; cTex.needsUpdate = true;
 
   // OPAQUE sheets: no alpha blending (the old alpha НАХЛЁСТ caused the ugly blur).
   // The seam is a HARD discard (alphaTest 0.5) inside the shader, and depth-test +
@@ -630,6 +635,9 @@ function makeBlanket(teamCol, isAway) {
     uTexel: { value: new THREE.Vector2(1 / VX, 1 / VY) },
     uBaseline: { value: 0 }, uWorld: { value: new THREE.Vector2(WORLD_X, WORLD_Z) },
     uTeam: { value: new THREE.Color(teamCol) },
+    // CORNER WAVE — per-vertex ripple-crest tint strength (uCorner tex, 0..1) blended
+    // toward the ATTACKING team's colour (uCornerCol, set per-frame in computeField).
+    uCorner: { value: cTex }, uCornerCol: { value: new THREE.Color(teamCol) },
     uGlow: { value: 1.0 },     // ЯРКОСТЬ ЦВЕТА — emissive strength of flat territory
     // GOAL FLOOD — uniform full-field colour override. uFlood 0..1 = how strongly THIS
     // cell's colour is blended toward the scorer colour (uFloodTeam) across the WHOLE
@@ -722,6 +730,7 @@ function makeBlanket(teamCol, isAway) {
     shader.fragmentShader = `
       uniform vec3 uTeam; uniform float uGlow;
       uniform float uFlood; uniform vec3 uFloodTeam;
+      uniform sampler2D uCorner; uniform vec3 uCornerCol;   // CORNER WAVE — crest tint
       uniform float uLap; uniform float uAway; uniform float uTop;
       // STAGE-7 material uniforms (clay tint + sat + micro-texture + HEX pattern + ember)
       uniform vec3 uClay; uniform float uSat; uniform float uTint; uniform float uTex;
@@ -823,6 +832,12 @@ function makeBlanket(teamCol, isAway) {
         // pitch is instantly the scorer colour — no wave, no seam move. Saturate the
         // flood colour slightly with uSat parity so it reads vivid like the territory.
         col = mix(col, uFloodTeam, clamp(uFlood, 0.0, 1.0));
+        // CORNER WAVE — a transient radial ripple crest (uCorner tex, 0..1, built in
+        // computeField from cornerWavesAt) tints THIS cell toward the ATTACKING team's
+        // colour (uCornerCol). A faint travelling colour band riding the height ripple —
+        // a surface transient, NOT a territory flip (coverage/front are untouched).
+        float cw = clamp(texture2D(uCorner, vUvN).r, 0.0, 1.0);
+        if (cw > 0.001) col = mix(col, uCornerCol, cw);
         diffuseColor.rgb = col;
         float covEff = covAt();
         // During the flood, force THIS sheet to cover its whole area so the scorer
@@ -898,13 +913,17 @@ function makeBlanket(teamCol, isAway) {
          float ember = uEmber * mix(0.18, 1.0, clamp(uIntensity, 0.0, 1.0));
          vec3 hi = uGlowCol * (1.0 + smoothstep(2.0, 3.6, vHd) * 0.5);
          emit += hi * hot * ember * 0.9 * flick * litMul;
+         // CORNER WAVE glow — the ripple crest lies mostly flat on the pitch, so give it a
+         // gentle emissive lift in the ATTACKING colour so the travelling wave reads vividly.
+         float cwE = clamp(texture2D(uCorner, vUvN).r, 0.0, 1.0);
+         emit += uCornerCol * cwE * 0.55 * litMul;
          totalEmissiveRadiance += emit;
        }`);
   };
   const m = new THREE.Mesh(geo, mat);
   m.castShadow = true; m.receiveShadow = true;
   scene.add(m);
-  return { mesh: m, hData, hTex, aData, aTex, u };
+  return { mesh: m, hData, hTex, aData, aTex, cData, cTex, u };
 }
 function buildTeamBlankets() {
   blankets = { home: makeBlanket(FRA_HEX, false), away: makeBlanket(SEN_HEX, true) };
@@ -1685,6 +1704,70 @@ function goalLullAt(t) {
   const s = f * f * (3 - 2 * f); return 1 - s;
 }
 
+// ============================================================================
+// CORNER WAVES — a corner kick = a WAVE rippling OUT FROM THE PITCH CORNER, in the
+// ATTACKING team's colour, across the cloth, appearing at the corner moment and fading.
+//
+// DETECTION. The harvest emits `CornerAwarded` events in MIRRORED PAIRS at the same t
+// (one per team). The event with outcome==='Successful' is the team that WON/TOOK the
+// corner (the ATTACKER); after toUV mirroring its (u,v) lands deep toward the attacked
+// goal near a touchline. We keep those, and SNAP each to the nearest real PITCH CORNER
+// on the attacked end: home attacks u→1, away attacks u→0; touchline v→0 or v→1 by which
+// half of the pitch the corner is in. buildCorners() builds the list once per match.
+// ============================================================================
+let cornersByTime = [];   // {t, team, u, v} — corner spot snapped to the pitch corner, match-time order
+function buildCorners() {
+  cornersByTime = [];
+  if (!timeline) return;
+  for (const e of timeline) {
+    if (e.type !== 'CornerAwarded' || e.outcome !== 'Successful') continue;
+    if (e.team !== 'home' && e.team !== 'away') continue;
+    // e.u/e.v are already mirrored into the shared pitch frame (buildTimelineFromDoc).
+    // Snap to the actual pitch CORNER on the attacked end: home attacks u→1, away → u→0;
+    // touchline = nearer of v=0 / v=1.
+    const cu = e.team === 'home' ? 1.0 : 0.0;
+    const cv = (Number.isFinite(e.v) ? e.v : 0.5) < 0.5 ? 0.0 : 1.0;
+    cornersByTime.push({ t: e.t, team: e.team, u: cu, v: cv });
+  }
+  cornersByTime.sort((a, b) => a.t - b.t);
+}
+
+// CORNER WAVE timing — authored in WALL seconds (screen time), like goalFloodAt, so it
+// plays fully under the dramatic clock and is scrub-safe (elapsed = wallSecondsSinceGoal).
+const CORNER_WAVE_S = 2.6;     // total screen-time life of one ripple (appear → expand → fade)
+const CORNER_SPEED = 0.42;     // ring EXPANSION speed in u-units of pitch length per wall-second
+const CORNER_K = 15.0;         // radial wavenumber (ring spacing) — a couple of concentric rings
+const CORNER_AMP = 1.7;        // ripple HEIGHT amplitude (world-Y), scaled by cfg.A.height below
+const CORNER_TINT = 0.72;      // max colour-tint strength toward the attacking colour at the crest
+const CORNER_FALLOFF = 2.2;    // amplitude ∝ 1/(1+FALLOFF·dist) — lower = ripple carries further out
+
+// Active corner ripples at clock t: the most-recent corner per SIDE (team) whose ripple
+// is still alive (elapsed wall-seconds < CORNER_WAVE_S). Deterministic from the clock →
+// scrub-safe. Returns [] when none active. Each entry carries the centre (u,v), the
+// attacking `team`, the ring `radius` (grows with elapsed) and a 0..1 `env` envelope.
+function cornerWavesAt(t) {
+  if (!cornersByTime || !cornersByTime.length) return [];
+  // newest corner ≤ t per team (home/away) — one live ripple per side at most.
+  let latest = { home: null, away: null };
+  for (let i = 0; i < cornersByTime.length; i++) {
+    const c = cornersByTime[i];
+    if (c.t <= t) latest[c.team] = c; else break;
+  }
+  const out = [];
+  for (const team of ['home', 'away']) {
+    const c = latest[team];
+    if (!c) continue;
+    const elapsed = wallSecondsSinceGoal(c.t, t);   // wall seconds since the corner (screen time)
+    if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= CORNER_WAVE_S) continue;
+    const f = elapsed / CORNER_WAVE_S;              // 0..1 life fraction
+    // envelope: quick rise, long decay so the ripple appears crisply then fades out.
+    const env = Math.sin(Math.PI * clamp(f, 0, 1)) ** 0.7;   // 0→1→0, front-loaded
+    const radius = CORNER_SPEED * elapsed;          // ring radius in u-units, growing outward
+    out.push({ u: c.u, v: c.v, team: c.team, radius, elapsed, env });
+  }
+  return out;
+}
+
 // bilinear sample a grid at normalized (u,v) (v already flipped by caller convention)
 function sampleGrid(grid, gx, gy, u, v) {
   const fx = clamp(u, 0, 1) * (gx - 1), fy = clamp(1 - v, 0, 1) * (gy - 1);
@@ -1803,6 +1886,25 @@ function computeField(t, dt) {
   const lullFlat = goalLullAt(t);
   const reliefMul = 1 - lullFlat;
 
+  // CORNER WAVES — active ripples this frame (most-recent corner per side, deterministic
+  // from the clock → scrub-safe). Each ripples OUTWARD from its pitch corner (cu,cv) in
+  // the attacking team's colour. Precompute here so the vertex loop just evaluates the
+  // radial ripple per cell. Distances use the pitch ASPECT (WORLD_X:WORLD_Z) so rings are
+  // circular in world space, not stretched in u,v. The dominant attacking colour drives
+  // uCornerCol on both sheets (corners of the two sides essentially never overlap in the
+  // ~2.4s wall window; if they do, each cell still takes its strongest ripple's height/tint).
+  const cornerWaves = cfg.A.on ? cornerWavesAt(t) : [];
+  const cwAspect = WORLD_Z / WORLD_X;                 // v-distance weight so rings are round
+  let cornerColHome = false;                          // whether the dominant live corner is home's
+  if (cornerWaves.length) {
+    // pick the freshest (smallest elapsed) as the dominant colour source.
+    let best = cornerWaves[0];
+    for (const w of cornerWaves) if (w.elapsed < best.elapsed) best = w;
+    cornerColHome = best.team === 'home';
+  }
+  // amplitude of the ripple height, scaled by the A.height slider (falls to 0 with amp).
+  const cwAmp = CORNER_AMP * clamp(cfg.A.height, 0, 8) / 3.0;
+
   // normalisation for the two A height grids (shared so relative team height is
   // honest). Read the SMOOTHED grids — that's what we render — so the normaliser
   // tracks the eased fields and doesn't itself jump frame-to-frame.
@@ -1812,6 +1914,9 @@ function computeField(t, dt) {
   }
 
   const bH = blankets.home, bA = blankets.away;
+  // CORNER-WAVE tint textures — cleared each frame; the loop writes the ripple crest tint
+  // (0..1) into BOTH sheets so whichever laps on top shows the travelling attacking-colour band.
+  bH.cData.fill(0); bA.cData.fill(0);
   let idx = 0;
   for (let j = 0; j < VY; j++) {
     const v = j / (VY - 1);
@@ -1819,6 +1924,29 @@ function computeField(t, dt) {
       const u = i / (VX - 1);
       const wob = Math.sin(u * 6.1 + ph) * Math.cos(v * 5.3 - ph * 0.8)
                 + 0.5 * Math.sin((u + v) * 9.7 - ph * 1.3);
+      // ---- CORNER WAVE ripple at this cell (radial travelling rings from each corner) --
+      let cwH = 0, cwTint = 0;
+      if (cornerWaves.length) {
+        for (const w of cornerWaves) {
+          const du = (u - w.u);
+          const dv = (v - w.v) * cwAspect;            // aspect-correct so rings are round
+          const dist = Math.sqrt(du * du + dv * dv);
+          // radial travelling ripple: sin(k·(dist − radius)) · envelope(age) · falloff(dist).
+          // Rings expand OUTWARD (radius grows with elapsed). A leading-edge gate keeps the
+          // ripple to a growing disc (nothing ahead of the wavefront), so it reads as a
+          // wave emanating FROM the corner, not a full-field standing pattern.
+          const lead = smoothstep(w.radius + 0.16, w.radius, dist);   // 1 inside front → 0 ahead
+          if (lead <= 0.001) continue;
+          const falloff = 1 / (1 + CORNER_FALLOFF * dist);   // amplitude decays with distance from corner
+          const ripple = Math.sin(CORNER_K * (dist - w.radius));
+          const a = ripple * w.env * lead * falloff;
+          cwH += a * cwAmp;
+          // tint follows the ripple CREST (positive lobes) so the colour band rides the wave.
+          const crest = clamp(a, 0, 1);
+          if (crest > cwTint) cwTint = crest;
+        }
+        cwTint = clamp(cwTint * CORNER_TINT, 0, 1);
+      }
 
       // ---- Layer A: per-team blanket height + crisp coverage ----
       let hH = 0, hA = 0, covH = 0, covA = 0;
@@ -1905,6 +2033,13 @@ function computeField(t, dt) {
           else           { const cap = hA - margin; if (hH > cap) hH = lerp(hH, cap, near); }
         }
       }
+      // CORNER WAVE — add the radial ripple to BOTH sheets' height (a transient surface
+      // ripple, added AFTER the seam clamp so it isn't flattened), and write the crest
+      // tint into both sheets' cData so whichever laps on top shows the travelling band.
+      if (cwH !== 0 || cwTint > 0) {
+        hH += cwH; hA += cwH;
+        bH.cData[idx] = cwTint; bA.cData[idx] = cwTint;
+      }
       bH.hData[idx] = hH; bH.aData[idx] = covH;
       bA.hData[idx] = hA; bA.aData[idx] = covA;
 
@@ -1976,6 +2111,11 @@ function computeField(t, dt) {
   const intWin = eventsInWindow(t, 0.35);
   const intensity = clamp(intWin.length / 18, 0, 1);
   bH.u.uIntensity.value = intensity; bA.u.uIntensity.value = intensity;
+  // CORNER WAVE — colour to blend the ripple crest toward = the dominant live corner's
+  // ATTACKING team colour (same on both sheets so the top sheet shows it wherever it laps).
+  const cwCol = cornerWaves.length ? (cornerColHome ? COL_HOME : COL_AWAY) : COL_HOME;
+  bH.u.uCornerCol.value.copy(cwCol); bA.u.uCornerCol.value.copy(cwCol);
+  bH.cTex.needsUpdate = true; bA.cTex.needsUpdate = true;
   bH.hTex.needsUpdate = true; bH.aTex.needsUpdate = true;
   bA.hTex.needsUpdate = true; bA.aTex.needsUpdate = true;
   bH.mesh.visible = aOn; bA.mesh.visible = aOn;
@@ -2424,6 +2564,7 @@ let momentum = [];     // [{minute, v}] valueNorm +home/−away, real data (rich
 function countGoals() {
   goalsByTime = timeline.filter((it) => it.kind === 'shot' && it.isGoal).map((g) => ({ t: g.t, team: g.team }));
   teamMeta.score = { home: goalsByTime.filter((g) => g.team === 'home').length, away: goalsByTime.filter((g) => g.team === 'away').length };
+  buildCorners();   // CORNER WAVES — source list of corners taken (t, team, snapped pitch-corner u,v)
   // CARD events for the sky flash. The harvest only emits a generic 'Card' type (no
   // yellow/red qualifier), so `red` is inferred from any explicit red-ish type/outcome
   // if one ever appears; otherwise a card flashes yellow. See report.
