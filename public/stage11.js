@@ -554,11 +554,15 @@ function buildGoalRings() {
   if (!goalsByTime || !goalsByTime.length) return;
   // ring stroke weight ≈ the pitch markings line weight (~0.05 world reads like a field line).
   const stroke = 0.05;
-  const R = 0.8;                            // ring radius (world units), ~goal-mouth scale
+  const R = 0.55;                           // ring radius (world units) — a touch smaller so a row of them fits across the end
   const endX = WORLD_X / 2 + 0.05;          // right at the goal-line end (torец)
-  // count per end so multiples stack cleanly WITHOUT running off the pitch. Stacked
-  // UPWARD (in Y) at the goal-mouth centre so several goals at one end read as a tidy
-  // vertical column of rings standing on the end line, not sprawling sideways off-pitch.
+  // STAGE11 CHANGE #4 — line the rings up FROM THE LEFT EDGE and SIDEWAYS along the
+  // goal-line: a HORIZONTAL ROW starting at the left corner and extending across the
+  // end, NOT centred and NOT stacked upward. The row lives in the goal-mouth VERTICAL
+  // plane (faces ±X) at a low, constant height, marching along z from the left corner.
+  const zLeft = WORLD_Z / 2 - (R + 0.12);   // first ring seated near the LEFT corner of the end
+  const dz = R * 2 + 0.18;                  // lateral spacing between successive rings along the line
+  const yRow = R + 0.12;                    // constant low height — the row sits on the end line
   let nHomeEnd = 0, nAwayEnd = 0;           // conceded-end counters
   const mat = new THREE.MeshBasicMaterial({ color: RING_COL, side: THREE.DoubleSide, transparent: true, opacity: 0.95, toneMapped: false, depthWrite: false });
   for (const g of goalsByTime) {
@@ -566,10 +570,10 @@ function buildGoalRings() {
     const homeScored = g.team === 'home';
     const x = homeScored ? endX : -endX;
     const idx = homeScored ? nAwayEnd++ : nHomeEnd++;
-    // stand each ring vertically in the goal-mouth plane, centred on the mouth (z≈0),
-    // stacked UPWARD per additional goal at this end so they never overlap or leave the pitch.
-    const z = 0;
-    const y = R + 0.18 + idx * (R * 2 + 0.22);   // first ring sits on the mouth; extras stack up
+    // march along the goal-line from the LEFT corner; extras step SIDEWAYS (−z), staying
+    // within the pitch width so several goals at one end read as a tidy horizontal row.
+    const z = zLeft - idx * dz;
+    const y = yRow;
     const geo = new THREE.RingGeometry(R - stroke, R, 48);
     const m = new THREE.Mesh(geo, mat.clone());
     // ring plane = the goal-mouth Y-Z plane (faces along ±X): rotate the XY ring about Y.
@@ -1101,6 +1105,7 @@ let A_frontRaw = null, A_front = null, A_frontTmp = null, A_frontEff = null;
 // seam (a trembling during busy/counter play). Low-passing the COMBINED front with a
 // small TAU_THRUST kills that twitch while keeping a counter a quick stab.
 let A_frontDisp = null;
+let _dbgMomFront = 0.5, _dbgBallMean = 0.5;   // verification read-out (see __frontStats)
 let A_smoothReset = true;         // first frame after a grid resize: snap, don't lerp
 let A_frontReset = true;          // snap the eased front on scrub/resize
 let A_frontDispReset = true;      // snap the displayed combined front on scrub/resize
@@ -1183,25 +1188,34 @@ function arWeight(a, atk, rel) {
 function buildTideFront(t, gx, gy, band) {
   const atk = Math.max(0.02, cfg.A.atk);
   const rel = Math.max(0.1, cfg.A.rel);
-  // sample the reconstructed ball locus back over the спад window. Step fine
-  // enough to catch quick rushes; cap the count for cost. (ballAt is cheap.)
-  const winMin = rel * 4 + atk * 2;
-  const N = 80;
+  // STAGE11 CHANGE #1 — the front must SWING END-TO-END with the real attack flow,
+  // not hover at midfield. Root cause of the old "stuck near centre" was OVER-AVERAGING:
+  // a long ball window (rel·4≈6.4min) averaged both ends toward u≈0.5. FIX = drive the
+  // front from a BLEND of (a) a SHORT-window recent ball depth (where play is RIGHT NOW)
+  // and (b) the real MOMENTUM signal (the backbone), then EXPAND the amplitude around
+  // centre so a strong lean pushes the front CLOSE to the attacking goal. The momentum
+  // backbone guarantees the swing even when the ball locus is sparse.
+  //
+  // (a) SHORT-window ball depth — a much tighter спад so the front tracks the CURRENT
+  // phase of play (~1 minute of match time) instead of smearing the whole half over it.
+  const winMin = Math.min(rel * 1.3 + atk, 1.4);   // was rel·4+atk·2 (~8min) → ~1min
+  const N = 48;
   const dt = winMin / N;
-  // per-channel weighted accumulation of ball-u (weight = envelope × lateral
-  // proximity to the channel). sigV = lateral influence half-width in v.
   const accU = A_frontTmp; accU.fill(0);
   const accW = new Float32Array(gy);
   const sigV = 0.16;                 // a ball sample bleeds ~this far across channels
   const inv2sig2 = 1 / (2 * sigV * sigV);
+  // short-window pure decay (fast release) so recent ball position dominates.
+  const relBall = Math.max(0.25, rel * 0.45);
   let anyW = false;
+  let globU = 0, globW = 0;          // window-mean ball-u (whole pitch) as a fallback backbone
   for (let k = 0; k <= N; k++) {
     const tt = t - k * dt;
-    const w = arWeight(k * dt, atk, rel);
+    const w = arWeight(k * dt, atk, relBall);
     if (w < 0.02) continue;
     const b = ballAt(tt);
     anyW = true;
-    // lateral reach: only channels within ~3·sigV of the ball's v get this sample.
+    globU += b.u * w; globW += w;
     const reach = sigV * 3;
     const jLo = Math.max(0, Math.floor((1 - (b.v + reach)) * (gy - 1)));
     const jHi = Math.min(gy - 1, Math.ceil((1 - (b.v - reach)) * (gy - 1)));
@@ -1212,9 +1226,43 @@ function buildTideFront(t, gx, gy, band) {
       accU[j] += b.u * w * lw; accW[j] += w * lw;
     }
   }
-  // resolve per-channel front; channels with no nearby ball default to 0.5 (mid).
+  const ballMean = globW > 1e-4 ? (globU / globW) : 0.5;
+  // (b) MOMENTUM BACKBONE — the real per-minute momentum m∈[−1,+1] (+ = home on top).
+  // Home dominant → territory front pushed toward the AWAY goal (u→1, home owns most of
+  // the pitch); away dominant → toward the HOME goal (u→0).
+  // Backbone momentum sampled DIRECTLY (per-minute data is already coarse/smooth) so the
+  // front reaches deep when momentum spikes; the playback's temporal low-pass (TAU_FRONT)
+  // supplies the smooth glide between minutes. No heavy window that would blunt real swings.
+  const mom = momentumAt(t);   // −1..+1  (+ = home on top)
+  // momentum target front-u: 0.5 + big amplitude · mom (near-goal at the extremes).
+  const MOM_AMP = 0.5;                        // |mom|=1 → front at 0.5±0.5 (right onto the goal band; the ownBand clamp keeps a sliver)
+  const momFront = 0.5 + MOM_AMP * mom;
+  _dbgMomFront = momFront; _dbgBallMean = ballMean;   // verification read-out only
+  // per-channel ball front (channels with no nearby ball fall back to the window mean).
   for (let j = 0; j < gy; j++) {
-    A_frontRaw[j] = accW[j] > 1e-4 ? (accU[j] / accW[j]) : 0.5;
+    A_frontRaw[j] = accW[j] > 1e-4 ? (accU[j] / accW[j]) : ballMean;
+  }
+  // EXPAND the ball front's amplitude around centre so a genuinely deep phase reads
+  // near-goal, not a timid nudge (the ball u already spans the pitch, but the lateral
+  // gaussian + fallback pull it inward; this gain restores the full swing).
+  const BALL_GAIN = 1.35;
+  for (let j = 0; j < gy; j++) {
+    A_frontRaw[j] = clamp(0.5 + (A_frontRaw[j] - 0.5) * BALL_GAIN, 0, 1);
+  }
+  // BLEND ball-position (fast, spatial, keeps tongues) with the MOMENTUM backbone
+  // (guarantees the end-to-end swing). Momentum-weighted so the backbone dominates the
+  // gross swing while the ball adds per-channel variation. This is what makes momentum
+  // the backbone the brief asks for.
+  // momentum is the BACKBONE (dominant): it sets the gross end-to-end position; the ball
+  // front only perturbs it (per-channel tongues + the current phase within the momentum
+  // window). High wMom so a strong lean actually pushes the front DEEP toward the goal,
+  // not a timid nudge — this is what makes the territory swing side-to-side like the pulse.
+  const wMom = 0.68;   // backbone weight — the swing driver (momentum). Ball keeps enough
+                       // voice that sustained territorial CAMPING (real recent ball depth)
+                       // also reads: a side that parks the ball in the opponent half shows a
+                       // deep front even when the per-minute momentum swing is modest.
+  for (let j = 0; j < gy; j++) {
+    A_frontRaw[j] = lerp(A_frontRaw[j], momFront, wMom);
   }
   // LATERAL smoothing across channels (light) so the front is organic/blobby, not
   // jagged — but channels still DIFFER (that's what makes tongues). 1-cell box ×2.
@@ -1468,19 +1516,26 @@ function computeA(t, dt) {
   // A sustained deep attack keeps the slow base advancing underneath, so when the
   // finger fades the territory is already consolidated. `conf` = how strongly the
   // finger asserts (its normalised lateral weight) so a faint finger barely nudges.
+  // STAGE11 CHANGE #1 — a thrust finger is a LOCAL tongue/stab, NOT a territory flip.
+  // With the momentum backbone now driving the gross front, an away counter-pass must not
+  // be able to yank the whole boundary from deep-in-away-half all the way back across the
+  // pitch (that's what made the front collapse toward centre). So CAP how far a finger can
+  // pull the front PAST the backbone toward its attacker — beyond that, it just tongues.
+  const THRUST_MAX_PULL = 0.22;   // max u-units a finger advances the front past the backbone
   for (let j = 0; j < gy; j++) {
     let fr = A_front[j];
+    const base = A_front[j];       // the momentum-backed slow base for this channel
     if (A_thrustWH[j] > 1e-4) {                              // home stabs toward u=1
       const endU = A_thrustH[j] / A_thrustWH[j];
       const conf = clamp(A_thrustWH[j], 0, 1);
       const target = lerp(fr, endU, conf);
-      if (target > fr) fr = target;
+      if (target > fr) fr = Math.min(target, base + THRUST_MAX_PULL);
     }
     if (A_thrustWA[j] > 1e-4) {                              // away stabs toward u=0
       const endU = A_thrustA[j] / A_thrustWA[j];
       const conf = clamp(A_thrustWA[j], 0, 1);
       const target = lerp(fr, endU, conf);
-      if (target < fr) fr = target;
+      if (target < fr) fr = Math.max(target, base - THRUST_MAX_PULL);
     }
     A_frontEff[j] = fr;   // raw COMBINED front this frame (eased base + fingers). NO flood
                           // wash — the flood is a uniform colour override, not a front move.
@@ -1989,7 +2044,7 @@ function expA(dt, tau) {
   return 1 - Math.exp(-dt / Math.max(1e-3, tau));
 }
 // time constants (seconds) for the dt-aware smoothing.
-const TAU_FRONT = 0.5;    // possession-tide boundary per channel
+const TAU_FRONT = 0.7;    // possession-tide boundary per channel — raised 0.5→0.7 for CHANGE #2: the CHANGE #1 momentum backbone + BALL_GAIN sharpen the per-channel front, so a slightly heavier temporal low-pass removes the re-introduced per-frame jitter. The big END-TO-END swing is driven by the momentum backbone (per-minute cadence), which glides regardless of this τ, so the front stays SMOOTH yet still swings with full amplitude (not frozen).
 const TAU_THRUST = 0.28;  // final low-pass on the COMBINED/displayed front (base+fingers) — kills the per-frame seam trembling from stepping finger weights; raised 0.22→0.28 to finish off the residual seam shimmer (seam-delta dropped ~45% busy, ~35-55% counter) while a counter still reaches ~66% of its depth within ~0.3s (still a quick stab)
 const TAU_GRID = 0.5;     // per-cell height / xG crest fields
 const TAU_HILL = 0.25;    // focus-hill centre glide
@@ -2064,6 +2119,18 @@ window.__setClock = (min) => {
   updateCamReadout();
   drawOverlays(clock);
 };
+// dev/verification hook — current per-channel DISPLAYED front (A_frontDisp) stats +
+// the momentum backbone target at the clock, so the end-to-end SWING of the territory
+// can be measured objectively (front-u near 0 = deep in home's half, near 1 = deep in
+// away's half). Pure read-out; leaves the sim untouched.
+window.__frontStats = () => {
+  if (!A_frontDisp || !A_frontDisp.length) return null;
+  let mn = Infinity, mx = -Infinity, s = 0;
+  for (let j = 0; j < A_frontDisp.length; j++) { const v = A_frontDisp[j]; if (v < mn) mn = v; if (v > mx) mx = v; s += v; }
+  let rmn = Infinity, rmx = -Infinity, rs = 0;
+  if (A_frontRaw) for (let j = 0; j < A_frontRaw.length; j++) { const v = A_frontRaw[j]; if (v < rmn) rmn = v; if (v > rmx) rmx = v; rs += v; }
+  return { clock: +clock.toFixed(2), mean: +(s / A_frontDisp.length).toFixed(3), min: +mn.toFixed(3), max: +mx.toFixed(3), mom: +momentumAt(clock).toFixed(3), momFront: +_dbgMomFront.toFixed(3), ballMean: +_dbgBallMean.toFixed(3), rawMean: A_frontRaw ? +(rs / A_frontRaw.length).toFixed(3) : null, rawMin: +rmn.toFixed(3), rawMax: +rmx.toFixed(3) };
+};
 window.__step = (min, dt) => {
   clock = clamp(+min || 0, 0, teamMeta.duration);
   wallProgress = progressOfMatchT(clock);
@@ -2088,7 +2155,7 @@ window.__step = (min, dt) => {
 // is used to keep the scrub slider (wall-progress) and __setClock (match-minute)
 // coherent. Only real data feeds I(t) — no procedural decoration.
 // ============================================================================
-const DRAMA_TOTAL_S = 60.0;    // stage11 change #1: 2× SLOWER (30→60) — the whole pass breathes. Continuous-minute cap unchanged (DRAMA_MAX_MIN_PER_SEC below), so no teleport.
+const DRAMA_TOTAL_S = 40.0;    // ×1.5 FASTER (60→40) — the whole match pass now runs ~40s. Continuous-minute cap unchanged (DRAMA_MAX_MIN_PER_SEC below), so no teleport.
 // k — how strongly importance dilates time (multiplies I(t) which is normalised
 // to peak 1). calmFloor — the baseline "screen-time density" of routine play so
 // calm still GLIDES (never freezes) and the calm-vs-busy contrast reads. RAISED the
@@ -2382,6 +2449,25 @@ function scoreAt(t) {
     if (g.t <= t) { if (g.team === 'away') a++; else h++; }
   }
   return { home: h, away: a };
+}
+// STAGE11 CHANGE #1 — real per-minute MOMENTUM sampled at clock t (match-minutes),
+// linearly interpolated between the per-minute samples. v = valueNorm ∈ [−1,+1],
+// +1 = home fully on top, −1 = away fully on top (rich record). Returns 0 when no
+// momentum data (best-effort; no mock). Deterministic from t → scrub-safe. This is
+// the BACKBONE that swings the territory front end-to-end with the real attack flow.
+let _momCursor = 0;
+function momentumAt(t) {
+  const M = momentum;
+  if (!M || !M.length) return 0;
+  if (t <= M[0].minute) return M[0].v;
+  const last = M[M.length - 1];
+  if (t >= last.minute) return last.v;
+  if (_momCursor >= M.length - 1 || M[_momCursor].minute > t) _momCursor = 0;
+  while (_momCursor < M.length - 2 && M[_momCursor + 1].minute <= t) _momCursor++;
+  const a = M[_momCursor], b = M[_momCursor + 1];
+  const span = Math.max(1e-4, b.minute - a.minute);
+  const f = clamp((t - a.minute) / span, 0, 1);
+  return lerp(a.v, b.v, f);
 }
 function updateHud() {
   const t = clock;
