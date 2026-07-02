@@ -22,7 +22,20 @@
     body, .pnl, .hud-w, .btn, #title2, #camread, input, select, textarea, button, label, option {
       font-family: 'Barlow', ui-sans-serif, system-ui, -apple-system, sans-serif;
     }
-    #stage { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: grab; }
+    /* STAGE11 CHANGE #4 — CENTERED ~1000px COMPOSITION COLUMN (poster/portrait).
+       The full-bleed score-tinted backdrop halo sits BEHIND everything; the 3D canvas,
+       HUD, goal-markers row and pulse strip all live within this centered 1000px band.
+       The SETTINGS PANEL stays OUTSIDE (floating left, see #panel). */
+    :root { --col-w: 1000px; }
+    /* full-bleed backdrop halo (score-tinted, painted in JS updateSky) — BEHIND the column */
+    #backdrop { position: fixed; inset: 0; z-index: 0; pointer-events: none; background: #05070d; }
+    /* the centered composition column */
+    #composition {
+      position: fixed; top: 0; bottom: 0; left: 50%; transform: translateX(-50%);
+      width: var(--col-w); max-width: 100vw; z-index: 10; pointer-events: none;
+    }
+    /* the 3D canvas is framed to the 1000px column (sky halo stays full-bleed behind) */
+    #stage { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; pointer-events: auto; }
     #stage:active { cursor: grabbing; }
     .pnl {
       position: fixed; z-index: 30; pointer-events: auto;
@@ -122,7 +135,7 @@
 
     /* free-floating, draggable HUD widgets */
     .hud-w {
-      position: fixed; z-index: 31; white-space: nowrap; font-variant-numeric: tabular-nums;
+      position: absolute; z-index: 31; white-space: nowrap; font-variant-numeric: tabular-nums;
       color: var(--ink); letter-spacing: 0.06em; font-size: 13px; padding: 2px 4px;
       transform-origin: top left; user-select: none; -webkit-user-select: none;
     }
@@ -170,25 +183,38 @@
       margin: 0 0.28em;
     }
 
-    /* ---- BOTTOM MOMENTUM / PULSE STRIP (FotMob analog) — 2D canvas overlay ---- */
+    /* ---- BOTTOM MOMENTUM / PULSE STRIP — within the centered column (STAGE11 #3) ----
+       Compressed to a centered band (NOT full-width) and made TALLER. It's a child of
+       #composition (max 1000px), and further inset so it doesn't span edge-to-edge. */
     #pulse {
-      position: fixed; z-index: 20; left: 0; right: 0; bottom: 0;
-      width: 100vw; height: 88px; display: block; pointer-events: none;
+      position: absolute; z-index: 20; bottom: 18px; left: 50%; transform: translateX(-50%);
+      width: 78%; height: 120px; display: block; pointer-events: none;
     }
-    /* ---- GOAL MARKERS ROW above the pitch — 2D canvas overlay ---- */
+    /* ---- GOAL MARKERS ROW above the pitch — within the centered column ---- */
     #markers {
-      position: fixed; z-index: 20; left: 0; right: 0; top: 0;
-      width: 100vw; height: 96px; display: block; pointer-events: none;
+      position: absolute; z-index: 20; top: 0; left: 0; right: 0;
+      width: 100%; height: 96px; display: block; pointer-events: none;
     }
   </style>
 </head>
 <body>
-  <canvas id="stage"></canvas>
+  <!-- STAGE11 #2/#4 — full-bleed score-tinted backdrop halo, BEHIND the centered column -->
+  <div id="backdrop"></div>
 
-  <!-- GOAL MARKERS ROW above the pitch (open-play from left, penalties from right) -->
-  <canvas id="markers"></canvas>
-  <!-- BOTTOM MOMENTUM / PULSE STRIP (whole-match seismograph + playhead) -->
-  <canvas id="pulse"></canvas>
+  <!-- STAGE11 #4 — centered ~1000px composition column: 3D canvas + HUD + markers + pulse -->
+  <div id="composition">
+    <canvas id="stage"></canvas>
+
+    <!-- GOAL MARKERS ROW above the pitch (open-play from left, penalties from right) -->
+    <canvas id="markers"></canvas>
+    <!-- BOTTOM MOMENTUM / PULSE STRIP (whole-match seismograph + playhead) -->
+    <canvas id="pulse"></canvas>
+
+    <!-- free-floating HUD widgets (inside the column so they center with it) -->
+    <div class="hud-w" id="w_teams" data-k="teams"><img class="flag" id="hFlag" alt=""><span class="home" id="hAbbr">FRA</span> vs <span class="away" id="aAbbr">SEN</span><img class="flag" id="aFlag" alt=""><span class="rsz"></span></div>
+    <div class="hud-w big" id="w_score" data-k="score"><span id="hScore">0</span> – <span id="aScore">0</span><span class="rsz"></span></div>
+    <div class="hud-w" id="w_clock" data-k="clock"><span id="clk2">0'</span><span class="rsz"></span></div>
+  </div>
 
   <!-- MATCH SWITCHER TABS -->
   <div id="matchtabs">
@@ -209,7 +235,7 @@
 
   <!-- LEFT — the layer constructor -->
   <div id="panel" class="pnl">
-    <div id="title2">STAGE 10 · CONSTRUCTOR · loading…</div>
+    <div id="title2">STAGE 11 · CONSTRUCTOR · loading…</div>
 
     <div class="cfgbar">
       <button id="cfgcopy" class="btn">копировать</button>
@@ -235,11 +261,6 @@
     </div>
     <div class="dim" style="color:var(--ink-dim);font-size:10px">drag to orbit · wheel to zoom</div>
   </div>
-
-  <!-- free-floating HUD widgets -->
-  <div class="hud-w" id="w_teams" data-k="teams"><img class="flag" id="hFlag" alt=""><span class="home" id="hAbbr">FRA</span> vs <span class="away" id="aAbbr">SEN</span><img class="flag" id="aFlag" alt=""><span class="rsz"></span></div>
-  <div class="hud-w big" id="w_score" data-k="score"><span id="hScore">0</span> – <span id="aScore">0</span><span class="rsz"></span></div>
-  <div class="hud-w" id="w_clock" data-k="clock"><span id="clk2">0'</span><span class="rsz"></span></div>
 
   <noscript>This stage requires JavaScript (ES modules) and WebGL.</noscript>
   <script type="module" src="stage11.js"></script>

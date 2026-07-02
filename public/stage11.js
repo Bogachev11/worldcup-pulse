@@ -322,10 +322,10 @@ function setupThree() {
   // renderOrder −1 (drawn first), fog off. It surrounds everything and shares the sky's
   // score-tint (buildSky/updateSky repaint skyTex, which this dome samples).
   buildSkyDome();
-  // Fog kept but LIGHTER (0.035→0.018) so the backdrop reads clearly behind the pitch
-  // and the sky's score-tint isn't washed out; it still carries the leader hue into the
-  // far void (updateSky tints scene.fog.color). The pitch never gets occluded by it.
-  scene.fog = new THREE.FogExp2(0x05070d, 0.018);
+  // STAGE11 CHANGE #2 — fog kept MINIMAL (0.018→0.010) and NEUTRAL (updateSky no longer
+  // leans its colour toward the leader) so it never washes the pitch's true colours. The
+  // score-tint glow lives in the full-bleed CSS backdrop halo + the sky dome, not the fog.
+  scene.fog = new THREE.FogExp2(0x05070d, 0.010);
 
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
@@ -453,16 +453,37 @@ function updateSky(t, dt) {
   if (fa >= 1) skyFlash = _snapFlash(t);
   else skyFlash += (0 - skyFlash) * fa;
   paintSky(lean, _tintCol, skyFlash);
-  // fog tint so the whole piece feels lit by the sky — the fog fills the far background
-  // (it overrides the gradient in the distance), so this is what actually carries the
-  // leader colour into the visible void around the pitch. Leans up to ~45% toward the
-  // leader hue at full margin, else the base deep fog; a card flash washes it too.
+  // STAGE11 CHANGE #2 — the sky's score-tint must colour ONLY the BACKDROP/halo, NOT
+  // wash the pitch. Previously the scene FOG was tinted up to ~45% toward the leader hue,
+  // which washed the whole field. The fog is now kept a NEUTRAL deep void (barely any
+  // lean — 8%) so the pitch/cloth colours stay TRUE; the leader-tint lives in the
+  // full-bleed CSS backdrop halo (paintBackdrop) and the WebGL sky dome behind the pitch.
   if (scene && scene.fog) {
-    _tintCol.copy(SKY_BOT).lerp(lean >= 0 ? COL_HOME : COL_AWAY, 0.45 * Math.abs(lean));
-    if (skyFlash > 0.01) _tintCol.lerp(skyFlashCol, skyFlash * 0.5);
+    _tintCol.copy(SKY_BOT).lerp(lean >= 0 ? COL_HOME : COL_AWAY, 0.08 * Math.abs(lean));
     scene.fog.color.copy(_tintCol);
   }
+  // paint the full-bleed CSS backdrop halo (behind the centered column) with the eased
+  // leader lean — this is where the score-tint glow now lives.
+  paintBackdrop(lean, skyFlash);
 }
+// STAGE11 CHANGE #2 — the full-bleed backdrop halo. A radial glow (centered) that leans
+// to the LEADER's hue, strength ∝ |lean|; neutral-dark on a draw. Sits BEHIND the
+// centered composition column (CSS #backdrop). A card flash briefly washes it too.
+const _bdCol = new THREE.Color();
+function paintBackdrop(lean, flash) {
+  const bd = el('backdrop'); if (!bd) return;
+  const strength = Math.abs(lean);
+  _bdCol.copy(lean >= 0 ? COL_HOME : COL_AWAY);
+  if ((flash || 0) > 0.01) _bdCol.lerp(skyFlashCol, flash * 0.6);
+  const glow = _bdCol.getStyle ? _bdCol.getStyle() : ('#' + _bdCol.getHexString());
+  // glow alpha grows with margin; a draw leaves the deep void. Tightened so it reads as a
+  // centered HALO behind the column, not a full-frame red wash.
+  const a1 = (0.38 * strength).toFixed(3);
+  const a2 = (0.12 * strength).toFixed(3);
+  bd.style.background =
+    `radial-gradient(78% 62% at 50% 44%, rgba(${_rgb(_bdCol)},${a1}) 0%, rgba(${_rgb(_bdCol)},${a2}) 40%, #05070d 74%)`;
+}
+function _rgb(c) { return `${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)}`; }
 // CARD FLASH — the harvested data carries only a generic 'Card' event (no yellow/red
 // qualifier survives the FotMob/WhoScored harvest), so every card flashes YELLOW. The
 // hook reads skyFlashCol, so if a RedCard/SecondYellow type is ever harvested we can
@@ -512,6 +533,57 @@ function buildCloth() {
 
   buildTeamBlankets();
   buildPitchPlane();
+  buildGoalRings();          // STAGE11 CHANGE #1 — thin white rings on the conceded торец
+}
+
+// ============================================================================
+// STAGE11 CHANGE #1 — GOAL RINGS ON THE ТОРЕЦ. A thin WHITE vector ring per goal,
+// standing in the goal-mouth VERTICAL plane at the CONCEDED end (home scores →
+// away's goal end at u=1/x=+WORLD_X/2; away scores → home's goal end at u=0/x=−WORLD_X/2).
+// White + line weight to MATCH the pitch markings (same vocabulary), NOT team-coloured,
+// NOT filled. They appear at the goal moment (t ≥ goal time) and PERSIST; multiple at
+// the same end are offset laterally (in z) + slightly in height so they don't overlap.
+// Built once (one mesh per goal); per-frame we just toggle visibility by the clock.
+// ============================================================================
+let goalRings = [];   // [{mesh, t}] in match-time order
+const RING_COL = 0xf0f2f8;      // ≈ the pitch line colour vec3(0.92,0.94,0.97)
+function buildGoalRings() {
+  // dispose any prior rings (match switch rebuild)
+  for (const r of goalRings) { if (r.mesh) { scene.remove(r.mesh); r.mesh.geometry.dispose(); r.mesh.material.dispose(); } }
+  goalRings = [];
+  if (!goalsByTime || !goalsByTime.length) return;
+  // ring stroke weight ≈ the pitch markings line weight (~0.05 world reads like a field line).
+  const stroke = 0.05;
+  const R = 0.8;                            // ring radius (world units), ~goal-mouth scale
+  const endX = WORLD_X / 2 + 0.05;          // right at the goal-line end (torец)
+  // count per end so multiples stack cleanly WITHOUT running off the pitch. Stacked
+  // UPWARD (in Y) at the goal-mouth centre so several goals at one end read as a tidy
+  // vertical column of rings standing on the end line, not sprawling sideways off-pitch.
+  let nHomeEnd = 0, nAwayEnd = 0;           // conceded-end counters
+  const mat = new THREE.MeshBasicMaterial({ color: RING_COL, side: THREE.DoubleSide, transparent: true, opacity: 0.95, toneMapped: false, depthWrite: false });
+  for (const g of goalsByTime) {
+    // conceded end: home scores → away's end (+X); away scores → home's end (−X).
+    const homeScored = g.team === 'home';
+    const x = homeScored ? endX : -endX;
+    const idx = homeScored ? nAwayEnd++ : nHomeEnd++;
+    // stand each ring vertically in the goal-mouth plane, centred on the mouth (z≈0),
+    // stacked UPWARD per additional goal at this end so they never overlap or leave the pitch.
+    const z = 0;
+    const y = R + 0.18 + idx * (R * 2 + 0.22);   // first ring sits on the mouth; extras stack up
+    const geo = new THREE.RingGeometry(R - stroke, R, 48);
+    const m = new THREE.Mesh(geo, mat.clone());
+    // ring plane = the goal-mouth Y-Z plane (faces along ±X): rotate the XY ring about Y.
+    m.rotation.y = Math.PI / 2;
+    m.position.set(x, y, z);
+    m.renderOrder = 3;
+    m.visible = false;
+    scene.add(m);
+    goalRings.push({ mesh: m, t: g.t });
+  }
+}
+// per-frame: show the rings whose goal has occurred by clock t (persist thereafter).
+function updateGoalRings(t) {
+  for (const r of goalRings) if (r.mesh) r.mesh.visible = (t >= r.t);
 }
 
 // ============================================================================
@@ -1564,6 +1636,7 @@ function computeField(t, dt) {
   // SKY — ambient score indicator + card flash (updated every frame from the score at
   // clock t; eased tint + flash decay use the dt filter, snap on scrub).
   updateSky(t, dt);
+  updateGoalRings(t);        // STAGE11 #1 — show the торец rings whose goal has occurred
   const aOn = cfg.A.on;
   if (aOn) computeA(t, dt);
 
@@ -1928,7 +2001,12 @@ function snapASmoothing() { A_smoothReset = true; focusReset = true; A_frontRese
 
 // ---- resize -----------------------------------------------------------------
 function onResize() {
-  const w = Math.max(1, window.innerWidth), h = Math.max(1, window.innerHeight);
+  // STAGE11 CHANGE #4 — the 3D canvas is framed to the centered ~1000px COLUMN, so we
+  // size the renderer to the STAGE canvas's own client box (the column), NOT the whole
+  // window. The full-bleed backdrop halo lives in a separate CSS layer behind the column.
+  const canvas = el('stage');
+  const w = Math.max(1, canvas ? canvas.clientWidth : window.innerWidth);
+  const h = Math.max(1, canvas ? canvas.clientHeight : window.innerHeight);
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   renderer.setPixelRatio(dpr); renderer.setSize(w, h, false);
   camera.aspect = w / h; camera.updateProjectionMatrix();
@@ -2412,8 +2490,18 @@ function drawPulse(t) {
   const ribH = (mid - padY) * 0.95;
   const dur = pulseDuration();
   const xOf = (min) => x0 + clamp(min / dur, 0, 1) * innerW;
-  // backdrop panel + midline
-  plCtx.fillStyle = 'rgba(8,10,17,0.55)'; plCtx.fillRect(0, 0, W, H);
+  // STAGE11 #3 — the compressed strip reads as a CONTAINED rounded band (not edge-to-edge):
+  // a rounded translucent panel with a hairline border spanning the (already-narrowed)
+  // canvas, so it sits as a distinct element within the centered column.
+  const rr = 10 * dpr;
+  const rrect = (x, y, w, h, r) => {
+    plCtx.beginPath();
+    plCtx.moveTo(x + r, y); plCtx.arcTo(x + w, y, x + w, y + h, r); plCtx.arcTo(x + w, y + h, x, y + h, r);
+    plCtx.arcTo(x, y + h, x, y, r); plCtx.arcTo(x, y, x + w, y, r); plCtx.closePath();
+  };
+  rrect(1 * dpr, 1 * dpr, W - 2 * dpr, H - 2 * dpr, rr);
+  plCtx.fillStyle = 'rgba(8,10,17,0.62)'; plCtx.fill();
+  plCtx.lineWidth = 1 * dpr; plCtx.strokeStyle = 'rgba(255,255,255,0.10)'; plCtx.stroke();
   // halftime marker
   plCtx.strokeStyle = 'rgba(255,255,255,0.14)'; plCtx.lineWidth = 1 * dpr;
   plCtx.setLineDash([3 * dpr, 4 * dpr]);
@@ -2759,18 +2847,17 @@ function clearHash() {
 // DRAGGABLE HUD (cloned from stage9)
 // ============================================================================
 const HUD_KEYS = ['teams', 'score', 'clock'];
-const HUD_STORE = 'stage11_hud_v1';   // STAGE11: own key so it doesn't inherit/clobber stage10's saved HUD
+const HUD_STORE = 'stage11_hud_v2';   // STAGE11 #4: v2 — coords are now COLUMN-relative (1000px), not viewport
 function setupHudLayout() {
   const widget = (k) => el('w_' + k);
-  // STAGE11 CHANGE #7 — tidy DEFAULT layout that fits the recomposed screen: the
-  // goal-markers row sits along the TOP (full width) and the pulse strip along the
-  // BOTTOM, so the score block is centred in the clear middle-upper band and the clock
-  // sits top-right clear of the play bar. This is a sensible default; the user will send
-  // a layout sketch to finalize.
+  // STAGE11 CHANGE #4/#7 — the HUD widgets live INSIDE the centered ~1000px column, so
+  // these coords are COLUMN-relative (0..1000 wide). Tidy default: team names+flags top
+  // -left and the big score under it (below the goal-markers row), the minute clock
+  // top-right within the column. The user will send a sketch to finalize.
   const defaults = () => ({
-    teams: { x: 96, y: 150, s: 2.6 },     // team names + flags, upper-left band (below markers row)
-    score: { x: 96, y: 196, s: 3.4 },     // big score just under the team line
-    clock: { x: 1330, y: 150, s: 2.2 },   // minute clock, top-right (clear of the play bar)
+    teams: { x: 70, y: 116, s: 2.2 },     // team names + flags, below the markers row
+    score: { x: 70, y: 152, s: 3.0 },     // big score under the team line
+    clock: { x: 820, y: 116, s: 2.0 },    // minute clock, top-right within the 1000px column
   });
   let layout;
   try { layout = JSON.parse(localStorage.getItem(HUD_STORE)) || defaults(); } catch { layout = defaults(); }
