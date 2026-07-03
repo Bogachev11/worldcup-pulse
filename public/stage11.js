@@ -49,7 +49,21 @@ const DEFAULT_CAM = { pos: [-11.962, 18.664, 17.842], target: [-0.621, 1.826, 0.
 function applyDefaultCamera() {
   camera.position.set(DEFAULT_CAM.pos[0], DEFAULT_CAM.pos[1], DEFAULT_CAM.pos[2]);
   controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
+  if (camera.isOrthographicCamera) camera.zoom = 1;
   controls.update();
+}
+// STAGE11 — ORTHOGRAPHIC frustum sizing. ORTHO_VIEW = world-unit VERTICAL half-extent of
+// the frustum at zoom 1. The pitch (WORLD_X 16 × WORLD_Z 9.6) viewed at the tuned tilt
+// spans ~22 world units tall on screen, so a half-height of ~11.5 frames the whole
+// cloth+relief comfortably in the centered column with a little margin. Width follows the
+// aspect. camera.zoom (driven by OrbitControls dolly) scales it in updateProjectionMatrix.
+const ORTHO_VIEW = 9.2;
+function setOrthoFrustum(aspect) {
+  if (!camera || !camera.isOrthographicCamera) return;
+  const h = ORTHO_VIEW;
+  const w = h * Math.max(0.0001, aspect);
+  camera.left = -w; camera.right = w; camera.top = h; camera.bottom = -h;
+  camera.updateProjectionMatrix();
 }
 
 // ---- pitch / mesh dims ------------------------------------------------------
@@ -79,6 +93,15 @@ let teamMeta = { home: { abbr: 'FRA' }, away: { abbr: 'SEN' }, score: { home: 0,
 
 let clock = 0, playing = true;
 let wallProgress = 0;   // 0..1 across one ~15s dramatic pass; drives the warped clock
+// STAGE11 CHANGE #3 — END-OF-MATCH SETTLE. When the pass reaches the final whistle we do
+// NOT loop; instead `settle` eases 0→1 over ~SETTLE_S seconds while playback still runs,
+// damping the surface to a calm resolved state (relief + territory ease flat/centre and
+// motion quiets), then playback STOPS and the final calm frame is held. Manual restart /
+// scrub resets it. settle is deterministic-friendly: snapped to 0 on scrub/restart.
+let settle = 0;               // 0 = live, 1 = fully settled/quiet
+let settling = false;         // true during the brief ease at the end (playback still on)
+const SETTLE_S = 1.6;         // graceful ease duration (~1-2s), not an abrupt freeze
+function resetSettle() { settle = 0; settling = false; }
 
 const COL_HOME = new THREE.Color(FRA_HEX);
 const COL_AWAY = new THREE.Color(SEN_HEX);
@@ -165,6 +188,12 @@ const DEFAULTS = () => ({
     // lets the SLOW territorial base catch up and consolidate. 0 = off (front stays
     // the smooth lateral tide). Default keeps counters clearly visible but not noisy.
     thrust: 1.0,
+    // УГЛОВЫЕ (STAGE11) — corner-ripple layer. cCorner on/off; wCorner strength
+    // (0..~2, ×CORNER_AMP). When cCorner is off there is NO corner ripple/tint at all.
+    // Old cfgs without these keys default to on + the reduced strength (loads gracefully).
+    // Default 1.0 = the reduced CORNER_AMP (see CORNER_STRENGTH_DEFAULT below; inlined
+    // here as a literal to avoid a temporal-dead-zone at module init, like FLOOD_HOLD).
+    cCorner: true, wCorner: 1.0,
     // ОТМЕТКИ ▸ ВЫСОТА (STAGE11 CHANGE #5) — vertical position of the goal-token row
     // above the pitch. 0 = low (near the field), 1 = high (top of the screen). Purely
     // a 2D-overlay layout knob (see drawMarkers).
@@ -331,14 +360,23 @@ function setupThree() {
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
   pmrem.dispose();
 
-  camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+  // STAGE11 — ORTHOGRAPHIC camera (flatter, more graphic look). The frustum is sized from
+  // ORTHO_VIEW (world-unit VERTICAL half-extent) × aspect; OrbitControls drives orbit +
+  // camera.zoom (dolly maps to zoom in ortho). setOrthoFrustum() (called on resize) keeps
+  // the pitch framed in the centered ~1000px column at any aspect. Kept at the same
+  // position/target as the tuned perspective ракурс so the composition reads the same.
+  camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -100, 200);
   camera.position.set(DEFAULT_CAM.pos[0], DEFAULT_CAM.pos[1], DEFAULT_CAM.pos[2]);
+  camera.zoom = 1;
+  setOrthoFrustum(1);   // seed with aspect 1; onResize() re-sizes to the real client box
 
   controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
-  controls.minDistance = 4;
-  controls.maxDistance = 36;
+  // dolly in ortho scales camera.zoom; bound it so the pitch can't be zoomed to nothing
+  // or blown up past the frame (mirrors the old perspective min/maxDistance feel).
+  controls.minZoom = 0.45;
+  controls.maxZoom = 4.0;
   controls.maxPolarAngle = Math.PI * 0.495;
   controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
 
@@ -1735,11 +1773,13 @@ function buildCorners() {
 // CORNER WAVE timing — authored in WALL seconds (screen time), like goalFloodAt, so it
 // plays fully under the dramatic clock and is scrub-safe (elapsed = wallSecondsSinceGoal).
 const CORNER_WAVE_S = 2.6;     // total screen-time life of one ripple (appear → expand → fade)
-const CORNER_SPEED = 0.42;     // ring EXPANSION speed in u-units of pitch length per wall-second
+const CORNER_SPEED = 0.30;     // ring EXPANSION speed in u-units of pitch length per wall-second — SLOWED (0.42→0.30) so the ripple stays nearer its corner and doesn't sweep the whole sheet
 const CORNER_K = 15.0;         // radial wavenumber (ring spacing) — a couple of concentric rings
-const CORNER_AMP = 1.7;        // ripple HEIGHT amplitude (world-Y), scaled by cfg.A.height below
-const CORNER_TINT = 0.72;      // max colour-tint strength toward the attacking colour at the crest
-const CORNER_FALLOFF = 2.2;    // amplitude ∝ 1/(1+FALLOFF·dist) — lower = ripple carries further out
+const CORNER_AMP = 0.85;       // ripple HEIGHT amplitude (world-Y) — HALVED (1.7→0.85): the corner ripple was heaving the whole cloth. Scaled by cfg.A.height AND the cCorner/wCorner strength control below.
+const CORNER_TINT = 0.55;      // max colour-tint strength toward the attacking colour at the crest (softened 0.72→0.55 to match the weaker ripple)
+const CORNER_FALLOFF = 4.2;    // amplitude ∝ 1/(1+FALLOFF·dist) — RAISED (2.2→4.2) so the ripple decays faster with distance → stays LOCAL to the corner instead of carrying across the sheet
+// default corner strength (cfg.A.wCorner) — 1.0 = the (already reduced) CORNER_AMP above.
+const CORNER_STRENGTH_DEFAULT = 1.0;
 
 // Active corner ripples at clock t: the most-recent corner per SIDE (team) whose ripple
 // is still alive (elapsed wall-seconds < CORNER_WAVE_S). Deterministic from the clock →
@@ -1884,7 +1924,11 @@ function computeField(t, dt) {
   // toward ~0 for a beat, so the surface "выпрямилось, обнулилось" after the goal
   // flood, then recovers. reliefMul multiplies every vertex's relief below.
   const lullFlat = goalLullAt(t);
-  const reliefMul = 1 - lullFlat;
+  // STAGE11 CHANGE #3 — END-OF-MATCH SETTLE: as `settle` eases 0→1 at the final whistle,
+  // the whole relief melts toward flat (like the post-goal lull) so the surface resolves to
+  // a calm quiet state, then holds. settleEase softens the ramp so it glides, not snaps.
+  const settleEase = smoothstep(0, 1, clamp(settle, 0, 1));
+  const reliefMul = (1 - lullFlat) * (1 - 0.92 * settleEase);
 
   // CORNER WAVES — active ripples this frame (most-recent corner per side, deterministic
   // from the clock → scrub-safe). Each ripples OUTWARD from its pitch corner (cu,cv) in
@@ -1893,7 +1937,10 @@ function computeField(t, dt) {
   // circular in world space, not stretched in u,v. The dominant attacking colour drives
   // uCornerCol on both sheets (corners of the two sides essentially never overlap in the
   // ~2.4s wall window; if they do, each cell still takes its strongest ripple's height/tint).
-  const cornerWaves = cfg.A.on ? cornerWavesAt(t) : [];
+  // УГЛОВЫЕ on/off — corners only exist when Layer A is on AND the corner toggle is on
+  // (old cfgs without cCorner default to on via DEFAULTS). When off: no ripple, no tint.
+  const cornersOn = cfg.A.on && (cfg.A.cCorner !== false);
+  const cornerWaves = cornersOn ? cornerWavesAt(t) : [];
   const cwAspect = WORLD_Z / WORLD_X;                 // v-distance weight so rings are round
   let cornerColHome = false;                          // whether the dominant live corner is home's
   if (cornerWaves.length) {
@@ -1902,8 +1949,10 @@ function computeField(t, dt) {
     for (const w of cornerWaves) if (w.elapsed < best.elapsed) best = w;
     cornerColHome = best.team === 'home';
   }
-  // amplitude of the ripple height, scaled by the A.height slider (falls to 0 with amp).
-  const cwAmp = CORNER_AMP * clamp(cfg.A.height, 0, 8) / 3.0;
+  // amplitude of the ripple height, scaled by the A.height slider (falls to 0 with amp)
+  // AND by the corner STRENGTH control (cfg.A.wCorner, 0..~2; default = the reduced 1.0).
+  const cwStrength = Number.isFinite(cfg.A.wCorner) ? clamp(cfg.A.wCorner, 0, 3) : CORNER_STRENGTH_DEFAULT;
+  const cwAmp = CORNER_AMP * cwStrength * clamp(cfg.A.height, 0, 8) / 3.0;
 
   // normalisation for the two A height grids (shared so relative team height is
   // honest). Read the SMOOTHED grids — that's what we render — so the normaliser
@@ -1945,7 +1994,9 @@ function computeField(t, dt) {
           const crest = clamp(a, 0, 1);
           if (crest > cwTint) cwTint = crest;
         }
-        cwTint = clamp(cwTint * CORNER_TINT, 0, 1);
+        // tint scales with the corner STRENGTH control too, so wCorner=0 → no tint at all
+        // and lower strength softens the colour band along with the (already gentler) ripple.
+        cwTint = clamp(cwTint * CORNER_TINT * clamp(cwStrength, 0, 1.5), 0, 1);
       }
 
       // ---- Layer A: per-team blanket height + crisp coverage ----
@@ -1986,7 +2037,11 @@ function computeField(t, dt) {
         // The blanket shaders read it as front(v) and work in honest u-units:
         // vDu = u − front. home owns u<front, away owns u>front; each opaque sheet
         // extends `lap` past the front (finite overlap), so background never shows.
-        const front = sampleGrid(A_sown, A_gx, A_gy, u, v);   // front-u for this cell
+        let front = sampleGrid(A_sown, A_gx, A_gy, u, v);   // front-u for this cell
+        // END-OF-MATCH SETTLE — the territory front eases toward the halfway line (50/50,
+        // a calm resolved split) as the match resolves, so neither side is heaving at the
+        // final held frame. Purely visual settling of the boundary; snapped off on restart.
+        if (settleEase > 0) front = lerp(front, 0.5, 0.85 * settleEase);
         const du = u - front;                                  // + = away half
         covH = front;
         covA = front;
@@ -2017,8 +2072,11 @@ function computeField(t, dt) {
         // PER-TEAM RELIEF — each blanket carries its OWN (notched-at-seam) height, so
         // the two sheets are TWO DISTINCT surfaces; the visible LAP is the TOP sheet's
         // short lip fold (vertex shader), never a merged plane.
-        hH = A_BASE + A_WOBBLE * wob + reliefH;
-        hA = A_BASE + A_WOBBLE * wob + reliefA;
+        // END-OF-MATCH SETTLE also quiets the tiny cloth wobble so the held final frame
+        // is truly still (motion damps), not gently breathing forever.
+        const wobMul = A_WOBBLE * (1 - 0.95 * settleEase);
+        hH = A_BASE + wobMul * wob + reliefH;
+        hA = A_BASE + wobMul * wob + reliefA;
         // SEAM-BAND UNDER-SHEET CLAMP — within the seam band the UNDER sheet is held
         // BELOW the top one (cap = top − margin, blended to none at the band edge) so
         // no residual bump or green/blue TONGUE can stab through the short lip. Wider
@@ -2215,7 +2273,10 @@ function onResize() {
   const h = Math.max(1, canvas ? canvas.clientHeight : window.innerHeight);
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   renderer.setPixelRatio(dpr); renderer.setSize(w, h, false);
-  camera.aspect = w / h; camera.updateProjectionMatrix();
+  // ORTHOGRAPHIC — resize the frustum from the stage client box aspect (keeps the pitch
+  // framed + un-stretched at any column size), preserving the current OrbitControls zoom.
+  if (camera.isOrthographicCamera) setOrthoFrustum(w / h);
+  else { camera.aspect = w / h; camera.updateProjectionMatrix(); }
   if (composer) {
     composer.setPixelRatio(dpr); composer.setSize(w, h);
     if (bloomPass) bloomPass.setSize(w * dpr, h * dpr);
@@ -2239,9 +2300,25 @@ function loop(now) {
     // DRAMA_TOTAL_S / cfg.speed. 1.0× ⇒ ~15s; leaving the slider as a global
     // tempo trim. dt is real wall seconds.
     const spd = Math.max(0.05, Number(cfg.speed) || 1);
-    wallProgress += (dt / DRAMA_TOTAL_S) * spd;
-    if (wallProgress >= 1) { wallProgress -= 1; _dramaCursor = 0; snapASmoothing(); }  // LOOP
-    clock = matchT(wallProgress);
+    if (settling) {
+      // STAGE11 CHANGE #3 — the match is over. Hold the clock at the final whistle and ease
+      // the surface to a calm resolved state over ~SETTLE_S. When settled, STOP (no loop).
+      clock = teamMeta.duration;
+      settle = clamp(settle + dt / SETTLE_S, 0, 1);
+      if (settle >= 1) {
+        settling = false; playing = false;
+        const pb = el('play'); if (pb) pb.textContent = '▶';
+      }
+    } else {
+      wallProgress += (dt / DRAMA_TOTAL_S) * spd;
+      if (wallProgress >= 1) {
+        // FINAL WHISTLE — do NOT loop. Pin to the end and begin the calm settle.
+        wallProgress = 1; clock = matchT(1);
+        settling = true; settle = 0;
+      } else {
+        clock = matchT(wallProgress);
+      }
+    }
   }
   renderFrame(clock, dt);
   controls.update();
@@ -2258,6 +2335,7 @@ function loop(now) {
 // feeding the dt-aware exponential filters a real dt — so calling it repeatedly
 // with small advancing min + dt reproduces the live glide deterministically.
 window.__setClock = (min) => {
+  resetSettle();
   clock = clamp(+min || 0, 0, teamMeta.duration);
   wallProgress = progressOfMatchT(clock);   // keep the warped scrubber coherent
   _dramaCursor = 0;
@@ -2282,7 +2360,25 @@ window.__frontStats = () => {
   if (A_frontRaw) for (let j = 0; j < A_frontRaw.length; j++) { const v = A_frontRaw[j]; if (v < rmn) rmn = v; if (v > rmx) rmx = v; rs += v; }
   return { clock: +clock.toFixed(2), mean: +(s / A_frontDisp.length).toFixed(3), min: +mn.toFixed(3), max: +mx.toFixed(3), mom: +momentumAt(clock).toFixed(3), momFront: +_dbgMomFront.toFixed(3), ballMean: +_dbgBallMean.toFixed(3), rawMean: A_frontRaw ? +(rs / A_frontRaw.length).toFixed(3) : null, rawMin: +rmn.toFixed(3), rawMax: +rmx.toFixed(3) };
 };
+// STAGE11 CHANGE #3 dev/verify hook — force the END-OF-MATCH settled state (clock at the
+// final whistle, settle=amount 0..1, playback stopped) and render one snapped frame, so
+// the calm resolved final frame can be captured deterministically. amount defaults to 1.
+window.__endSettle = (amount) => {
+  const a = Number.isFinite(+amount) ? clamp(+amount, 0, 1) : 1;
+  clock = teamMeta.duration;
+  wallProgress = 1;
+  settle = a; settling = false; playing = false;
+  const pb = el('play'); if (pb) pb.textContent = '▶';
+  _dramaCursor = 0; _ballCursor = 0; snapASmoothing();
+  renderFrame(clock);
+  controls.update();
+  composer.render();
+  updateHud();
+  updateCamReadout();
+  drawOverlays(clock);
+};
 window.__step = (min, dt) => {
+  resetSettle();
   clock = clamp(+min || 0, 0, teamMeta.duration);
   wallProgress = progressOfMatchT(clock);
   playing = false;
@@ -2812,13 +2908,24 @@ function bindGlobalUI() {
   bindMatchTabs();
   const playBtn = el('play');
   playBtn.addEventListener('click', () => {
-    playing = !playing; playBtn.textContent = playing ? '❚❚' : '▶';
+    // STAGE11 CHANGE #3 — the match plays ONCE then settles + stops. If the user presses
+    // play again from that settled/finished end state, RESTART from the top (don't resume
+    // straight into the settle). Otherwise it's a normal play/pause toggle.
+    if (!playing && (settle > 0 || settling || wallProgress >= 1)) {
+      resetSettle(); wallProgress = 0; _dramaCursor = 0; clock = matchT(0); snapASmoothing();
+      playing = true;
+    } else {
+      playing = !playing;
+    }
+    playBtn.textContent = playing ? '❚❚' : '▶';
   });
   el('restart').addEventListener('click', () => {
+    resetSettle();
     wallProgress = 0; _dramaCursor = 0; clock = matchT(0); playing = true; playBtn.textContent = '❚❚'; snapASmoothing();
   });
   el('clock').addEventListener('input', () => {
     // slider is WALL-PROGRESS 0..100 through the dramatic pass → warp to match-min.
+    resetSettle();
     wallProgress = clamp(+el('clock').value / 100, 0, 1);
     _dramaCursor = 0; clock = matchT(wallProgress);
     playing = false; playBtn.textContent = '▶'; _ballCursor = 0; snapASmoothing();
@@ -2910,7 +3017,10 @@ const LAYER_DEFS = [
     { id: 'floodHold', label: 'гол ▸ держать заливку', min: 0, max: 8, step: 0.1, fmt: (v) => v.toFixed(1) + ' с' },
     { id: 'lull', label: 'гол ▸ пауза (штиль)', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) + ' с' },
     { id: 'thrust', label: 'выпад ▸ сила', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'wCorner', label: 'угловые ▸ сила', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'markerH', label: 'отметки ▸ высота', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
+  ], toggles: [
+    { id: 'cCorner', label: 'угловые' },   // on/off for the corner-ripple layer
   ], contribHead: 'ПОДЪЁМ ИЗ:', contributors: [
     { on: 'cOwn',  w: 'wOwn',  label: 'Владение' },
     { on: 'cXg',   w: 'wXg',   label: 'Удары · xG (шпиль)' },
