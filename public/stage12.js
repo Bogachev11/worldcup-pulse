@@ -594,47 +594,61 @@ function buildCloth() {
 // ============================================================================
 let goalRings = [];   // [{mesh, t}] in match-time order
 const RING_COL = 0xf0f2f8;      // ≈ the pitch line colour vec3(0.92,0.94,0.97)
+// a small billboard sprite showing the scoring MINUTE (white), sits INSIDE the ring.
+function makeMinuteSprite(minute) {
+  const cv = document.createElement('canvas'); cv.width = 96; cv.height = 48;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = 'rgba(240,242,248,0.96)';
+  ctx.font = "600 30px Barlow, ui-sans-serif, sans-serif";
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(minute + "'", 48, 25);
+  const tex = new THREE.CanvasTexture(cv); tex.needsUpdate = true;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false, toneMapped: false });
+  const sp = new THREE.Sprite(mat); sp.scale.set(0.62, 0.31, 1);
+  return sp;
+}
 function buildGoalRings() {
-  // dispose any prior rings (match switch rebuild)
-  for (const r of goalRings) { if (r.mesh) { scene.remove(r.mesh); r.mesh.geometry.dispose(); r.mesh.material.dispose(); } }
+  // dispose any prior rings + labels (match switch rebuild)
+  for (const r of goalRings) {
+    if (r.mesh) { scene.remove(r.mesh); r.mesh.geometry.dispose(); r.mesh.material.dispose(); }
+    if (r.label) { scene.remove(r.label); if (r.label.material.map) r.label.material.map.dispose(); r.label.material.dispose(); }
+  }
   goalRings = [];
   if (!goalsByTime || !goalsByTime.length) return;
-  // ring stroke weight ≈ the pitch markings line weight (~0.05 world reads like a field line).
-  const stroke = 0.05;
-  const R = 0.55;                           // ring radius (world units) — a touch smaller so a row of them fits across the end
-  const endX = WORLD_X / 2 + 0.05;          // right at the goal-line end (torец)
-  // STAGE11 CHANGE #4 — line the rings up FROM THE LEFT EDGE and SIDEWAYS along the
-  // goal-line: a HORIZONTAL ROW starting at the left corner and extending across the
-  // end, NOT centred and NOT stacked upward. The row lives in the goal-mouth VERTICAL
-  // plane (faces ±X) at a low, constant height, marching along z from the left corner.
-  const zLeft = WORLD_Z / 2 - (R + 0.12);   // first ring seated near the LEFT corner of the end
-  const dz = R * 2 + 0.18;                  // lateral spacing between successive rings along the line
-  const yRow = R + 0.12;                    // constant low height — the row sits on the end line
-  let nHomeEnd = 0, nAwayEnd = 0;           // conceded-end counters
-  const mat = new THREE.MeshBasicMaterial({ color: RING_COL, side: THREE.DoubleSide, transparent: true, opacity: 0.95, toneMapped: false, depthWrite: false });
-  for (const g of goalsByTime) {
-    // conceded end: home scores → away's end (+X); away scores → home's end (−X).
-    const homeScored = g.team === 'home';
-    const x = homeScored ? endX : -endX;
-    const idx = homeScored ? nAwayEnd++ : nHomeEnd++;
-    // march along the goal-line from the LEFT corner; extras step SIDEWAYS (−z), staying
-    // within the pitch width so several goals at one end read as a tidy horizontal row.
-    const z = zLeft - idx * dz;
-    const y = yRow;
+  const stroke = 0.05;                       // ≈ pitch-markings line weight
+  const R = 0.5;                             // ring radius (world units)
+  // ALL goals in ONE CHRONOLOGICAL ROW starting at the LEFT edge and marching RIGHT
+  // along the near touchline — NOT split by which goal was conceded. White vector
+  // rings (pitch-line style), the scoring MINUTE inside each. Rings sit in the X-Y
+  // plane (face ±Z, toward the camera) so they read as clean circles.
+  const y = R + 0.18;                        // low constant height above the pitch
+  const z = WORLD_Z / 2 + 0.45;             // just outside the NEAR touchline (toward the camera)
+  const dx = R * 2 + 0.3;                    // spacing between successive rings
+  const x0 = -WORLD_X / 2 + R + 0.1;         // first ring at the LEFT edge
+  const mat = new THREE.MeshBasicMaterial({ color: RING_COL, side: THREE.DoubleSide, transparent: true, opacity: 0.95, toneMapped: false, depthWrite: false, depthTest: false });
+  for (let i = 0; i < goalsByTime.length; i++) {
+    const g = goalsByTime[i];
+    const minute = Number.isFinite(g.minute) ? g.minute : Math.floor(g.t);
+    const x = x0 + i * dx;
     const geo = new THREE.RingGeometry(R - stroke, R, 48);
-    const m = new THREE.Mesh(geo, mat.clone());
-    // ring plane = the goal-mouth Y-Z plane (faces along ±X): rotate the XY ring about Y.
-    m.rotation.y = Math.PI / 2;
+    const m = new THREE.Mesh(geo, mat.clone());   // XY-plane ring, faces the camera
     m.position.set(x, y, z);
-    m.renderOrder = 3;
-    m.visible = false;
+    m.renderOrder = 4; m.visible = false;
     scene.add(m);
-    goalRings.push({ mesh: m, t: g.t });
+    const lab = makeMinuteSprite(minute);
+    lab.position.set(x, y, z + 0.02);
+    lab.renderOrder = 5; lab.visible = false;
+    scene.add(lab);
+    goalRings.push({ mesh: m, label: lab, t: g.t });
   }
 }
-// per-frame: show the rings whose goal has occurred by clock t (persist thereafter).
+// per-frame: show the rings + minute labels whose goal has occurred by clock t.
 function updateGoalRings(t) {
-  for (const r of goalRings) if (r.mesh) r.mesh.visible = (t >= r.t);
+  for (const r of goalRings) {
+    const on = (t >= r.t);
+    if (r.mesh) r.mesh.visible = on;
+    if (r.label) r.label.visible = on;
+  }
 }
 
 // ============================================================================
