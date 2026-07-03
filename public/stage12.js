@@ -147,13 +147,13 @@ const DEFAULTS = () => ({
   //  contributor on/off; wOWN..wALL = weights.
   A: {
     on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 3.0,
-    colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0, lap: 0.04,
+    colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0, lap: 0.005,
     // КРОМКА ▸ подъём — LIP HEIGHT (world-Y) of the fabric fold where the TOP
     // blanket laps OVER the under one at the seam. A SHORT, thin folded edge so the
     // two blankets read as two separate sheets (one over the other) WITHOUT a tall
     // wall that would cross through a hill near the front. The possessor laps on top.
     // 0 = flush (no lap), ~0.1 = a thin clean fold, up to 0.35 = a deeper lap.
-    lipH: 0.1,
+    lipH: 0.01,
     // МИН. ТЕРРИТОРИЯ ▸ у ворот — each team ALWAYS keeps a guaranteed band of
     // ownership around ITS OWN goal line (home own-goal at u≈0, away at u≈1), so
     // the opponent can never take the whole pitch in normal play. The contested
@@ -2962,37 +2962,35 @@ function drawMarkers(t) {
   const W = mkCanvas.width, H = mkCanvas.height;
   mkCtx.clearRect(0, 0, W, H);
   // token geometry (in CSS px, scaled by dpr).
-  const r = 11 * dpr;                 // token radius
-  const gap = 30 * dpr;               // centre-to-centre spacing
-  const edge = 26 * dpr;              // inset from each screen edge
+  const r = 13.5 * dpr;               // token radius (holds the minute inside)
+  const gap = 34 * dpr;               // centre-to-centre spacing
+  const edge = 26 * dpr;              // inset from the LEFT edge
   // adjustable HEIGHT above the pitch: slider 0 (near the field/bottom of this strip)
   // → 1 (top). The strip is pinned to the top of the screen; higher slider = higher up.
   const mh = clamp(Number.isFinite(cfg.A.markerH) ? cfg.A.markerH : 0.55, 0, 1);
   const cy = H - (0.18 + 0.62 * mh) * H;   // vertical centre of the row
-  // split visible (goal already happened by clock t) tokens into open-play vs penalty.
-  const open = [], pen = [];
-  for (const g of goalMarkers) { if (g.t <= t) (g.pen ? pen : open).push(g); }
-  const paint = (list, fromLeft) => {
-    for (let i = 0; i < list.length; i++) {
-      const g = list[i];
-      const cx = fromLeft ? (edge + r + i * gap) : (W - edge - r - i * gap);
-      const col = g.team === 'home' ? FRA_HEX : SEN_HEX;
-      // soft glow underlay
-      mkCtx.beginPath(); mkCtx.arc(cx, cy, r * 1.7, 0, Math.PI * 2);
-      mkCtx.fillStyle = hexA(col, 0.16); mkCtx.fill();
-      // token
-      mkCtx.beginPath(); mkCtx.arc(cx, cy, r, 0, Math.PI * 2);
-      mkCtx.fillStyle = col; mkCtx.fill();
-      mkCtx.lineWidth = 1.5 * dpr; mkCtx.strokeStyle = 'rgba(4,5,10,0.85)'; mkCtx.stroke();
-      // minute label under the token
-      mkCtx.fillStyle = 'rgba(255,255,255,0.82)';
-      mkCtx.font = `${11 * dpr}px Barlow, sans-serif`;
-      mkCtx.textAlign = 'center'; mkCtx.textBaseline = 'top';
-      mkCtx.fillText(g.minute + "'", cx, cy + r + 3 * dpr);
-    }
-  };
-  paint(open, true);    // open-play → from the LEFT edge rightward
-  paint(pen, false);    // penalties → from the RIGHT edge leftward
+  // ALL goals (already scored by clock t), CHRONOLOGICAL, accumulate FROM THE LEFT edge
+  // rightward — each next goal to the RIGHT of the previous. The scoring MINUTE is drawn
+  // INSIDE the token. (goalMarkers is kept in match-time order.)
+  const list = [];
+  for (const g of goalMarkers) { if (g.t <= t) list.push(g); }
+  for (let i = 0; i < list.length; i++) {
+    const g = list[i];
+    const cx = edge + r + i * gap;
+    const col = g.team === 'home' ? FRA_HEX : SEN_HEX;
+    // soft glow underlay
+    mkCtx.beginPath(); mkCtx.arc(cx, cy, r * 1.7, 0, Math.PI * 2);
+    mkCtx.fillStyle = hexA(col, 0.16); mkCtx.fill();
+    // token
+    mkCtx.beginPath(); mkCtx.arc(cx, cy, r, 0, Math.PI * 2);
+    mkCtx.fillStyle = col; mkCtx.fill();
+    mkCtx.lineWidth = 1.5 * dpr; mkCtx.strokeStyle = 'rgba(4,5,10,0.9)'; mkCtx.stroke();
+    // scoring MINUTE drawn INSIDE the token
+    mkCtx.fillStyle = 'rgba(255,255,255,0.96)';
+    mkCtx.font = `600 ${9.5 * dpr}px Barlow, sans-serif`;
+    mkCtx.textAlign = 'center'; mkCtx.textBaseline = 'middle';
+    mkCtx.fillText(g.minute + "'", cx, cy + 0.5 * dpr);
+  }
 }
 
 // ---- CHANGE #6 — bottom momentum / pulse strip (seismograph + playhead) -----
