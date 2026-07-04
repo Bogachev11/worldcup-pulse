@@ -128,6 +128,13 @@ const teamColor = (team) => (team === 'away' ? COL_AWAY : COL_HOME);
 const FLOOD_SWEEP_S = 0.9;      // ROLL: colour rolls to fully cover the conceded end
 const FLOOD_HOLD_DEFAULT_S = 0.6;   // FLATTEN: brief height level-out at full cover
 const FLOOD_RELAX_S = 1.8;      // RESET: front eases back to centre (kickoff)
+// EVENT LAG — the HUD events tied to a goal (SCORE increment, SKY leader tint, goal
+// markers/rings) must fire a beat AFTER the cloth has moved, never before it. The blanket
+// GOAL FLOOD leads (starts at the goal instant, rolls over FLOOD_SWEEP_S); these overlay
+// events trail by EVENT_LAG_S of WALL time so the eye reads: cloth floods → THEN the score
+// ticks and the sky shifts, almost together but clearly after the pitch. (Authored in wall
+// seconds via wallSecondsSinceGoal so it is scrub-safe and warp-independent.)
+const EVENT_LAG_S = 0.7;
 
 // ============================================================================
 // CONFIG — every layer's enable flag + its own knobs. This whole object is what
@@ -645,7 +652,7 @@ function buildGoalRings() {
 // per-frame: show the rings + minute labels whose goal has occurred by clock t.
 function updateGoalRings(t) {
   for (const r of goalRings) {
-    const on = (t >= r.t);
+    const on = goalLanded(r.t, t);
     if (r.mesh) r.mesh.visible = on;
     if (r.label) r.label.visible = on;
   }
@@ -1902,6 +1909,14 @@ function wallSecondsSinceGoal(gt, t) {
   const dProg = progressOfMatchT(t) - progressOfMatchT(gt);
   return dProg * passSeconds;
 }
+// Has the goal at gt "landed" as a HUD event by clock t? True once EVENT_LAG_S wall-seconds
+// have passed since the goal — so score/sky/markers trail the cloth flood. Falls back to the
+// plain time test before the dramatic clock is warmed up (wall time not yet computable).
+function goalLanded(gt, t) {
+  const w = wallSecondsSinceGoal(gt, t);
+  if (!Number.isFinite(w)) return gt <= t;
+  return w >= EVENT_LAG_S;
+}
 
 // GOAL HEIGHT FLATTEN (STAGE11 CHANGE #4) — the brief "then a brief HEIGHT FLATTEN
 // (the relief levels out)" step, sequenced AFTER the colour roll. The wave rolls onto
@@ -2891,7 +2906,7 @@ function buildGoalMarkers() {
 function scoreAt(t) {
   let h = 0, a = 0;
   for (const g of goalsByTime) {
-    if (g.t <= t) { if (g.team === 'away') a++; else h++; }
+    if (goalLanded(g.t, t)) { if (g.team === 'away') a++; else h++; }
   }
   return { home: h, away: a };
 }
@@ -2987,7 +3002,7 @@ function drawMarkers(t) {
   // rightward — each next goal to the RIGHT of the previous. The scoring MINUTE is drawn
   // INSIDE the token. (goalMarkers is kept in match-time order.)
   const list = [];
-  for (const g of goalMarkers) { if (g.t <= t) list.push(g); }
+  for (const g of goalMarkers) { if (goalLanded(g.t, t)) list.push(g); }
   for (let i = 0; i < list.length; i++) {
     const g = list[i];
     const cx = edge + r + i * gap;
