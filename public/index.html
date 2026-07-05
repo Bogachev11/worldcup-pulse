@@ -129,6 +129,11 @@
     border-bottom:1px solid var(--fainter);
   }
   .thumb svg{ position:absolute; inset:0; width:100%; height:100%; display:block; }
+  /* pre-rendered ESSENCE PNG (transparent) — sits ON TOP of the SVG placeholder; if it
+     404s its onerror removes it, revealing the SVG beneath. object-fit:cover fills the
+     2:1 card thumb (the PNG is 4:3, so the empty headroom is cropped). */
+  .thumb .thumb-png{ position:absolute; inset:0; z-index:1; width:100%; height:100%;
+    object-fit:cover; object-position:center 58%; display:block; }
   .thumb .glow{ position:absolute; inset:0; opacity:.6; transition:opacity .16s ease;
     background:radial-gradient(60% 90% at 50% 120%, rgba(160,175,235,.10), transparent 70%); pointer-events:none; }
   .thumb .rd{
@@ -267,6 +272,16 @@ function fmtDate(iso){
   }catch{ return iso; }
 }
 
+// THUMBNAIL — prefer the pre-rendered ESSENCE mini-portrait PNG (public/thumbs/{id}.png,
+// a transparent 3D-isometric distillation of the match: avg-possession split + cumulative
+// -xG relief). The SVG colour-split placeholder is ALWAYS rendered underneath; the PNG
+// (transparent bg) sits on top. If the PNG 404s, its onerror removes it, revealing the SVG
+// beneath — so the gallery NEVER breaks whether or not a thumb has been built yet.
+function thumbImg(m){
+  const id = String(m.id);
+  return `<img class="thumb-png" loading="lazy" alt="" src="/thumbs/${encodeURIComponent(id)}.png"
+    onerror="this.onerror=null;this.remove();">`;
+}
 // thumbnail placeholder: two team colours as a split parallelogram silhouette,
 // with a faint terrain-line motif nodding to the blanket/relief.
 function thumbSVG(m){
@@ -313,6 +328,7 @@ function card(m, roundText){
       <span class="rd">${roundText}</span>
       <span class="dt">${fmtDate(m.date)}</span>
       ${thumbSVG(m)}
+      ${thumbImg(m)}
     </div>
     <div class="body">
       <div class="row">
