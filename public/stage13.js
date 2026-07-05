@@ -132,7 +132,12 @@ let wallProgress = 0;   // 0..1 across one ~15s dramatic pass; drives the warped
 let settle = 0;               // 0 = live, 1 = fully settled/quiet
 let settling = false;         // true during the brief ease at the end (playback still on)
 const SETTLE_S = 1.6;         // graceful ease duration (~1-2s), not an abrupt freeze
-function resetSettle() { settle = 0; settling = false; }
+// POST-MATCH PENALTY-SHOOTOUT choreography state (see the shootout block far below).
+let shootoutOrder = null;     // flat ordered [{team, scored}] kick sequence (from the timeline) | null
+let shootActive = false;      // the match has settled INTO the directed shootout sequence
+let shootWall = 0;            // wall-seconds since the shootout began (drives the sequence)
+let shootoutRevealed = 0;     // how many kicks' dots are shown so far
+function resetSettle() { settle = 0; settling = false; shootActive = false; shootWall = 0; shootoutRevealed = 0; }
 
 const COL_HOME = new THREE.Color(FRA_HEX);
 const COL_AWAY = new THREE.Color(SEN_HEX);
@@ -166,6 +171,9 @@ const DEFAULTS = () => ({
   // 1.0 = the intended ~15s dramatic-time pass (DRAMA_TOTAL_S). The slider is now a
   // global tempo trim on that pass, not a linear match-minute rate.
   speed: 1.0,
+  // SHOOTOUT choreography timing (post-match penalties) — adjustable in the left panel:
+  // pause0 = seconds of stillness after the match before the 1st kick; gap = seconds between kicks.
+  shoot: { pause0: 2.4, gap: 1.7 },
   // A · TWO TEAM BLANKETS (одеяла) — one cloth per team, meeting at an
   //  activity-shaped front with a small НАХЛЁСТ overlap. Height per team = amplitude
   //  · Σ ENABLED contributors through the asymmetric atk/rel envelope on the grid.
@@ -287,11 +295,12 @@ async function init() {
   // POST-MATCH PENALTY SHOOTOUT (only present on matches that went to penalties) → per-team
   // ordered scored/missed for the .shoot rings under each team. Absent → block stays empty.
   if (Array.isArray(tlDoc.shootout) && tlDoc.shootout.length) {
+    shootoutOrder = tlDoc.shootout.map((k) => ({ team: k.team, scored: !!k.scored }));
     penaltyShootout = {
-      home: tlDoc.shootout.filter((k) => k.team === 'home').map((k) => !!k.scored),
-      away: tlDoc.shootout.filter((k) => k.team === 'away').map((k) => !!k.scored),
+      home: shootoutOrder.filter((k) => k.team === 'home').map((k) => k.scored),
+      away: shootoutOrder.filter((k) => k.team === 'away').map((k) => k.scored),
     };
-  } else penaltyShootout = undefined;
+  } else { penaltyShootout = undefined; shootoutOrder = null; }
   // Per-match REAL team colours (FRA/SEN default fallbacks). Set BEFORE buildCloth so
   // the two blankets are constructed with the right colours; also update COL_HOME/AWAY.
   const isHex = (s) => typeof s === 'string' && /^#?[0-9a-fA-F]{6}$/.test(s);
@@ -1870,7 +1879,8 @@ function computeA(t, dt) {
   // (0..1, rising through the roll, ~1 during flatten, falling through the reset). So
   // the seam sweeps across to fully cover the conceded side, then eases back to centre
   // (kickoff) as cover releases. Deterministic from the clock (goalWaveAt) → scrub-safe.
-  const wave = goalWaveAt(t);
+  // …or, after full time, a SCORED shootout kick floods the whole field the kicker's colour.
+  const wave = goalWaveAt(t) || (shootActive ? shootoutWaveAt() : null);
   for (let j = 0; j < gy; j++) {
     A_frontDisp[j] += (A_frontEff[j] - A_frontDisp[j]) * kd;
     let fr = A_frontDisp[j];
@@ -2111,6 +2121,67 @@ function penaltyWavesAt(t) {
   return out;
 }
 
+// ============================================================================
+// POST-MATCH PENALTY SHOOTOUT — the DIRECTED end sequence. After the match settles, kicks
+// are taken ONE AT A TIME (with a pause between): a neutral wave from the spot to the ONE
+// goal (the far/"upper" end, u→1), then SCORED → the whole field FLOODS the kicker's colour;
+// MISSED → no flood + a small recoil in the wave. Driven by the dedicated wall clock
+// `shootWall` (the match clock is frozen at full time). Timing from cfg.shoot (adjustable).
+// ============================================================================
+const SHOOT_WAVE_S = 0.85;     // spot→goal wave duration per kick
+const SHOOT_FLOOD_S = 1.25;    // flood dwell on a SCORED kick
+const SHOOT_SPOT_U = 0.885;    // penalty spot (~12yd) — both teams kick at the u→1 goal
+function shootTiming() {
+  const s = (cfg && cfg.shoot) || {};
+  return { pause0: clamp(Number(s.pause0) || 2.4, 0, 12), gap: clamp(Number(s.gap) || 1.7, 0.4, 8) };
+}
+// Current kick + phase from shootWall. {i, kick:{team,scored}|null, tIn (sec into kick), reveal}.
+function shootoutSeq() {
+  if (!shootoutOrder || !shootoutOrder.length) return null;
+  const { pause0, gap } = shootTiming();
+  const w = shootWall - pause0;
+  if (w < 0) return { i: -1, kick: null, tIn: 0, reveal: 0 };
+  const i = Math.min(Math.floor(w / gap), shootoutOrder.length - 1);
+  const tIn = w - i * gap;
+  let reveal = 0;                                   // a dot appears once its wave has hit the goal
+  for (let k = 0; k < shootoutOrder.length; k++) if (w - k * gap >= SHOOT_WAVE_S * 0.55) reveal++;
+  return { i, kick: shootoutOrder[i], tIn, reveal: Math.min(reveal, shootoutOrder.length) };
+}
+// FLOOD override for a SCORED kick — same {team, front, cover} shape as goalWaveAt, so the
+// front-blend fills the WHOLE field the kicker's colour. Null on a miss / between kicks.
+function shootoutWaveAt() {
+  const seq = shootoutSeq(); if (!seq) return null;
+  const n = shootoutOrder.length;
+  const { pause0, gap } = shootTiming();
+  // FINALE — once the last kick has fully resolved, HOLD the WINNER's colour flooded.
+  const lastEnd = pause0 + (n - 1) * gap + SHOOT_WAVE_S * 0.5 + SHOOT_FLOOD_S + 0.9;
+  if (shootWall >= lastEnd) {
+    const hs = shootoutOrder.filter((k) => k.team === 'home' && k.scored).length;
+    const as = shootoutOrder.filter((k) => k.team === 'away' && k.scored).length;
+    const win = hs >= as ? 'home' : 'away';
+    return { team: win, front: win === 'home' ? 1 : 0, cover: 1 };
+  }
+  if (!seq.kick || !seq.kick.scored) return null;   // between kicks / a miss → no flood
+  const roll = SHOOT_WAVE_S, flood = SHOOT_FLOOD_S, reset = 0.9;
+  const s = seq.tIn - roll * 0.5;                   // flood starts as the wave reaches goal
+  if (s < 0 || s >= flood + reset) return null;
+  const endE = seq.kick.team === 'home' ? 1.0 : 0.0;
+  let cover;
+  if (s < roll * 0.5) cover = s / (roll * 0.5);
+  else if (s < flood) cover = 1;
+  else { const f = (s - flood) / reset; cover = 1 - f * f * (3 - 2 * f); }
+  return { team: seq.kick.team, front: endE, cover: clamp(cover, 0, 1) };
+}
+// NEUTRAL wave (spot→goal) for the CURRENT kick — added to penWaves (SETPIECE_COL channel).
+// A missed kick gets a small recoil/damp near the end. Both teams kick at the u→1 goal.
+function shootoutPenPulse() {
+  const seq = shootoutSeq(); if (!seq || !seq.kick || seq.tIn < 0 || seq.tIn >= SHOOT_WAVE_S) return null;
+  const f = clamp(seq.tIn / SHOOT_WAVE_S, 0, 1);
+  let env = Math.sin(Math.PI * f) ** 0.6;
+  if (!seq.kick.scored) env *= (1 - 0.4 * smoothstep(0.55, 1, f));   // recoil/gашение on a miss
+  return { u: SHOOT_SPOT_U, v: 0.5, team: seq.kick.team, dir: 1, f, env, scored: seq.kick.scored };
+}
+
 // bilinear sample a grid at normalized (u,v) (v already flipped by caller convention)
 function sampleGrid(grid, gx, gy, u, v) {
   const fx = clamp(u, 0, 1) * (gx - 1), fy = clamp(1 - v, 0, 1) * (gy - 1);
@@ -2215,7 +2286,7 @@ function computeField(t, dt) {
   // laps over; a goal flood forces the scorer on top. Eased over ~0.4s (snap on
   // scrub) so it never flickers per frame. STAGE11 #4: the goal WAVE forces the scorer
   // on top while it is covering the conceded end (cover>0.5) so its colour laps over.
-  const wave2 = goalWaveAt(t);
+  const wave2 = goalWaveAt(t) || (shootActive ? shootoutWaveAt() : null);
   let topTargetHome = ball.team === 'away' ? 0 : 1;
   if (wave2 && wave2.cover > 0.5) topTargetHome = wave2.team === 'home' ? 1 : 0;
   const kTop = seamTopReset ? 1 : expA(dt, TAU_TOP); seamTopReset = false;
@@ -2245,6 +2316,7 @@ function computeField(t, dt) {
   const cornersOn = cfg.A.on && (cfg.A.cCorner !== false);
   const cornerWaves = cornersOn ? cornerWavesAt(t) : [];
   const penWaves = aOn ? penaltyWavesAt(t) : [];    // penalty pulses always show when Layer A is on
+  if (aOn && shootActive) { const sp = shootoutPenPulse(); if (sp) penWaves.push(sp); }   // shootout kick wave
   const cwAspect = WORLD_Z / WORLD_X;                 // v-distance weight so rings are round
   let cornerColHome = false;                          // whether the dominant live corner is home's
   if (cornerWaves.length) {
@@ -2369,7 +2441,7 @@ function computeField(t, dt) {
         // END-OF-MATCH SETTLE — the territory front eases toward the halfway line (50/50,
         // a calm resolved split) as the match resolves, so neither side is heaving at the
         // final held frame. Purely visual settling of the boundary; snapped off on restart.
-        if (settleEase > 0) front = lerp(front, 0.5, 0.85 * settleEase);
+        if (settleEase > 0 && !shootActive) front = lerp(front, 0.5, 0.85 * settleEase);
         const du = u - front;                                  // + = away half
         covH = front;
         covA = front;
@@ -2655,7 +2727,9 @@ function loop(now) {
       settle = clamp(settle + dt / SETTLE_S, 0, 1);
       if (settle >= 1) {
         settling = false; playing = false;
-        const pb = el('play'); if (pb) pb.textContent = '▶';
+        setPlayGlyph(false); _glyphState = false;
+        // MATCH OVER — if it went to penalties, begin the DIRECTED shootout sequence.
+        if (shootoutOrder && shootoutOrder.length && !shootActive) { shootActive = true; shootWall = 0; }
       }
     } else {
       wallProgress += (dt / DRAMA_TOTAL_S) * spd;
@@ -2668,6 +2742,9 @@ function loop(now) {
       }
     }
   }
+  // advance the post-match shootout choreography (runs while playback is stopped, driven by
+  // its own wall clock; the match clock stays frozen at full time).
+  if (shootActive) { shootWall += dt; const sq = shootoutSeq(); shootoutRevealed = sq ? sq.reveal : 0; }
   renderFrame(clock, dt);
   controls.update();
   composer.render();
@@ -2695,6 +2772,18 @@ window.__setClock = (min) => {
   updateHud();
   updateCamReadout();
   drawOverlays(clock);
+};
+// dev hook — jump straight into the post-match SHOOTOUT at wall-second `w` and render one
+// frame (so the directed sequence can be inspected without waiting out full playback).
+window.__shoot = (w) => {
+  settling = false; playing = false; settle = 1; clock = teamMeta.duration;
+  shootActive = !!(shootoutOrder && shootoutOrder.length);
+  shootWall = Math.max(0, +w || 0);
+  const sq = shootoutSeq(); shootoutRevealed = sq ? sq.reveal : 0;
+  snapASmoothing();
+  renderFrame(clock, 1 / 60); controls.update(); composer.render();
+  updateHud(); drawOverlays(clock);
+  return sq ? { i: sq.i, kick: sq.kick, tIn: +sq.tIn.toFixed(2), reveal: sq.reveal } : null;
 };
 // dev/verification hook — current per-channel DISPLAYED front (A_frontDisp) stats +
 // the momentum backbone target at the clock, so the end-to-end SWING of the territory
@@ -3153,9 +3242,13 @@ function eventsMarkupFor(team, t) {
   const reds = (cardEvents || [])
     .filter((c) => c.red && c.t <= t && c.team === team)
     .sort((a, b) => a.t - b.t);
-  // PEN shootout is a POST-MATCH event — reveal it only once the match has run to full time
-  // (like the goals, which reveal as they happen), so it reads as the finale, not a spoiler.
-  const pens = (t >= (teamMeta.duration || 1e9) - 1.5) ? shootoutFor(team) : [];
+  // PEN shootout — revealed ONE KICK AT A TIME during the directed post-match sequence
+  // (shootoutRevealed grows as each kick's wave hits the goal), so it reads as the finale.
+  let pens = [];
+  if (shootActive && shootoutOrder) {
+    let cnt = 0;
+    for (const k of shootoutOrder) { if (cnt >= shootoutRevealed) break; if (k.team === team) pens.push(k.scored); cnt++; }
+  }
 
   let html = '';
   for (const g of goals) {
@@ -3468,6 +3561,18 @@ function bindGlobalUI() {
   if (restart2) restart2.addEventListener('click', () => {
     resetSettle(); wallProgress = 0; _dramaCursor = 0; clock = matchT(0); playing = true; snapASmoothing();
   });
+  // SHOOTOUT timing (adjustable) — pause before the 1st kick + gap between kicks.
+  const bindShoot = (id, valId, key) => {
+    const s = el(id), v = el(valId);
+    if (!s) return;
+    cfg.shoot = cfg.shoot || { pause0: 2.4, gap: 1.7 };
+    if (!Number.isFinite(cfg.shoot[key])) cfg.shoot[key] = key === 'pause0' ? 2.4 : 1.7;
+    s.value = cfg.shoot[key];
+    if (v) v.textContent = Number(cfg.shoot[key]).toFixed(1) + 's';
+    s.addEventListener('input', () => { cfg.shoot[key] = +s.value; if (v) v.textContent = (+s.value).toFixed(1) + 's'; writeHash(); });
+  };
+  bindShoot('shPause', 'shPause2', 'pause0');
+  bindShoot('shGap', 'shGap2', 'gap');
 
   // STAGE13 — SEEK by clicking / dragging the pulse timeline (linear in match-minute; the
   // pulse plots momentum by minute, so x maps straight to a minute → wall-progress).

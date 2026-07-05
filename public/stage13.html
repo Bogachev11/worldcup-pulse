@@ -420,6 +420,16 @@
       <input id="speed2" type="range" min="0.2" max="6" step="0.1" value="1">
     </div>
     <div class="cfgbar"><button id="restart2" class="btn" style="flex:1">↺ сначала</button></div>
+
+    <!-- SHOOTOUT choreography timing (post-match penalties) -->
+    <div class="ctl" style="margin-top:2px">
+      <div class="ctl-head"><label>серия ▸ пауза</label><span class="val" id="shPause2">2.4s</span></div>
+      <input id="shPause" type="range" min="0" max="8" step="0.1" value="2.4">
+    </div>
+    <div class="ctl">
+      <div class="ctl-head"><label>серия ▸ шаг</label><span class="val" id="shGap2">1.7s</span></div>
+      <input id="shGap" type="range" min="0.5" max="5" step="0.1" value="1.7">
+    </div>
     <textarea id="cfgPaste" readonly style="display:none;width:100%;height:84px;margin-top:2px;box-sizing:border-box;font:11px/1.35 ui-monospace,monospace;background:#0a0e16;color:#9fd;border:1px solid var(--stroke);border-radius:6px;padding:7px;resize:vertical"></textarea>
 
     <div id="layers" style="display:flex;flex-direction:column;gap:8px"></div>
