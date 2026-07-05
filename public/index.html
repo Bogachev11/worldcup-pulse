@@ -4,6 +4,19 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>World Cup Pulse — FIFA World Cup 2026</title>
+<meta name="description" content="Every 2026 World Cup match as a living data-portrait — two territory blankets, a momentum pulse, honest football made beautiful." />
+
+<!-- Open Graph / social -->
+<meta property="og:title" content="World Cup Pulse" />
+<meta property="og:description" content="Every 2026 World Cup match as a living data-portrait — two territory blankets, a momentum pulse, honest football made beautiful." />
+<meta property="og:type" content="website" />
+<meta property="og:image" content="/og-cover.png" />
+<meta property="og:url" content="https://wc26.bogachev.fr/" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="World Cup Pulse" />
+<meta name="twitter:description" content="Every 2026 World Cup match as a living data-portrait — two territory blankets, a momentum pulse, honest football made beautiful." />
+<meta name="twitter:image" content="/og-cover.png" />
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
@@ -178,6 +191,10 @@
 
   @media (max-width:560px){
     .footstrip .f-sources{ margin-left:0; width:100%; margin-top:6px; }
+    /* let cards fill the full width so a 260px min never forces horizontal scroll */
+    .grid{ grid-template-columns:1fr; gap:14px; }
+    .nums{ font-size:22px; }
+    .sec-head{ padding:12px 0 14px; }
   }
 </style>
 </head>

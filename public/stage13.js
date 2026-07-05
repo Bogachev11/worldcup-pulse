@@ -68,6 +68,17 @@ import { clamp, lerp, smoothstep } from './claybattle.js';
 const ID = new URLSearchParams(location.search).get('id') || '1953888';
 const el = (id) => document.getElementById(id);
 
+// PUBLIC vs DEV chrome — the dev constructor/camera panels + match switcher are
+// hidden by default (CSS: body:not(.dev) …). Reveal them with ?dev=1 (or ?dev, or
+// #dev) in the URL. All dev bindings still resolve their elements via el(), so
+// nothing throws while the panels are merely display:none.
+(() => {
+  const q = location.search.toLowerCase(), h = location.hash.toLowerCase();
+  if (/(^|[?&#])dev(=1|=true|\b)/.test(q) || /(^|[?&#])dev\b/.test(h)) {
+    document.body.classList.add('dev');
+  }
+})();
+
 // TEAM COLOURS — derived per match from the loaded timeline doc (home/away .color).
 // FRA/SEN default fallbacks match the brief (#387ef0 / #0c954e); ICO/NOR (and any
 // other match) get their own real data colours. Populated in init() from tlDoc, so

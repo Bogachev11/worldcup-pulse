@@ -3,7 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>STAGE 13 · FINALIZED HUD — FRA · SEN</title>
+  <title>World Cup Pulse — Match portrait</title>
+  <meta name="description" content="A single 2026 World Cup match rebuilt as a living data-portrait — two territory blankets, a momentum pulse, honest football made beautiful." />
+
+  <!-- Open Graph / social -->
+  <meta property="og:title" content="World Cup Pulse — Match portrait" />
+  <meta property="og:description" content="A single 2026 World Cup match rebuilt as a living data-portrait — two territory blankets, a momentum pulse, honest football made beautiful." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="/og-cover.png" />
+  <meta property="og:url" content="https://wc26.bogachev.fr/stage13.html" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="World Cup Pulse — Match portrait" />
+  <meta name="twitter:description" content="A single 2026 World Cup match rebuilt as a living data-portrait — two territory blankets, a momentum pulse, honest football made beautiful." />
+  <meta name="twitter:image" content="/og-cover.png" />
+
   <link rel="stylesheet" href="style.css" />
   <!-- Barlow (still used by 3D-canvas sprites / panels) + STAGE13 chrome fonts:
        Space Grotesk (labels/UI) + Space Mono (numerics/telemetry), matching vB2. -->
@@ -310,6 +323,53 @@
     #pulse {
       position: static; transform: none; width: 100%; height: 120px;
       left: auto; bottom: auto; display: block; pointer-events: none;
+    }
+
+    /* ========================================================================
+       PUBLIC GATE — hide the developer chrome by default; reveal with ?dev=1.
+       (stage13.js adds `body.dev` at boot when the URL contains dev.)
+       Kept in the DOM so the existing dev bindings still resolve via el().
+       ======================================================================== */
+    body:not(.dev) #panel,
+    body:not(.dev) #campanel,
+    body:not(.dev) #matchtabs { display: none !important; }
+
+    /* ========================================================================
+       MOBILE / RESPONSIVE — the composition is a fixed centered ~1000px column
+       with a HUD at 46px insets. On narrow viewports the column goes fluid and
+       the HUD paddings/fonts scale down so nothing overflows or overlaps. The
+       WebGL canvas is untouched — only the chrome LAYOUT is adjusted.
+       ======================================================================== */
+    @media (max-width: 700px) {
+      :root { --col-w: 100vw; }
+      #composition { width: 100vw; max-width: 100vw; }
+
+      #hud13 .head { top: 20px; left: 18px; right: 18px; }
+      #hud13 .teams { gap: 18px; }
+      #hud13 .abbr { font-size: 12px; letter-spacing: .16em; }
+      #hud13 .flag { width: 20px; height: 13px; }
+      #hud13 .rail { height: 5px; margin-top: 7px; min-width: 60px; }
+      #hud13 .score { font-size: 64px; margin-top: 8px; }
+      #hud13 .events { margin-top: 12px; gap: 8px; }
+      #hud13 .ev .v { font-size: 13px; gap: 7px; }
+
+      #hud13 .clock .t { font-size: 30px; }
+      #hud13 .clock .half { font-size: 9px; margin-top: 6px; letter-spacing: .18em; }
+
+      #hud13 .console { left: 18px; right: 18px; bottom: 88px; gap: 11px; }
+      #hud13 .play13 { width: 44px; height: 44px; }
+      #hud13 #pulse13wrap { height: 90px; }
+      #pulse { height: 90px; }
+
+      #hud13 .footstrip { left: 18px; right: 18px; bottom: 14px; padding-top: 10px;
+        font-size: 11px; line-height: 1.45; gap: 4px; }
+      #hud13 .footstrip .fline { gap: 6px; }
+    }
+
+    @media (max-width: 420px) {
+      #hud13 .score { font-size: 52px; }
+      #hud13 .teams { gap: 12px; }
+      #hud13 .footstrip { font-size: 10px; }
     }
   </style>
 </head>
