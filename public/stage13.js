@@ -3507,16 +3507,29 @@ function drawOverlays(t) { drawMarkers(t); drawPulse(t); }
 // MATCH SWITCHER TABS — highlight the tab for the current ?id= and, on click, switch
 // match by reloading with the new id (the simplest robust way; the whole timeline +
 // dramatic clock rebuild on load). ID is the current match id parsed at boot.
-function bindMatchTabs() {
-  const tabs = document.querySelectorAll('#matchtabs .mtab');
-  for (const tab of tabs) {
+async function bindMatchTabs() {
+  const isDev = document.body.classList.contains('dev');
+  const go = (id) => { if (id && id !== ID) location.search = '?id=' + id + (isDev ? '&dev=1' : ''); };
+  // quick tabs (kept for the few pinned matches)
+  for (const tab of document.querySelectorAll('#matchtabs .mtab')) {
     const id = tab.dataset.id;
     if (id === ID) tab.classList.add('on');
-    tab.addEventListener('click', () => {
-      if (id === ID) return;                 // already on this match
-      location.search = '?id=' + id;         // reload with the new match
-    });
+    tab.addEventListener('click', () => go(id));
   }
+  // FULL match selector (dev panel) — EVERY harvested match, grouped by stage, so any match
+  // is one pick away. Reads the same /matches.json the gallery uses.
+  const sel = el('matchsel');
+  if (!sel) return;
+  try {
+    const list = await fetch('/matches.json').then((r) => (r.ok ? r.json() : []));
+    const ko = list.filter((m) => m.round === 'knockout').sort((a, b) => (a.stageRank ?? 9) - (b.stageRank ?? 9) || (a.date < b.date ? 1 : -1));
+    const gr = list.filter((m) => m.round !== 'knockout').sort((a, b) => (a.date < b.date ? 1 : -1));
+    const optFor = (m) => { const o = document.createElement('option'); o.value = m.id; o.textContent = `${m.home.abbr} ${m.home.score}–${m.away.score} ${m.away.abbr}`; if (String(m.id) === String(ID)) o.selected = true; return o; };
+    const grp = (label, arr) => { if (!arr.length) return; const og = document.createElement('optgroup'); og.label = label; for (const m of arr) og.appendChild(optFor(m)); sel.appendChild(og); };
+    for (const st of [...new Set(ko.map((m) => m.stage || 'Knockout'))]) grp(st, ko.filter((m) => (m.stage || 'Knockout') === st));
+    grp('Group stage', gr);
+    sel.addEventListener('change', () => go(sel.value));
+  } catch { /* offline / no index — selector stays empty */ }
 }
 
 function bindGlobalUI() {
