@@ -12,3 +12,4 @@ public/_cap.png
 .vercel
 harvest.out.log
 harvest.err.log
+dist/
