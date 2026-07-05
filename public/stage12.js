@@ -415,8 +415,9 @@ function setupThree() {
 // SKY — an ambient SCORE indicator (the feature the user loved). A soft vertical
 // gradient behind the pitch whose COLOUR leans toward the CURRENTLY-LEADING team's
 // hue, strength ∝ the score margin; a DRAW / 0-0 stays neutral-dark. It EASES toward
-// the new leader over ~1s after a goal. On a CARD it briefly FLASHES the sky the card
-// colour then settles. Kept SUBTLE — a tint of the void, gallery-grade, never garish.
+// the new leader over ~1s after a goal. The sky is driven ONLY by the SCORE now — cards
+// no longer touch it (they live in the markers panel). Kept SUBTLE — a tint of the void,
+// gallery-grade, never garish.
 // The sky also faintly tints the scene fog so the whole piece feels lit by that sky.
 // ============================================================================
 let skyCanvas = null, skyCtx = null, skyTex = null;
@@ -498,15 +499,10 @@ function updateSky(t, dt) {
   const lean = skyLeanEased;
   if (lean >= 0) _tintCol.copy(COL_HOME);
   else _tintCol.copy(COL_AWAY);
-  // CARD FLASH detection — during live playback fire a flash when the clock crosses a
-  // card event. On scrub/snap we still show a flash if we land within the flash window
-  // of a card (deterministic), so a captured card frame reads.
-  detectCardFlash(t, dt);
-  // decay the flash smoothly (dt-aware) — a card flash settles over ~0.9s.
-  const fa = expA(dt, 0.45);
-  if (fa >= 1) skyFlash = _snapFlash(t);
-  else skyFlash += (0 - skyFlash) * fa;
-  paintSky(lean, _tintCol, skyFlash);
+  // SKY IS DRIVEN ONLY BY THE SCORE (the leading team's hue). Cards NO LONGER affect the
+  // sky — they now live in the markers panel (drawMarkers). No flash, ever.
+  skyFlash = 0;
+  paintSky(lean, _tintCol, 0);
   // STAGE11 CHANGE #2 — the sky's score-tint must colour ONLY the BACKDROP/halo, NOT
   // wash the pitch. Previously the scene FOG was tinted up to ~45% toward the leader hue,
   // which washed the whole field. The fog is now kept a NEUTRAL deep void (barely any
@@ -517,8 +513,8 @@ function updateSky(t, dt) {
     scene.fog.color.copy(_tintCol);
   }
   // paint the full-bleed CSS backdrop halo (behind the centered column) with the eased
-  // leader lean — this is where the score-tint glow now lives.
-  paintBackdrop(lean, skyFlash);
+  // leader lean — this is where the score-tint glow now lives. No card flash.
+  paintBackdrop(lean, 0);
 }
 // STAGE11 CHANGE #2 — the full-bleed backdrop halo. A radial glow (centered) that leans
 // to the LEADER's hue, strength ∝ |lean|; neutral-dark on a draw. Sits BEHIND the
@@ -2941,7 +2937,7 @@ function progressOfMatchT(t) {
 // HUD / camera (cloned from stage9)
 // ============================================================================
 let goalsByTime = [];
-let cardEvents = [];   // {t, team, red} — drives the SKY card-flash (see updateSky)
+let cardEvents = [];   // {t, minute, team, red} — drawn as CARDS in the markers panel (drawMarkers)
 // STAGE11 CHANGE #5/#6 — persistent goal-token list (built in buildGoalMarkers) +
 // real per-minute momentum (fetched in init) for the pulse strip.
 let goalMarkers = [];  // {t, minute, team, pen} in match-time order, for the markers row
@@ -2956,7 +2952,7 @@ function countGoals() {
   // if one ever appears; otherwise a card flashes yellow. See report.
   cardEvents = timeline
     .filter((it) => /Card/.test(it.type || '') || it.type === 'RedCard' || it.type === 'YellowCard' || it.type === 'SecondYellow')
-    .map((c) => ({ t: c.t, team: c.team, red: /Red|Second/.test(c.type || '') }))
+    .map((c) => ({ t: c.t, minute: c.minute || Math.floor(c.t), team: c.team, red: /Red|Second/.test(c.type || '') }))
     .sort((a, b) => a.t - b.t);
 }
 // STAGE11 CHANGE #5 — build the persistent goal-token row source. One token per goal,
@@ -3097,6 +3093,43 @@ function drawMarkers(t) {
     mkCtx.font = `600 ${9.5 * dpr}px Barlow, sans-serif`;
     mkCtx.textAlign = 'center'; mkCtx.textBaseline = 'middle';
     mkCtx.fillText(g.minute + "'", cx, cy + 0.5 * dpr);
+  }
+  // ---- CARDS — their own little cluster in the SAME strip, accumulating FROM THE RIGHT
+  // edge leftward (mirror of the goal circles). Each is a small rounded-rect CARD (yellow,
+  // or red for a sending-off) with a thin team-colour bar along its bottom and the booking
+  // MINUTE to its left — instantly readable as a football card, distinct from a goal. ----
+  const cw = 15 * dpr, ch = 21 * dpr;    // card face size
+  const cgap = 42 * dpr;                  // slot spacing (card + minute)
+  const rEdge = 26 * dpr;                 // inset from the RIGHT edge
+  const rr = 2.5 * dpr;                   // card corner radius
+  const rrectMk = (x, y, w, h, rad) => {
+    mkCtx.beginPath();
+    mkCtx.moveTo(x + rad, y); mkCtx.arcTo(x + w, y, x + w, y + h, rad); mkCtx.arcTo(x + w, y + h, x, y + h, rad);
+    mkCtx.arcTo(x, y + h, x, y, rad); mkCtx.arcTo(x, y, x + w, y, rad); mkCtx.closePath();
+  };
+  const clist = [];
+  for (const c of cardEvents) { if (c.t <= t) clist.push(c); }
+  for (let i = 0; i < clist.length; i++) {
+    const c = clist[i];
+    const ccx = W - rEdge - cw / 2 - i * cgap;   // oldest at the right edge, newer to the left
+    const cx0 = ccx - cw / 2, cy0 = cy - ch / 2;
+    const face = c.red ? '#e5484d' : '#ffd24a';  // red card vs yellow (harvest is yellow unless a red-ish type appears)
+    // soft glow underlay
+    mkCtx.beginPath(); mkCtx.ellipse(ccx, cy, cw * 1.05, ch * 0.85, 0, 0, Math.PI * 2);
+    mkCtx.fillStyle = hexA(face, 0.16); mkCtx.fill();
+    // card face
+    rrectMk(cx0, cy0, cw, ch, rr);
+    mkCtx.fillStyle = face; mkCtx.fill();
+    mkCtx.lineWidth = 1.3 * dpr; mkCtx.strokeStyle = 'rgba(4,5,10,0.85)'; mkCtx.stroke();
+    // team-colour bar along the bottom of the card (who was booked)
+    const barCol = c.team === 'home' ? FRA_HEX : SEN_HEX;
+    mkCtx.fillStyle = barCol;
+    mkCtx.fillRect(cx0 + 1.5 * dpr, cy0 + ch - 4 * dpr, cw - 3 * dpr, 3 * dpr);
+    // booking MINUTE to the LEFT of the card, on the row line
+    mkCtx.fillStyle = 'rgba(240,242,248,0.92)';
+    mkCtx.font = `600 ${9.5 * dpr}px Barlow, sans-serif`;
+    mkCtx.textAlign = 'right'; mkCtx.textBaseline = 'middle';
+    mkCtx.fillText(c.minute + "'", cx0 - 5 * dpr, cy + 0.5 * dpr);
   }
 }
 
