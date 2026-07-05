@@ -1992,6 +1992,14 @@ const CORNER_TINT = 0.55;      // max colour-tint strength toward the attacking 
 const CORNER_FALLOFF = 4.2;    // amplitude ∝ 1/(1+FALLOFF·dist) — RAISED (2.2→4.2) so the ripple decays faster with distance → stays LOCAL to the corner instead of carrying across the sheet
 // default corner strength (cfg.A.wCorner) — 1.0 = the (already reduced) CORNER_AMP above.
 const CORNER_STRENGTH_DEFAULT = 1.0;
+// SET-PIECE NEUTRALITY — the corner & penalty WAVES are a NEUTRAL "threat" pulse, NOT the
+// taking team's colour (a set piece is a danger MOMENT, not owned territory). Only an
+// actual GOAL floods a team colour. Both waves' crest tints toward this pitch-line white.
+const SETPIECE_COL = new THREE.Color(0xf0f2f8);
+// PENALTY WAVE — a neutral DIRECTIONAL pulse travelling from the penalty spot toward the
+// attacked goal (authored in WALL seconds → scrub-safe). A SCORED penalty is a goal, so the
+// team GOAL FLOOD fills the end; a MISSED/SAVED penalty shows ONLY this wave — no flood.
+const PEN_WAVE_S = 1.7;   // total screen-time life of one penalty pulse (spot → goal → fade)
 
 // Active corner ripples at clock t: the most-recent corner per SIDE (team) whose ripple
 // is still alive (elapsed wall-seconds < CORNER_WAVE_S). Deterministic from the clock →
@@ -2016,6 +2024,47 @@ function cornerWavesAt(t) {
     const env = Math.sin(Math.PI * clamp(f, 0, 1)) ** 0.7;   // 0→1→0, front-loaded
     const radius = CORNER_SPEED * elapsed;          // ring radius in u-units, growing outward
     out.push({ u: c.u, v: c.v, team: c.team, radius, elapsed, env });
+  }
+  return out;
+}
+
+// ============================================================================
+// PENALTIES — a penalty is a shot event with situation==='Penalty'. SCORED = isGoal
+// (it also lands in goalsByTime → the team goal flood fills). MISSED/SAVED = not a goal
+// → shows ONLY the neutral directional wave below. Spot (u,v) is already mirrored into
+// the shared pitch frame (buildTimelineFromDoc): home attacks u→1, away attacks u→0.
+// ============================================================================
+let penaltiesByTime = [];   // {t, team, u, v, scored} — penalty spot, match-time order
+function buildPenalties() {
+  penaltiesByTime = [];
+  if (!timeline) return;
+  for (const e of timeline) {
+    if (e.kind !== 'shot') continue;
+    if (String(e.situation).toLowerCase() !== 'penalty') continue;
+    if (e.team !== 'home' && e.team !== 'away') continue;
+    penaltiesByTime.push({ t: e.t, team: e.team, u: e.u, v: e.v, scored: !!e.isGoal });
+  }
+  penaltiesByTime.sort((a, b) => a.t - b.t);
+}
+// Active penalty pulses at clock t — the newest penalty ≤ t per team still within its wall
+// life. Each carries the spot (u,v), the attack `dir` (+1 home → goal at u=1, −1 away → u=0),
+// life fraction `f` (0..1), an `env` envelope and `scored`. Deterministic from t → scrub-safe.
+function penaltyWavesAt(t) {
+  if (!penaltiesByTime || !penaltiesByTime.length) return [];
+  let latest = { home: null, away: null };
+  for (let i = 0; i < penaltiesByTime.length; i++) {
+    const p = penaltiesByTime[i];
+    if (p.t <= t) latest[p.team] = p; else break;
+  }
+  const out = [];
+  for (const team of ['home', 'away']) {
+    const p = latest[team];
+    if (!p) continue;
+    const elapsed = wallSecondsSinceGoal(p.t, t);
+    if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= PEN_WAVE_S) continue;
+    const f = elapsed / PEN_WAVE_S;
+    const env = Math.sin(Math.PI * clamp(f, 0, 1)) ** 0.6;   // 0→1→0 envelope
+    out.push({ u: p.u, v: p.v, team, dir: team === 'home' ? 1 : -1, f, env, scored: p.scored });
   }
   return out;
 }
@@ -2153,6 +2202,7 @@ function computeField(t, dt) {
   // (old cfgs without cCorner default to on via DEFAULTS). When off: no ripple, no tint.
   const cornersOn = cfg.A.on && (cfg.A.cCorner !== false);
   const cornerWaves = cornersOn ? cornerWavesAt(t) : [];
+  const penWaves = aOn ? penaltyWavesAt(t) : [];    // penalty pulses always show when Layer A is on
   const cwAspect = WORLD_Z / WORLD_X;                 // v-distance weight so rings are round
   let cornerColHome = false;                          // whether the dominant live corner is home's
   if (cornerWaves.length) {
@@ -2165,6 +2215,9 @@ function computeField(t, dt) {
   // AND by the corner STRENGTH control (cfg.A.wCorner, 0..~2; default = the reduced 1.0).
   const cwStrength = Number.isFinite(cfg.A.wCorner) ? clamp(cfg.A.wCorner, 0, 3) : CORNER_STRENGTH_DEFAULT;
   const cwAmp = CORNER_AMP * cwStrength * clamp(cfg.A.height, 0, 8) / 3.0;
+  // penalty pulse height — tied to the A.height slider but INDEPENDENT of the corner
+  // strength control (a penalty shows regardless of the corner toggle/strength).
+  const penAmp = CORNER_AMP * clamp(cfg.A.height, 0, 8) / 3.0;
 
   // normalisation for the two A height grids (shared so relative team height is
   // honest). Read the SMOOTHED grids — that's what we render — so the normaliser
@@ -2209,6 +2262,27 @@ function computeField(t, dt) {
         // tint scales with the corner STRENGTH control too, so wCorner=0 → no tint at all
         // and lower strength softens the colour band along with the (already gentler) ripple.
         cwTint = clamp(cwTint * CORNER_TINT * clamp(cwStrength, 0, 1.5), 0, 1);
+      }
+      // ---- PENALTY WAVE: a NEUTRAL directional pulse from the spot toward the attacked
+      // goal. A moving crest band advances spot→goal over the pulse life, in a central cone.
+      // Writes into the SAME neutral crest channel as corners (SETPIECE_COL). SCORED penalties
+      // also get the team goal flood; MISSED ones show only this wave. ----
+      if (penWaves.length) {
+        let penCrest = 0;
+        for (const w of penWaves) {
+          const s = (u - w.u) * w.dir;                 // signed distance toward goal (>0 = ahead of spot)
+          const dv = (v - w.v) * cwAspect;             // lateral offset (penalty is central)
+          const goalDist = (w.dir > 0 ? (1 - w.u) : w.u) + 0.03;
+          const front = clamp(w.f, 0, 1) * goalDist;   // wavefront advances spot → goal over the life
+          const along = Math.exp(-((s - front) * (s - front)) / (2 * 0.055 * 0.055));  // moving crest band
+          const gate = smoothstep(-0.03, 0.02, s);     // nothing behind the spot
+          const lat = Math.exp(-(dv * dv) / (2 * 0.11 * 0.11));   // central cone toward goal
+          const a = along * gate * lat * w.env;
+          cwH += a * penAmp * 0.85;
+          if (a > penCrest) penCrest = a;
+        }
+        penCrest = clamp(penCrest * CORNER_TINT * 1.5, 0, 1);   // neutral crest, a touch brighter than corners
+        if (penCrest > cwTint) cwTint = penCrest;
       }
 
       // ---- Layer A: per-team blanket height + crisp coverage ----
@@ -2383,7 +2457,10 @@ function computeField(t, dt) {
   bH.u.uIntensity.value = intensity; bA.u.uIntensity.value = intensity;
   // CORNER WAVE — colour to blend the ripple crest toward = the dominant live corner's
   // ATTACKING team colour (same on both sheets so the top sheet shows it wherever it laps).
-  const cwCol = cornerWaves.length ? (cornerColHome ? COL_HOME : COL_AWAY) : COL_HOME;
+  // NEUTRAL set-piece crest — corners AND penalties tint toward pitch-line white, never the
+  // taking team's colour (a set piece is a THREAT, not owned territory; only a goal floods a
+  // colour). Same uniform for both since they share the crest channel.
+  const cwCol = SETPIECE_COL;
   bH.u.uCornerCol.value.copy(cwCol); bA.u.uCornerCol.value.copy(cwCol);
   bH.cTex.needsUpdate = true; bA.cTex.needsUpdate = true;
   bH.hTex.needsUpdate = true; bH.aTex.needsUpdate = true;
@@ -2873,6 +2950,7 @@ function countGoals() {
   goalsByTime = timeline.filter((it) => it.kind === 'shot' && it.isGoal).map((g) => ({ t: g.t, team: g.team }));
   teamMeta.score = { home: goalsByTime.filter((g) => g.team === 'home').length, away: goalsByTime.filter((g) => g.team === 'away').length };
   buildCorners();   // CORNER WAVES — source list of corners taken (t, team, snapped pitch-corner u,v)
+  buildPenalties(); // PENALTY WAVES — neutral directional pulse from the spot toward goal (scored→flood, missed→wave only)
   // CARD events for the sky flash. The harvest only emits a generic 'Card' type (no
   // yellow/red qualifier), so `red` is inferred from any explicit red-ish type/outcome
   // if one ever appears; otherwise a card flashes yellow. See report.
