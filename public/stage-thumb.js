@@ -302,18 +302,21 @@ const MATCH_DEFAULT = () => DEFAULTS();
 // This v1 formula is a STARTING POINT — retune these constants freely.
 // ============================================================================
 const ESSENCE = {
-  // FRONT (avg possession):
-  POSS_GAIN: 0.78,      // steepness of avg-lean → front-u. Higher = a modest average
-                        //   possession edge still pushes the split clearly toward a goal.
-  POSS_MAX: 0.34,       // max the flat front may sit from centre (u=0.5±POSS_MAX), so a
-                        //   lopsided match never fully erases the weaker side's colour band.
-  // RELIEF (cumulative xG):
-  XG_CREST_H: 3.4,      // world-Y height per unit of summed xG at a shot spot (the spire scale).
-  XG_MIN: 0.03,         // ignore shots below this xg (goals always kept), matching the pulse.
-  XG_RAD_CELLS: 2.2,    // gaussian stamp radius (activity-grid cells) per shot crest.
-  XG_CEIL: 4.6,         // per-cell relief ceiling so a cluster of big chances can't tower absurdly.
-  // GRID resolution of the cumulative-xG activity grid (coarse→fine long-axis cells).
-  GRID_LONG: 30,
+  // FRONT (avg possession — the colour split):
+  POSS_GAIN: 0.78,      // steepness of avg-lean → front-u.
+  POSS_MAX: 0.34,       // max the flat front may sit from centre.
+  // RELIEF = ACTIVITY DENSITY (where each team PLAYED most, over the whole match) + shots.
+  // Every on-ball event with a position raises its team's mound; the busiest zones stand
+  // tallest, so the terrain is the match's SHAPE — not a flat split with a few pips.
+  ACT_RAD_CELLS: 2.6,   // gaussian stamp radius per event on the density grid.
+  ACT_GAMMA: 0.75,      // contrast on the normalised density (lower = flatter, higher = punchier peaks).
+  ACT_H: 2.2,           // world-Y height of the activity mounds (× cfg.A.height in the render).
+  // SHOTS / danger as sharper PEAKS on top of the density:
+  XG_MIN: 0.03,         // ignore shots below this xg (goals always kept).
+  XG_RAD_CELLS: 2.0,    // gaussian radius per shot crest (tighter than the mounds → a peak).
+  XG_AMP: 5.0,          // crest amplitude per unit xg (a goal towers).
+  // GRID resolution of the activity grid (coarse→fine long-axis cells).
+  GRID_LONG: 34,
 };
 
 // ---- boot -------------------------------------------------------------------
@@ -1817,25 +1820,32 @@ function essenceComputeA() {
   ensureA(gx, gy);
   A_hH.fill(0); A_hA.fill(0); A_xH.fill(0); A_xA.fill(0);
 
-  // ---- RELIEF: CUMULATIVE xG (non-fading sum of every shot's crest) ----------
-  // Iterate the FULL timeline once; every real shot (xg ≥ XG_MIN, or a goal) stamps a
-  // crest into its team's xG grid at the shot's pitch spot (already mirrored into the
-  // shared frame by toUV in buildTimelineFromDoc). Summed, no arWeight decay → the
-  // hills accumulate over the whole match.
+  // ---- RELIEF PART 1: ACTIVITY DENSITY (where each team PLAYED most) -----------
+  // Every on-ball event with a real pitch position raises its team's MOUND grid at (u,v)
+  // (already mirrored into the shared frame by toUV). Summed over the whole match → the
+  // busiest zones (where a team camped / built play) stand tallest. This is the match's
+  // SHAPE, not a flat split. Real events only — nothing fabricated.
+  for (const e of (timeline || [])) {
+    if (!Number.isFinite(e.u) || !Number.isFinite(e.v)) continue;
+    const isH = e.team === 'home';
+    if (!isH && e.team !== 'away') continue;
+    stamp(isH ? A_hH : A_hA, gx, gy, e.u, e.v, 1.0, ESSENCE.ACT_RAD_CELLS);
+  }
+  // normalise each team's density to 0..1 + gamma so the busiest zones read as clear mounds.
+  const norm = (g) => { let mx = 1e-4; for (const v of g) if (v > mx) mx = v; const inv = 1 / mx; for (let i = 0; i < g.length; i++) g[i] = Math.pow(g[i] * inv, ESSENCE.ACT_GAMMA); };
+  norm(A_hH); norm(A_hA);
+
+  // ---- RELIEF PART 2: SHOTS / danger as sharper PEAKS on top of the density ----
   for (const e of (timeline || [])) {
     if (e.kind !== 'shot') continue;
     const xg = Number(e.xg) || 0;
     if (!(xg >= ESSENCE.XG_MIN || e.isGoal)) continue;
     const isH = e.team === 'home';
     if (!isH && e.team !== 'away') continue;
-    const Xgrid = isH ? A_xH : A_xA;
-    // crest amplitude per shot ∝ xg (goals, being high-xg, tower); a small floor so a
-    // low-xg-but-kept shot still leaves a readable pip.
-    const amt = 1.0 + 4.5 * clamp(xg, 0, 1);
-    stamp(Xgrid, gx, gy, e.u, e.v, amt, ESSENCE.XG_RAD_CELLS);
+    stamp(isH ? A_xH : A_xA, gx, gy, e.u, e.v, 1.0 + ESSENCE.XG_AMP * clamp(xg, 0, 1), ESSENCE.XG_RAD_CELLS);
   }
-  // no temporal smoothing needed (static) — copy straight into the SMOOTHED grids the
-  // renderer samples. Mounds (A_shH/A_shA) stay flat: xG hills are the whole relief.
+  // static → copy straight into the SMOOTHED grids the renderer samples. Mounds = activity
+  // density (A_shH/A_shA); xG crests = danger peaks (A_sxH/A_sxA).
   A_shH.set(A_hH); A_shA.set(A_hA);
   A_sxH.set(A_xH); A_sxA.set(A_xA);
 
