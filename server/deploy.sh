@@ -8,11 +8,16 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 echo "[deploy] building static export…"
-node server/build_static.js
+# Build dist OUTSIDE the Mail.ru-synced project folder: Mail.ru Cloud holds a
+# lock on the in-repo dist/ and EBUSYs the rmdir during rebuild. DIST_DIR points
+# build_static.js at an OS-temp location we fully control.
+DISTDIR="${TMPDIR:-/tmp}/wcp-dist"
+rm -rf "$DISTDIR" 2>/dev/null || true
+DIST_DIR="$DISTDIR" node server/build_static.js
 
 TMP="${TMPDIR:-/tmp}/wcp-deploy"
 rm -rf "$TMP"; mkdir -p "$TMP"
-cp -r dist/. "$TMP"/
+cp -r "$DISTDIR"/. "$TMP"/
 cd "$TMP"
 git init -q
 git checkout -q -b gh-pages

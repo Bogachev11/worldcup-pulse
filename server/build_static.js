@@ -16,7 +16,10 @@ const ROOT = path.resolve(__dirname, '..');
 const PUBLIC = path.join(ROOT, 'public');
 const RICH = path.join(ROOT, 'data', 'rich');
 const TL = path.join(ROOT, 'data', 'timeline');
-const DIST = path.join(ROOT, 'dist');
+// DIST defaults to ROOT/dist, but can be redirected via DIST_DIR — the nightly
+// deploy builds into an OS-temp dir OUTSIDE the Mail.ru-synced project folder so
+// Mail.ru Cloud can't hold a lock on dist/ and EBUSY the rebuild.
+const DIST = process.env.DIST_DIR ? path.resolve(process.env.DIST_DIR) : path.join(ROOT, 'dist');
 
 const exists = async (p) => { try { await access(p); return true; } catch { return false; } };
 
