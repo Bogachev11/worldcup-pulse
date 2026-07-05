@@ -539,24 +539,22 @@ function updateSky(t, dt) {
   // leader hue for the current eased lean (blend the two team colours so a swing passes
   // through neutral rather than snapping between hues).
   const lean = skyLeanEased;
-  if (lean >= 0) _tintCol.copy(COL_HOME);
-  else _tintCol.copy(COL_AWAY);
-  // SKY IS DRIVEN ONLY BY THE SCORE (the leading team's hue). Cards NO LONGER affect the
-  // sky — they now live in the markers panel (drawMarkers). No flash, ever.
+  const lc = (lean >= 0) ? COL_HOME : COL_AWAY;
+  _tintCol.copy(lc);
+  // A GREY / low-chroma leader (e.g. Germany #464646) must NOT wash the black sky — grey-on-
+  // black is muddy, so we keep the BACKGROUND BLACK and let ONLY a clearly-COLOURED leader
+  // glow. Scale the whole atmosphere tint (sky + fog + backdrop) by the leader's chroma.
+  const chroma = Math.max(lc.r, lc.g, lc.b) - Math.min(lc.r, lc.g, lc.b);
+  const glowLean = lean * smoothstep(0.05, 0.22, chroma);
   skyFlash = 0;
-  paintSky(lean, _tintCol, 0);
-  // STAGE11 CHANGE #2 — the sky's score-tint must colour ONLY the BACKDROP/halo, NOT
-  // wash the pitch. Previously the scene FOG was tinted up to ~45% toward the leader hue,
-  // which washed the whole field. The fog is now kept a NEUTRAL deep void (barely any
-  // lean — 8%) so the pitch/cloth colours stay TRUE; the leader-tint lives in the
-  // full-bleed CSS backdrop halo (paintBackdrop) and the WebGL sky dome behind the pitch.
+  paintSky(glowLean, _tintCol, 0);
+  // The FOG stays a NEUTRAL deep void (barely any lean) so the pitch/cloth colours stay TRUE;
+  // the leader-tint lives in the CSS backdrop halo + the WebGL sky dome. Grey leader → 0.
   if (scene && scene.fog) {
-    _tintCol.copy(SKY_BOT).lerp(lean >= 0 ? COL_HOME : COL_AWAY, 0.08 * Math.abs(lean));
+    _tintCol.copy(SKY_BOT).lerp(lc, 0.08 * Math.abs(glowLean));
     scene.fog.color.copy(_tintCol);
   }
-  // paint the full-bleed CSS backdrop halo (behind the centered column) with the eased
-  // leader lean — this is where the score-tint glow now lives. No card flash.
-  paintBackdrop(lean, 0);
+  paintBackdrop(glowLean, 0);
 }
 // STAGE11 CHANGE #2 — the full-bleed backdrop halo. A radial glow (centered) that leans
 // to the LEADER's hue, strength ∝ |lean|; neutral-dark on a draw. Sits BEHIND the
@@ -3093,9 +3091,15 @@ let cardEvents = [];   // {t, minute, team, red} — drawn as CARDS in the marke
 // STAGE11 CHANGE #5/#6 — persistent goal-token list (built in buildGoalMarkers) +
 // real per-minute momentum (fetched in init) for the pulse strip.
 let goalMarkers = [];  // {t, minute, team, pen} in match-time order, for the markers row
+let shotMarks = [];    // {minute, team, xg, isGoal} — xG/shot markers on the momentum pulse
 let momentum = [];     // [{minute, v}] valueNorm +home/−away, real data (rich record)
 function countGoals() {
   goalsByTime = timeline.filter((it) => it.kind === 'shot' && it.isGoal).map((g) => ({ t: g.t, team: g.team }));
+  // xG/shot markers for the pulse: every real shot (skip near-zero-xG noise; always keep goals).
+  shotMarks = timeline
+    .filter((it) => it.kind === 'shot')
+    .map((s) => ({ minute: Number(s.minute) || 0, team: s.team, xg: Number(s.xg) || 0, isGoal: !!s.isGoal }))
+    .filter((s) => s.xg >= 0.03 || s.isGoal);
   teamMeta.score = { home: goalsByTime.filter((g) => g.team === 'home').length, away: goalsByTime.filter((g) => g.team === 'away').length };
   buildCorners();   // CORNER WAVES — source list of corners taken (t, team, snapped pitch-corner u,v)
   buildPenalties(); // PENALTY WAVES — neutral directional pulse from the spot toward goal (scored→flood, missed→wave only)
@@ -3452,6 +3456,29 @@ function drawPulse(t) {
   // CLEAR CENTRE LINE — drawn ON TOP so the halfway split always reads.
   plCtx.strokeStyle = 'rgba(233,231,244,0.5)'; plCtx.lineWidth = 1.3 * dpr;
   plCtx.beginPath(); plCtx.moveTo(x0, mid); plCtx.lineTo(x1, mid); plCtx.stroke();
+
+  // xG / SHOT markers — a thin tick rising from the midline on the shooting team's side, its
+  // HEIGHT ∝ √xG (a big chance stands tall), tipped with a dot; a GOAL gets a white tip + ring.
+  // The base wave stays possession-momentum; these add the SHOT-DANGER read the user wanted.
+  if (shotMarks && shotMarks.length) {
+    const nowFb = footballMinuteAt(t);
+    plCtx.lineCap = 'round';
+    for (const s of shotMarks) {
+      const mx = xOf(s.minute);
+      const up = s.team === 'home';
+      const h = (3 + 22 * Math.sqrt(clamp(s.xg, 0, 1))) * dpr;   // tick height ∝ √xG
+      const yTip = mid + (up ? -1 : 1) * Math.min(h, ribH * 0.96);
+      const played = s.minute <= nowFb + 0.01;
+      const col = up ? FRA_HEX : SEN_HEX;
+      plCtx.globalAlpha = played ? 0.92 : 0.28;
+      plCtx.strokeStyle = hexA(col, 0.9); plCtx.lineWidth = 1.6 * dpr;
+      plCtx.beginPath(); plCtx.moveTo(mx, mid); plCtx.lineTo(mx, yTip); plCtx.stroke();
+      plCtx.beginPath(); plCtx.arc(mx, yTip, (s.isGoal ? 3.4 : 2.1) * dpr, 0, Math.PI * 2);
+      plCtx.fillStyle = s.isGoal ? '#ffffff' : hexA(col, 0.95); plCtx.fill();
+      if (s.isGoal) { plCtx.beginPath(); plCtx.arc(mx, yTip, 5.4 * dpr, 0, Math.PI * 2); plCtx.strokeStyle = 'rgba(255,255,255,0.85)'; plCtx.lineWidth = 1.3 * dpr; plCtx.stroke(); }
+      plCtx.globalAlpha = 1;
+    }
+  }
 
   // PERIOD markers — halftime (45'), full time / extra-time start (90') and, on matches that
   // went to EXTRA TIME, the ET boundaries (105', 120'). Faint dashed verticals + a tiny minute
