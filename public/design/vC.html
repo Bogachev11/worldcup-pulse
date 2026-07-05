@@ -1,0 +1,381 @@
+<!--
+  World Cup Pulse — Chrome/HUD design mockup
+  Direction C · BOLD KINETIC SPORT (DixonBaxi / Nike Football / ManvsMachine)
+  Font pairing: Archivo Expanded (Black) for the hero score + Space Grotesk for labels/HUD.
+  Static mockup: PAR 0 – FRA 1, clock 75'. Chrome only — the parallelogram is a stand-in for the blanket.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>World Cup Pulse · C · Bold Sport</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Expanded:wght@800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#17102e;
+    --bg-deep:#120b24;
+    --pitch:#d7d7dd;
+    --ink:#f4f2fb;
+    --mute:#8b83a8;
+    --par:#EE3F2D;   /* Paraguay red */
+    --fra:#387ef0;   /* France blue  */
+    --accent:var(--fra); /* one dominant accent = FRA blue (they lead) */
+  }
+
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(120% 90% at 50% 8%, #1d1638 0%, var(--bg) 46%, var(--bg-deep) 100%);
+    font-family:"Space Grotesk",sans-serif;
+    color:var(--ink);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    min-height:100vh;
+    padding:28px;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .frame{
+    position:relative;
+    width:100%;
+    max-width:700px;
+    height:760px;
+    overflow:hidden;
+    border-radius:6px;
+    /* faint kinetic diagonal grid, very low contrast */
+    background:
+      repeating-linear-gradient(115deg, rgba(255,255,255,.018) 0 1px, transparent 1px 46px);
+    isolation:isolate;
+  }
+
+  /* ---- diagonal accent hairlines echoing pitch tilt ---- */
+  .tilt-line{
+    position:absolute;left:-10%;width:120%;height:1px;
+    background:linear-gradient(90deg,transparent,rgba(56,126,240,.28),transparent);
+    transform:rotate(-13deg);
+    z-index:1;
+  }
+  .tilt-line.a{top:20%}
+  .tilt-line.b{top:82%;background:linear-gradient(90deg,transparent,rgba(255,255,255,.06),transparent)}
+
+  /* ============ PITCH STAND-IN (do not restyle beyond spec) ============ */
+  .pitch-wrap{
+    position:absolute;
+    left:50%;top:57%;
+    transform:translate(-50%,-50%);
+    width:55%;
+    z-index:2;
+    filter:drop-shadow(0 40px 60px rgba(0,0,0,.55));
+  }
+  .pitch-wrap svg{display:block;width:100%;height:auto;overflow:visible}
+  .pitch-glow{
+    position:absolute;inset:-18% -8%;
+    background:radial-gradient(60% 55% at 50% 55%, rgba(215,215,221,.16), transparent 70%);
+    filter:blur(14px);
+    z-index:-1;
+  }
+
+  /* ================= TOP HUD ================= */
+  .hud{position:absolute;inset:0;z-index:6;padding:34px 38px;pointer-events:none}
+
+  .top{
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-start;
+  }
+
+  /* --- teams + hero score (top-left, but score breaks the grid big) --- */
+  .matchup{display:flex;gap:30px}
+  .team{position:relative}
+
+  .team .row{
+    display:flex;align-items:center;gap:9px;
+    margin-bottom:2px;
+  }
+  .flag{
+    width:26px;height:18px;border-radius:2px;
+    display:block;overflow:hidden;
+    box-shadow:0 2px 6px rgba(0,0,0,.45);
+    position:relative;
+  }
+  .abbr{
+    font-family:"Space Grotesk";
+    font-weight:700;
+    font-size:16px;
+    letter-spacing:.22em;
+    text-transform:uppercase;
+  }
+  .team.par .abbr{color:#fff}
+  .team.fra .abbr{color:#fff}
+
+  .tick{
+    display:inline-block;width:7px;height:7px;border-radius:50%;
+    margin-left:2px;
+  }
+  .team.par .tick{background:var(--par)}
+  .team.fra .tick{background:var(--fra)}
+
+  .score{
+    font-family:"Archivo Expanded";
+    font-weight:900;
+    font-size:150px;
+    line-height:.82;
+    letter-spacing:-.02em;
+    margin-top:6px;
+    color:var(--ink);
+  }
+  .team.par .score{
+    /* loser stays quiet */
+    color:#5b5375;
+    -webkit-text-stroke:0;
+  }
+  .team.fra .score{
+    color:#fff;
+    text-shadow:0 0 46px rgba(56,126,240,.55);
+  }
+  .team.fra .score::after{
+    content:"";
+    position:absolute;
+  }
+
+  /* accent underscore under leading team */
+  .team.fra{
+  }
+  .lead-bar{
+    height:6px;width:64px;margin-top:14px;
+    background:var(--fra);
+    box-shadow:0 0 20px rgba(56,126,240,.7);
+    transform:skewX(-18deg);
+  }
+  .team.par .lead-bar{visibility:hidden}
+
+  /* --- clock (top-right) --- */
+  .clock{
+    text-align:right;
+    position:relative;
+  }
+  .clock .live{
+    display:inline-flex;align-items:center;gap:7px;
+    font-family:"Space Grotesk";font-weight:600;
+    font-size:12px;letter-spacing:.34em;text-transform:uppercase;
+    color:var(--par);
+    margin-bottom:10px;
+  }
+  .clock .live .dot{
+    width:8px;height:8px;border-radius:50%;background:var(--par);
+    box-shadow:0 0 0 0 rgba(238,63,45,.7);
+    animation:live 1.6s infinite;
+  }
+  @keyframes live{
+    0%{box-shadow:0 0 0 0 rgba(238,63,45,.6)}
+    70%{box-shadow:0 0 0 9px rgba(238,63,45,0)}
+    100%{box-shadow:0 0 0 0 rgba(238,63,45,0)}
+  }
+  .clock .time{
+    font-family:"Archivo Expanded";font-weight:900;
+    font-size:56px;line-height:.9;letter-spacing:-.02em;
+    color:#fff;
+  }
+  .clock .time .min::after{content:"'";color:var(--mute);font-weight:800}
+  .clock .stage{
+    font-family:"Space Grotesk";font-weight:500;
+    font-size:11px;letter-spacing:.3em;text-transform:uppercase;
+    color:var(--mute);margin-top:8px;
+  }
+
+  /* red card marker — single, tasteful, tucked under clock */
+  .redcard{
+    display:inline-flex;align-items:center;gap:8px;
+    margin-top:16px;justify-content:flex-end;
+    font-family:"Space Grotesk";font-weight:600;font-size:11px;
+    letter-spacing:.14em;text-transform:uppercase;color:var(--mute);
+  }
+  .redcard .card{
+    width:11px;height:15px;border-radius:2px;background:var(--par);
+    box-shadow:0 3px 8px rgba(238,63,45,.4);transform:skewX(-8deg);
+  }
+
+  /* fixture strap — top edge kinetic label */
+  .strap{
+    position:absolute;left:38px;top:12px;
+    font-family:"Space Grotesk";font-weight:600;
+    font-size:10px;letter-spacing:.4em;text-transform:uppercase;
+    color:var(--mute);
+  }
+
+  /* ================= BOTTOM: merged play + pulse (transparent bg) ========= */
+  .transport{
+    position:absolute;
+    left:38px;right:38px;bottom:40px;
+    height:78px;
+    display:flex;align-items:center;
+    z-index:7;
+    pointer-events:auto;
+  }
+  .play{
+    flex:0 0 auto;
+    width:66px;height:66px;border-radius:50%;
+    background:var(--fra);
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 10px 30px rgba(56,126,240,.45), inset 0 0 0 1px rgba(255,255,255,.12);
+    position:relative;z-index:2;
+    cursor:pointer;
+  }
+  .play::before{
+    content:"";
+    width:0;height:0;
+    border-left:20px solid #fff;
+    border-top:12px solid transparent;
+    border-bottom:12px solid transparent;
+    margin-left:5px;
+  }
+  .pulse{
+    flex:1 1 auto;
+    height:78px;
+    margin-left:-8px;
+    position:relative;
+  }
+  .pulse svg{display:block;width:100%;height:100%;overflow:visible}
+  .playhead-lbl{
+    position:absolute;top:-2px;
+    font-family:"Space Grotesk";font-weight:600;font-size:10px;
+    letter-spacing:.2em;color:var(--par);
+    transform:translateX(-50%);
+  }
+
+  /* ---------- footer caption ---------- */
+  .caption{
+    position:fixed;left:0;right:0;bottom:14px;
+    text-align:center;
+    font-family:"Space Grotesk";font-weight:500;
+    font-size:11px;letter-spacing:.24em;text-transform:uppercase;
+    color:#4a4368;
+    z-index:20;
+  }
+</style>
+</head>
+<body>
+
+  <div class="frame">
+
+    <div class="tilt-line a"></div>
+    <div class="tilt-line b"></div>
+
+    <div class="strap">World Cup Pulse · Group C · Match 33</div>
+
+    <!-- ===== PITCH STAND-IN (parallelogram, tilted, below center) ===== -->
+    <div class="pitch-wrap">
+      <div class="pitch-glow"></div>
+      <svg viewBox="0 0 520 300" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="pitchG" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#e4e4ea"/>
+            <stop offset="1" stop-color="#c3c3cd"/>
+          </linearGradient>
+        </defs>
+        <!-- tilted rhombus / orthographic pitch -->
+        <polygon points="150,20 500,90 370,280 20,210" fill="url(#pitchG)"/>
+        <!-- faint centre seam for context only -->
+        <line x1="85" y1="115" x2="435" y2="185" stroke="#b4b4c0" stroke-width="1.4" opacity=".7"/>
+      </svg>
+    </div>
+
+    <!-- ===== HUD ===== -->
+    <div class="hud">
+      <div class="top">
+
+        <!-- teams + hero score -->
+        <div class="matchup">
+          <div class="team par">
+            <div class="row">
+              <span class="flag">
+                <svg width="26" height="18" viewBox="0 0 26 18">
+                  <rect width="26" height="6" y="0" fill="#D52B1E"/>
+                  <rect width="26" height="6" y="6" fill="#fff"/>
+                  <rect width="26" height="6" y="12" fill="#0038A8"/>
+                </svg>
+              </span>
+              <span class="abbr">PAR</span>
+              <span class="tick"></span>
+            </div>
+            <div class="score">0</div>
+            <div class="lead-bar"></div>
+          </div>
+
+          <div class="team fra">
+            <div class="row">
+              <span class="flag">
+                <svg width="26" height="18" viewBox="0 0 26 18">
+                  <rect width="8.66" height="18" x="0" fill="#0055A4"/>
+                  <rect width="8.66" height="18" x="8.66" fill="#fff"/>
+                  <rect width="8.66" height="18" x="17.33" fill="#EF4135"/>
+                </svg>
+              </span>
+              <span class="abbr">FRA</span>
+              <span class="tick"></span>
+            </div>
+            <div class="score">1</div>
+            <div class="lead-bar"></div>
+          </div>
+        </div>
+
+        <!-- clock -->
+        <div class="clock">
+          <div class="live"><span class="dot"></span>Live</div>
+          <div class="time"><span class="min">75</span></div>
+          <div class="stage">2nd Half</div>
+          <div class="redcard"><span>PAR · 68'</span><span class="card"></span></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ===== BOTTOM: play + pulse (transparent) ===== -->
+    <div class="transport">
+      <div class="play"></div>
+      <div class="pulse">
+        <span class="playhead-lbl" style="left:62%">75'</span>
+        <svg viewBox="0 0 560 78" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="waveG" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0"    stop-color="#387ef0" stop-opacity=".25"/>
+              <stop offset=".55"  stop-color="#7aa9ff" stop-opacity="1"/>
+              <stop offset=".62"  stop-color="#EE3F2D"/>
+              <stop offset=".64"  stop-color="#387ef0" stop-opacity=".35"/>
+              <stop offset="1"    stop-color="#387ef0" stop-opacity=".12"/>
+            </linearGradient>
+          </defs>
+
+          <!-- baseline -->
+          <line x1="0" y1="39" x2="560" y2="39" stroke="#332a52" stroke-width="1"/>
+
+          <!-- seismograph pulse — energetic, hardcoded -->
+          <path d="M0,39 L18,39 L26,33 L34,45 L44,39 L60,39 L68,22 L74,58 L80,30 L88,48 L96,39
+                   L118,39 L126,26 L132,54 L140,16 L148,62 L156,34 L164,44 L172,39
+                   L196,39 L204,31 L210,47 L218,39 L232,39 L240,10 L246,68 L252,20 L260,52 L268,36 L276,42 L284,39
+                   L306,39 L314,28 L322,50 L330,39
+                   L344,39 L352,6 L358,72 L364,24 L372,56 L380,33 L388,45 L396,39
+                   L420,39 L428,34 L436,44 L444,39 L470,39 L478,30 L486,48 L494,39
+                   L520,39 L528,36 L536,42 L560,39"
+                fill="none" stroke="url(#waveG)" stroke-width="2.4"
+                stroke-linejoin="round" stroke-linecap="round"/>
+
+          <!-- playhead at 75' (~62%) -->
+          <line x1="347" y1="4" x2="347" y2="74" stroke="#EE3F2D" stroke-width="2"/>
+          <circle cx="347" cy="39" r="4.5" fill="#EE3F2D"/>
+          <circle cx="347" cy="39" r="8" fill="none" stroke="#EE3F2D" stroke-opacity=".4" stroke-width="1.5"/>
+        </svg>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="caption">C · Bold Sport · Archivo Expanded / Space Grotesk</div>
+
+</body>
+</html>

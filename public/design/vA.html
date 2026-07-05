@@ -1,0 +1,325 @@
+<!--
+  World Cup Pulse — Chrome/HUD Direction A: EDITORIAL BROADSHEET
+  Font pairing: Fraunces (high-contrast editorial display, opsz+SOFT axes) for the
+  score numerals + masthead / Archivo (clean grotesque, tabular figures) for labels,
+  clock, and metadata.
+  References applied:
+    · The Athletic / FT Weekend — hairline rules + running header/kicker as structure
+    · Pentagram sports editorial — one restrained accent, everything else greyscale type
+    · Bloomberg Businessweek — oversized numerals as the composition's anchor
+    · Broadcast lower-third scorebug — team abbr over giant score, clock top-right
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>World Cup Pulse — A · Editorial</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#17102e;
+    --bg-top:#1c1436;
+    --bg-bot:#140d26;
+    --pitch:#d7d7dd;
+    --ink:#f4f2ee;         /* warm off-white type */
+    --ink-dim:#a89fc0;     /* muted lavender-grey */
+    --ink-faint:#6a6088;
+    --rule:rgba(214,208,232,.16);
+    --rule-strong:rgba(214,208,232,.34);
+    --accent:#EE3F2D;      /* PAR red — the single accent */
+    --fra:#387ef0;
+    --margin:44px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:#0d0820;
+    font-family:'Archivo',system-ui,sans-serif;
+    color:var(--ink);
+    display:flex;align-items:center;justify-content:center;
+    min-height:100vh;
+    padding:32px;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---------- FRAME ---------- */
+  .frame{
+    position:relative;
+    width:100%;max-width:700px;
+    aspect-ratio:700/760;
+    background:
+      radial-gradient(120% 90% at 50% 30%, var(--bg-top) 0%, var(--bg) 46%, var(--bg-bot) 100%);
+    border-radius:6px;
+    overflow:hidden;
+    box-shadow:0 40px 120px -30px rgba(0,0,0,.8), inset 0 0 0 1px rgba(255,255,255,.03);
+  }
+  /* faint columnar grid ghost — editorial substrate */
+  .frame::before{
+    content:"";position:absolute;inset:0;pointer-events:none;
+    background:
+      linear-gradient(90deg, transparent calc(var(--margin) - 1px), var(--rule) var(--margin), transparent calc(var(--margin) + 1px)),
+      linear-gradient(90deg, transparent calc(100% - var(--margin) - 1px), var(--rule) calc(100% - var(--margin)), transparent calc(100% - var(--margin) + 1px));
+    opacity:.7;
+  }
+
+  /* ---------- RUNNING HEADER ---------- */
+  .masthead{
+    position:absolute;top:0;left:var(--margin);right:var(--margin);
+    height:56px;display:flex;align-items:center;justify-content:space-between;
+    border-bottom:1px solid var(--rule);
+  }
+  .masthead .brand{
+    font-family:'Fraunces',serif;font-weight:500;font-size:16px;letter-spacing:.01em;
+    font-variation-settings:'opsz' 32,'SOFT' 0;
+  }
+  .masthead .brand em{font-style:italic;font-weight:400;color:var(--ink-dim)}
+  .masthead .kicker{
+    font-size:10.5px;font-weight:600;letter-spacing:.28em;text-transform:uppercase;
+    color:var(--ink-dim);
+  }
+
+  /* ---------- SCOREBUG (top-left, columnar) ---------- */
+  .scorebug{
+    position:absolute;top:92px;left:var(--margin);
+    display:grid;grid-template-columns:auto auto;column-gap:34px;
+  }
+  .team{display:flex;flex-direction:column;align-items:flex-start}
+  .team .row{display:flex;align-items:center;gap:9px;height:22px}
+  .team .abbr{
+    font-family:'Archivo',sans-serif;font-weight:700;font-size:17px;
+    letter-spacing:.16em;
+  }
+  .flag{
+    width:22px;height:15px;border-radius:2px;overflow:hidden;flex:0 0 auto;
+    box-shadow:0 0 0 1px rgba(255,255,255,.12);
+    display:grid;
+  }
+  .flag svg{display:block;width:100%;height:100%}
+  .score{
+    font-family:'Fraunces',serif;
+    font-weight:400;
+    font-variation-settings:'opsz' 144,'SOFT' 0,'wght' 380;
+    font-size:150px;line-height:.86;
+    letter-spacing:-.02em;
+    margin-top:6px;
+    font-feature-settings:'tnum' 1;
+  }
+  .team--par .score{color:var(--ink)}
+  .team--fra .score{color:var(--ink)}
+  /* thin accent underline tying score to its team color */
+  .team .tint{width:34px;height:3px;margin-top:10px;border-radius:2px}
+  .team--par .tint{background:var(--accent)}
+  .team--fra .tint{background:var(--fra)}
+
+  /* red-card marker — minimal, in the markers gutter under FRA abbr area */
+  .redcard{
+    position:absolute;top:96px;left:calc(var(--margin) + 250px);
+    display:flex;align-items:center;gap:7px;
+  }
+  .redcard .card{width:11px;height:15px;border-radius:1.5px;background:var(--accent);
+    box-shadow:0 2px 8px -2px rgba(238,63,45,.7)}
+  .redcard .meta{font-size:10px;font-weight:600;letter-spacing:.16em;color:var(--ink-dim);text-transform:uppercase}
+  .redcard .meta b{color:var(--ink);font-weight:700}
+
+  /* ---------- CLOCK (top-right) ---------- */
+  .clock{
+    position:absolute;top:92px;right:var(--margin);text-align:right;
+  }
+  .clock .live{
+    display:inline-flex;align-items:center;gap:7px;
+    font-size:10px;font-weight:700;letter-spacing:.24em;text-transform:uppercase;
+    color:var(--ink-dim);margin-bottom:6px;
+  }
+  .clock .live .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);
+    box-shadow:0 0 0 0 rgba(238,63,45,.55);animation:pulseDot 2.4s ease-out infinite}
+  @keyframes pulseDot{0%{box-shadow:0 0 0 0 rgba(238,63,45,.5)}70%{box-shadow:0 0 0 8px rgba(238,63,45,0)}100%{box-shadow:0 0 0 0 rgba(238,63,45,0)}}
+  .clock .time{
+    font-family:'Fraunces',serif;font-weight:400;
+    font-variation-settings:'opsz' 96,'wght' 360;
+    font-size:56px;line-height:.9;letter-spacing:-.01em;
+    font-feature-settings:'tnum' 1;
+  }
+  .clock .time .tick{color:var(--ink-dim)}
+  .clock .half{
+    font-size:10px;font-weight:600;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--ink-faint);margin-top:4px;
+  }
+
+  /* ---------- PITCH STAND-IN (do not restyle beyond spec) ---------- */
+  .pitch-wrap{position:absolute;inset:0;pointer-events:none}
+  .pitch{
+    position:absolute;left:50%;top:57%;transform:translate(-50%,-50%);
+    width:55%;
+  }
+
+  /* ---------- MERGED CONTROL + PULSE (transparent) ---------- */
+  .transport{
+    position:absolute;left:var(--margin);right:var(--margin);bottom:58px;
+    display:flex;align-items:center;gap:0;
+    height:64px;
+  }
+  .play{
+    flex:0 0 auto;width:56px;height:56px;border-radius:50%;
+    border:1.5px solid var(--rule-strong);
+    background:rgba(20,13,38,.35);
+    backdrop-filter:blur(2px);
+    display:grid;place-items:center;position:relative;z-index:2;
+    transition:border-color .2s;
+  }
+  .play::after{
+    content:"";display:block;
+    width:0;height:0;margin-left:3px;
+    border-left:13px solid var(--ink);
+    border-top:8px solid transparent;
+    border-bottom:8px solid transparent;
+  }
+  .play:hover{border-color:var(--accent)}
+  .wave{flex:1 1 auto;height:64px;margin-left:-2px}
+  .wave svg{display:block;width:100%;height:100%;overflow:visible}
+
+  /* ---------- FOOTER META STRIP ---------- */
+  .footstrip{
+    position:absolute;left:var(--margin);right:var(--margin);bottom:26px;
+    display:flex;align-items:center;justify-content:space-between;
+    border-top:1px solid var(--rule);padding-top:9px;
+  }
+  .footstrip .grp{font-size:10px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-faint)}
+  .footstrip .grp b{color:var(--ink-dim);font-weight:700}
+
+  /* fixed caption */
+  .caption{
+    position:fixed;left:14px;bottom:12px;
+    font-size:11px;letter-spacing:.06em;color:#5a5478;
+    font-family:'Archivo',sans-serif;font-weight:500;
+  }
+  .caption b{color:#8f88ad;font-weight:600}
+</style>
+</head>
+<body>
+  <div class="frame" role="img" aria-label="World Cup Pulse scorebug, Paraguay 0 France 1, 75th minute">
+
+    <!-- running header -->
+    <div class="masthead">
+      <div class="brand">World Cup <em>Pulse</em></div>
+      <div class="kicker">Group F · Matchday 3</div>
+    </div>
+
+    <!-- scorebug -->
+    <div class="scorebug">
+      <div class="team team--par">
+        <div class="row">
+          <span class="flag" aria-hidden="true">
+            <svg viewBox="0 0 30 20">
+              <rect width="30" height="6.67" fill="#EE3F2D"/>
+              <rect y="6.67" width="30" height="6.66" fill="#fff"/>
+              <rect y="13.33" width="30" height="6.67" fill="#0038A8"/>
+              <circle cx="15" cy="10" r="2.1" fill="#FCD116" stroke="#0a7a34" stroke-width=".5"/>
+            </svg>
+          </span>
+          <span class="abbr">PAR</span>
+        </div>
+        <div class="score">0</div>
+        <div class="tint"></div>
+      </div>
+
+      <div class="team team--fra">
+        <div class="row">
+          <span class="flag" aria-hidden="true">
+            <svg viewBox="0 0 30 20">
+              <rect width="10" height="20" fill="#0055A4"/>
+              <rect x="10" width="10" height="20" fill="#fff"/>
+              <rect x="20" width="10" height="20" fill="#EF4135"/>
+            </svg>
+          </span>
+          <span class="abbr">FRA</span>
+        </div>
+        <div class="score">1</div>
+        <div class="tint"></div>
+      </div>
+    </div>
+
+    <!-- red card marker -->
+    <div class="redcard" aria-label="One red card, Paraguay">
+      <span class="card"></span>
+      <span class="meta"><b>1</b> · PAR 63'</span>
+    </div>
+
+    <!-- clock -->
+    <div class="clock">
+      <div class="live"><span class="dot"></span>Live</div>
+      <div class="time">75<span class="tick">&#8242;</span></div>
+      <div class="half">Second Half</div>
+    </div>
+
+    <!-- pitch stand-in -->
+    <div class="pitch-wrap">
+      <svg class="pitch" viewBox="0 0 640 360" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <filter id="pglow" x="-30%" y="-30%" width="160%" height="160%">
+            <feDropShadow dx="0" dy="26" stdDeviation="30" flood-color="#000" flood-opacity="0.55"/>
+          </filter>
+          <linearGradient id="pfill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#e2e2e8"/>
+            <stop offset="1" stop-color="#c7c7d0"/>
+          </linearGradient>
+        </defs>
+        <!-- tilted orthographic parallelogram, long axis horizontal -->
+        <g filter="url(#pglow)">
+          <polygon points="150,40 640,120 490,320 0,240" fill="url(#pfill)"/>
+        </g>
+        <!-- faint pitch markings for football legibility -->
+        <g stroke="#a9a9b6" stroke-width="1.4" fill="none" opacity=".55">
+          <polygon points="150,40 640,120 490,320 0,240"/>
+          <!-- halfway line -->
+          <line x1="320" y1="80" x2="245" y2="280"/>
+          <!-- centre circle (skewed ellipse) -->
+          <ellipse cx="290" cy="180" rx="52" ry="26" transform="rotate(6 290 180)"/>
+        </g>
+      </svg>
+    </div>
+
+    <!-- merged control + pulse, transparent bg -->
+    <div class="transport">
+      <button class="play" aria-label="Play"></button>
+      <div class="wave" aria-hidden="true">
+        <svg viewBox="0 0 560 64" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="wg" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#EE3F2D"/>
+              <stop offset="0.10" stop-color="#f0e8ff" stop-opacity="0.9"/>
+              <stop offset="1" stop-color="#8a80b0" stop-opacity="0.55"/>
+            </linearGradient>
+          </defs>
+          <!-- baseline -->
+          <line x1="0" y1="32" x2="560" y2="32" stroke="rgba(214,208,232,.14)" stroke-width="1"/>
+          <!-- seismograph waveform -->
+          <path d="M0,32 L14,32 L20,30 L26,34 L34,20 L40,44 L46,32 L58,32 L66,26 L74,38
+                   L82,10 L90,54 L98,28 L106,36 L118,32 L128,24 L136,40 L144,18 L152,46
+                   L160,31 L172,33 L182,22 L190,42 L198,6 L206,58 L214,30 L222,35 L236,32
+                   L248,27 L256,37 L266,16 L274,48 L282,33 L296,31 L308,25 L316,39 L324,13
+                   L332,51 L340,29 L350,34 L364,32 L376,28 L386,36 L396,21 L404,43 L414,32
+                   L428,33 L440,26 L450,38 L462,30 L474,34 L488,32 L500,29 L512,35 L524,31
+                   L536,33 L548,32 L560,32"
+                fill="none" stroke="url(#wg)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+          <!-- playhead -->
+          <circle cx="58" cy="32" r="4.5" fill="#EE3F2D"/>
+          <circle cx="58" cy="32" r="8.5" fill="none" stroke="#EE3F2D" stroke-opacity=".35" stroke-width="1.2"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- footer meta strip -->
+    <div class="footstrip">
+      <div class="grp"><b>xG</b> 0.7 &nbsp;–&nbsp; 1.9</div>
+      <div class="grp">Possession <b>41%</b> · <b>59%</b></div>
+      <div class="grp"><b>Live pass network</b></div>
+    </div>
+
+  </div>
+
+  <div class="caption">A · Editorial · <b>Fraunces</b> / <b>Archivo</b></div>
+</body>
+</html>

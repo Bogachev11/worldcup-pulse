@@ -1,0 +1,389 @@
+<!--
+  World Cup Pulse — Chrome/HUD mockup
+  Direction B · SWISS TECHNICAL / DATA INSTRUMENT
+  Type pairing: Space Grotesk (labels, small-caps, UI) + Space Mono (numerics / telemetry readouts)
+  Both by Colophon Foundry lineage — Space Grotesk is derived from Space Mono, so the numeric
+  and label systems share DNA: an instrument panel that reads as one calibrated system.
+
+  Applied references / ideas:
+   1. Moritz Stefaner / Truth & Beauty — data as calm instrument: every mark is a measurement,
+      registration ticks + coordinate framing rather than decoration.
+   2. International Typographic Style — strict modular grid, hairline rules, small-caps labels,
+      flush-left alignment, single accent hue, generous negative space.
+   3. Oscilloscope / telemetry (Digilent WaveForms, Bloomberg terminal) — the pulse is a live
+      trace: faint baseline + graticule, monospaced axis label, a playhead cursor.
+   4. Awwwards dark-mode dashboards — deep single-hue ground, tabular figures as the loudest
+      element, restraint so the centerpiece stays the star.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>World Cup Pulse · B · Swiss Technical</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:        #17102e;   /* deep plum-navy ground */
+    --bg-2:      #1b1436;
+    --ink:       #e9e7f4;   /* near-white ink */
+    --dim:       #8f89ad;   /* muted label ink */
+    --faint:     #4a4470;   /* hairline / grid ink */
+    --fainter:   #322c52;   /* faintest registration */
+    --pitch:     #d7d7dd;   /* centerpiece stand-in */
+    --accent:    #387ef0;   /* single accent — FRA blue */
+    --par:       #ee3f2d;   /* PAR red (used only for the card marker) */
+    --mono:      'Space Mono', ui-monospace, monospace;
+    --grot:      'Space Grotesk', system-ui, sans-serif;
+  }
+
+  *{ box-sizing:border-box; margin:0; padding:0; }
+
+  html,body{
+    background:
+      radial-gradient(120% 90% at 50% 42%, #1d1540 0%, var(--bg) 55%, #120c22 100%);
+    color:var(--ink);
+    font-family:var(--grot);
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:32px 16px;
+  }
+  /* html must NOT be a flex container (it would shrink body → frame collapses). */
+  html{ display:block; }
+  body{ width:100%; }
+
+  /* ————— FRAME ————— */
+  .frame{
+    position:relative;
+    width:100%;
+    max-width:700px;
+    height:760px;
+    background:
+      radial-gradient(135% 100% at 50% 38%, rgba(56,126,240,.05) 0%, rgba(0,0,0,0) 46%),
+      linear-gradient(180deg, var(--bg-2) 0%, var(--bg) 60%, #130c24 100%);
+    border:1px solid var(--fainter);
+    overflow:hidden;
+    isolation:isolate;
+  }
+
+  /* structural modular grid — barely-there */
+  .grid{
+    position:absolute; inset:0; pointer-events:none; z-index:0;
+    background-image:
+      linear-gradient(to right, var(--fainter, #241d40) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--fainter, #241d40) 1px, transparent 1px);
+    background-size:calc(100%/8) calc(100%/9);
+    opacity:.5;
+  }
+  .grid::after{ /* central column emphasis */
+    content:""; position:absolute; inset:0;
+    background:linear-gradient(to right, transparent 50%, transparent 50%);
+  }
+
+  /* outer registration frame + corner ticks */
+  .reg{ position:absolute; inset:22px; border:1px solid var(--fainter); z-index:1; pointer-events:none; }
+  .tick{ position:absolute; background:var(--faint); }
+  .tick.h{ width:11px; height:1px; }
+  .tick.v{ width:1px; height:11px; }
+  /* four L-corners */
+  .c-tl-h{ top:22px; left:22px; } .c-tl-v{ top:22px; left:22px; }
+  .c-tr-h{ top:22px; right:22px; } .c-tr-v{ top:22px; right:22px; }
+  .c-bl-h{ bottom:22px; left:22px; } .c-bl-v{ bottom:22px; left:22px; }
+  .c-br-h{ bottom:22px; right:22px; } .c-br-v{ bottom:22px; right:22px; }
+
+  /* left + top coordinate rulers (tiny ticks) */
+  .ruler{ position:absolute; z-index:1; pointer-events:none; display:flex; }
+  .ruler.left{ top:22px; bottom:22px; left:22px; flex-direction:column; justify-content:space-between; }
+  .ruler.top{ left:22px; right:22px; top:22px; justify-content:space-between; }
+  .ruler.left i{ width:5px; height:1px; background:var(--faint); }
+  .ruler.top i{ width:1px; height:5px; background:var(--faint); }
+
+  /* ————— CONTENT LAYER ————— */
+  .content{ position:absolute; inset:0; z-index:3; padding:44px 46px; }
+
+  /* header row */
+  .head{ display:flex; justify-content:space-between; align-items:flex-start; }
+
+  /* teams + score block (top-left) */
+  .teams{ display:flex; gap:38px; }
+  .team{ display:flex; flex-direction:column; align-items:flex-start; }
+
+  .team-id{ display:flex; align-items:center; gap:8px; height:20px; }
+  .flag{
+    width:22px; height:15px; border-radius:1.5px; overflow:hidden;
+    box-shadow:0 0 0 1px rgba(255,255,255,.10);
+    display:block; flex:0 0 auto;
+  }
+  .abbr{
+    font-family:var(--grot); font-weight:600; font-size:14px;
+    letter-spacing:.22em; text-transform:uppercase;
+    color:var(--ink); padding-left:1px;
+  }
+  .rail{ /* thin accent rail under active team abbr */
+    height:2px; margin-top:9px; width:100%;
+    background:var(--faint);
+  }
+  .team.lead .rail{ background:var(--accent); box-shadow:0 0 8px rgba(56,126,240,.6); }
+
+  .score{
+    font-family:var(--mono); font-weight:700;
+    font-size:118px; line-height:.9; letter-spacing:-.02em;
+    color:var(--ink);
+    margin-top:14px;
+    font-variant-numeric:tabular-nums;
+    font-feature-settings:"tnum" 1;
+  }
+  .team:not(.lead) .score{ color:#cfcbe4; }
+  .team.lead .score{ color:#ffffff; }
+
+  /* under-score micro-metrics — instrument feel */
+  .metric{
+    margin-top:14px; display:flex; flex-direction:column; gap:5px;
+    font-family:var(--mono); font-size:10px; color:var(--dim);
+    letter-spacing:.02em;
+  }
+  .metric span b{ color:var(--ink); font-weight:700; }
+  .metric .lbl{
+    font-family:var(--grot); font-size:9px; letter-spacing:.18em;
+    text-transform:uppercase; color:var(--faint);
+  }
+
+  /* clock (top-right) */
+  .clock{ text-align:right; }
+  .clock .kick{
+    font-family:var(--grot); font-size:9px; letter-spacing:.24em;
+    text-transform:uppercase; color:var(--dim); margin-bottom:8px;
+    display:flex; align-items:center; gap:7px; justify-content:flex-end;
+  }
+  .live-dot{ width:6px; height:6px; border-radius:50%; background:var(--par);
+    box-shadow:0 0 8px var(--par); animation:blink 1.8s steps(1) infinite; }
+  @keyframes blink{ 0%,60%{opacity:1} 61%,100%{opacity:.25} }
+
+  .clock .t{
+    font-family:var(--mono); font-weight:700; font-size:44px;
+    letter-spacing:-.01em; color:var(--ink); font-variant-numeric:tabular-nums;
+    line-height:1;
+  }
+  .clock .t em{ font-style:normal; color:var(--accent); }
+  .clock .half{
+    margin-top:9px; font-family:var(--mono); font-size:10px; color:var(--dim);
+    letter-spacing:.04em;
+  }
+  /* card marker: one red card, tasteful */
+  .cards{ margin-top:14px; display:flex; gap:6px; justify-content:flex-end; align-items:center; }
+  .cards .lbl{ font-family:var(--grot); font-size:9px; letter-spacing:.18em;
+    text-transform:uppercase; color:var(--faint); }
+  .redcard{ width:9px; height:13px; border-radius:1.5px; background:var(--par);
+    box-shadow:0 0 6px rgba(238,63,45,.5); }
+
+  /* ————— CENTERPIECE STAND-IN (context only) ————— */
+  .stage{ position:absolute; left:0; right:0; top:0; bottom:0; z-index:2; pointer-events:none; }
+  .pitch-wrap{
+    position:absolute; left:50%; top:56%; transform:translate(-50%,-50%);
+    width:55%; aspect-ratio:1.62/1;
+  }
+  .pitch{
+    position:absolute; inset:0;
+    background:linear-gradient(160deg, #e2e2e8 0%, var(--pitch) 45%, #c7c7d0 100%);
+    /* tilted orthographic rhombus */
+    clip-path:polygon(26% 8%, 100% 40%, 74% 92%, 0% 60%);
+    filter:drop-shadow(0 26px 46px rgba(0,0,0,.55));
+  }
+  .pitch-glow{
+    position:absolute; inset:-18%;
+    background:radial-gradient(closest-side, rgba(160,175,235,.16), transparent 72%);
+  }
+  /* coordinate crosshair centered on pitch (instrument locator) */
+  .locator{ position:absolute; left:50%; top:56%; transform:translate(-50%,-50%);
+    width:55%; aspect-ratio:1.62/1; z-index:2; pointer-events:none; }
+
+  /* ————— MERGED CONTROL + PULSE PANEL (transparent) ————— */
+  .console{
+    position:absolute; left:46px; right:46px; bottom:44px; z-index:4;
+    display:flex; align-items:center; gap:18px;
+  }
+  .play{
+    flex:0 0 auto; width:56px; height:56px; border-radius:50%;
+    border:1.5px solid var(--faint);
+    background:rgba(20,13,38,.35);
+    display:flex; align-items:center; justify-content:center;
+    position:relative;
+    backdrop-filter:blur(2px);
+  }
+  .play::before{ /* accent tick on the ring */
+    content:""; position:absolute; top:-1px; left:50%; width:2px; height:9px;
+    background:var(--accent); transform:translateX(-50%); box-shadow:0 0 6px var(--accent);
+  }
+  .play svg{ margin-left:3px; }
+  .pulse{ flex:1 1 auto; height:56px; position:relative; }
+  .pulse svg{ display:block; width:100%; height:100%; overflow:visible; }
+  .axis-cap{
+    position:absolute; right:0; top:-14px; font-family:var(--mono); font-size:9px;
+    color:var(--faint); letter-spacing:.05em;
+  }
+
+  /* footer caption */
+  .caption{
+    position:absolute; left:46px; bottom:20px; z-index:5;
+    font-family:var(--mono); font-size:9.5px; letter-spacing:.06em;
+    color:var(--faint);
+  }
+  .serial{
+    position:absolute; right:46px; bottom:20px; z-index:5;
+    font-family:var(--mono); font-size:9.5px; letter-spacing:.14em;
+    color:var(--faint);
+  }
+</style>
+
+<div class="frame">
+  <div class="grid" style="--fainter:#241d40"></div>
+
+  <!-- registration frame + rulers -->
+  <div class="reg"></div>
+  <span class="tick h c-tl-h"></span><span class="tick v c-tl-v"></span>
+  <span class="tick h c-tr-h"></span><span class="tick v c-tr-v"></span>
+  <span class="tick h c-bl-h"></span><span class="tick v c-bl-v"></span>
+  <span class="tick h c-br-h"></span><span class="tick v c-br-v"></span>
+  <div class="ruler left">
+    <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+  </div>
+  <div class="ruler top">
+    <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+  </div>
+
+  <!-- centerpiece stand-in (DO NOT restyle) -->
+  <div class="stage">
+    <div class="pitch-wrap">
+      <div class="pitch-glow"></div>
+      <div class="pitch"></div>
+    </div>
+    <svg class="locator" viewBox="0 0 200 124" preserveAspectRatio="none" aria-hidden="true">
+      <!-- faint crosshair registration over the field -->
+      <line x1="100" y1="-30" x2="100" y2="6"  stroke="#4a4470" stroke-width="1" stroke-dasharray="2 4"/>
+      <line x1="100" y1="118" x2="100" y2="154" stroke="#4a4470" stroke-width="1" stroke-dasharray="2 4"/>
+      <circle cx="100" cy="62" r="2.2" fill="none" stroke="#4a4470" stroke-width="1"/>
+    </svg>
+  </div>
+
+  <!-- HUD content -->
+  <div class="content">
+    <div class="head">
+
+      <!-- teams + score -->
+      <div class="teams">
+        <div class="team">
+          <div class="team-id">
+            <!-- Paraguay flag chip -->
+            <svg class="flag" viewBox="0 0 22 15" aria-label="Paraguay">
+              <rect width="22" height="5"  y="0"  fill="#d52b1e"/>
+              <rect width="22" height="5"  y="5"  fill="#ffffff"/>
+              <rect width="22" height="5"  y="10" fill="#0038a8"/>
+              <circle cx="11" cy="7.5" r="2.1" fill="#ffe600" stroke="#0a6e2e" stroke-width=".5"/>
+            </svg>
+            <span class="abbr">PAR</span>
+          </div>
+          <div class="rail"></div>
+          <div class="score">0</div>
+          <div class="metric">
+            <span class="lbl">xG</span>
+            <span><b>0.74</b></span>
+            <span class="lbl" style="margin-top:4px">POSS</span>
+            <span><b>41%</b></span>
+          </div>
+        </div>
+
+        <div class="team lead">
+          <div class="team-id">
+            <!-- France flag chip -->
+            <svg class="flag" viewBox="0 0 22 15" aria-label="France">
+              <rect width="7.33" height="15" x="0"     fill="#0038a8"/>
+              <rect width="7.33" height="15" x="7.33"  fill="#ffffff"/>
+              <rect width="7.34" height="15" x="14.66" fill="#ee2436"/>
+            </svg>
+            <span class="abbr">FRA</span>
+          </div>
+          <div class="rail"></div>
+          <div class="score">1</div>
+          <div class="metric">
+            <span class="lbl">xG</span>
+            <span><b>1.38</b></span>
+            <span class="lbl" style="margin-top:4px">POSS</span>
+            <span><b>59%</b></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- clock -->
+      <div class="clock">
+        <div class="kick"><span class="live-dot"></span>Live</div>
+        <div class="t">75<em>'</em></div>
+        <div class="half">2ND HALF · +0</div>
+        <div class="cards">
+          <span class="lbl">RC</span>
+          <span class="redcard"></span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- merged control + pulse (transparent, overlays bg + pitch edge) -->
+  <div class="console">
+    <div class="play">
+      <svg width="16" height="18" viewBox="0 0 16 18" aria-label="Play">
+        <path d="M1 1 L15 9 L1 17 Z" fill="none" stroke="#e9e7f4" stroke-width="1.4" stroke-linejoin="round"/>
+      </svg>
+    </div>
+    <div class="pulse">
+      <span class="axis-cap">AMP · dB &nbsp;|&nbsp; 90:00</span>
+      <svg viewBox="0 0 560 56" preserveAspectRatio="none" aria-label="Match pulse">
+        <!-- faint graticule -->
+        <g stroke="#322c52" stroke-width="1">
+          <line x1="0" y1="14" x2="560" y2="14"/>
+          <line x1="0" y1="42" x2="560" y2="42"/>
+        </g>
+        <!-- baseline -->
+        <line x1="0" y1="28" x2="560" y2="28" stroke="#4a4470" stroke-width="1" stroke-dasharray="1 5"/>
+        <!-- vertical time graticule -->
+        <g stroke="#2a2448" stroke-width="1">
+          <line x1="93"  y1="6" x2="93"  y2="50"/>
+          <line x1="186" y1="6" x2="186" y2="50"/>
+          <line x1="280" y1="6" x2="280" y2="50"/>
+          <line x1="373" y1="6" x2="373" y2="50"/>
+          <line x1="466" y1="6" x2="466" y2="50"/>
+        </g>
+        <!-- telemetry / seismograph trace (hardcoded, believable) -->
+        <path d="M0 28 L14 28 L20 26 L26 31 L33 27 L41 28 L48 22 L54 34 L60 28
+                 L72 28 L78 24 L84 30 L90 20 L96 38 L102 28 L112 28 L118 27 L124 29
+                 L131 25 L138 33 L145 28 L158 28 L163 12 L168 46 L173 28 L182 28
+                 L189 26 L196 30 L203 28 L214 28 L220 23 L227 32 L234 27 L241 28
+                 L250 28 L256 18 L262 40 L268 28 L280 28 L286 26 L292 30 L299 24
+                 L306 33 L313 28 L326 28 L332 25 L339 30 L346 28 L358 28 L364 21
+                 L370 36 L376 28 L388 28 L394 27 L401 29 L408 26 L415 31 L422 28
+                 L418 28 L426 28 L432 8 L438 50 L444 28 L456 28 L462 25 L469 31
+                 L476 27 L488 28 L494 24 L500 33 L507 28 L520 28 L526 27 L533 29 L540 28 L560 28"
+              fill="none" stroke="#6c6796" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>
+        <!-- played segment brightens up to playhead (~83% of 90') -->
+        <path d="M0 28 L14 28 L20 26 L26 31 L33 27 L41 28 L48 22 L54 34 L60 28
+                 L72 28 L78 24 L84 30 L90 20 L96 38 L102 28 L112 28 L118 27 L124 29
+                 L131 25 L138 33 L145 28 L158 28 L163 12 L168 46 L173 28 L182 28
+                 L189 26 L196 30 L203 28 L214 28 L220 23 L227 32 L234 27 L241 28
+                 L250 28 L256 18 L262 40 L268 28 L280 28 L286 26 L292 30 L299 24
+                 L306 33 L313 28 L326 28 L332 25 L339 30 L346 28 L358 28 L364 21
+                 L370 36 L376 28 L388 28 L394 27 L401 29 L408 26 L415 31 L422 28
+                 L418 28 L426 28 L432 8 L438 50 L444 28 L456 28 L462 25 L466 28"
+              fill="none" stroke="#387ef0" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+        <!-- playhead cursor at 75' -->
+        <line x1="466" y1="4" x2="466" y2="52" stroke="#387ef0" stroke-width="1"/>
+        <circle cx="466" cy="28" r="3" fill="#387ef0"/>
+        <circle cx="466" cy="28" r="6" fill="none" stroke="#387ef0" stroke-width="1" opacity=".4"/>
+      </svg>
+    </div>
+  </div>
+
+  <div class="caption">B · SWISS TECHNICAL · SPACE GROTESK / SPACE MONO</div>
+  <div class="serial">WCP·2026 / PAR–FRA / R16</div>
+</div>

@@ -78,6 +78,12 @@ function buildOne(raw, rich) {
     const cross = qhas(q, 'Cross');
     const through = qhas(q, 'Throughball') || qhas(q, 'ThroughBall');
     const corner = type === 'CornerAwarded' || qhas(q, 'Corner') || qhas(q, 'CornerTaken');
+    // POST-MATCH PENALTY SHOOTOUT — events in the "PenaltyShootout" period. Tagged so the
+    // app can (a) EXCLUDE them from the regular score/goal markers and (b) render the
+    // shootout result block. The actual kicks are the shot-type events (Goal = scored,
+    // SavedShot/MissedShots/ShotOnPost = missed); the mirrored PenaltyFaced/Save are dropped.
+    const periodName = (e.period && (e.period.displayName || e.period.value)) || e.period || '';
+    const isShootout = /shootout/i.test(String(periodName));
 
     const ev = {
       t, minute: Number(e.minute) || 0, second, team,
@@ -89,11 +95,12 @@ function buildOne(raw, rich) {
 
     // xG join for shot-type events: nearest same-team rich shot by minute (±1)
     if (SHOT_TYPES.has(type)) {
-      let best = null, bestD = Infinity;
-      for (const s of richShots) {
+      let best = null, bestD = Infinity, bestIdx = -1;
+      for (let si = 0; si < richShots.length; si++) {
+        const s = richShots[si];
         if (s.team !== team) continue;
         const d = Math.abs((Number(s.minute) || 0) - ev.minute);
-        if (d <= 1 && d < bestD) { bestD = d; best = s; }
+        if (d <= 1 && d < bestD) { bestD = d; best = s; bestIdx = si; }
       }
       ev.xg = best && Number.isFinite(best.xg) ? best.xg : null;
       ev.xgot = best && Number.isFinite(best.xgot) ? best.xgot : null;
@@ -101,18 +108,47 @@ function buildOne(raw, rich) {
       ev.onGoalY = best && Number.isFinite(best.onGoalY) ? best.onGoalY : null;
       ev.situation = best ? (best.situation || null) : null;
       ev.isGoal = type === 'Goal' || (best ? !!best.isGoal : false);
+      // remember which rich goal this event's isGoal maps to (for the dedup below) and
+      // whether WhoScored itself typed it a 'Goal' (the strongest claim).
+      if (best && best.isGoal) ev._richIdx = bestIdx;
+      ev._typedGoal = (type === 'Goal');
     }
 
+    if (isShootout) ev.shootout = true;
     events.push(ev);
+  }
+
+  // DEDUP phantom goals — the rich-fallback (`|| best.isGoal`) can mark SEVERAL shots that
+  // xg-join to the SAME rich goal (e.g. a saved rebound a minute after a real goal). Keep
+  // exactly ONE isGoal per rich goal: prefer a WhoScored-typed 'Goal', else the first; clear
+  // isGoal on the other rich-derived claimants (never on a typed 'Goal').
+  const claimants = new Map();   // richIdx -> [events with that _richIdx]
+  for (const e of events) {
+    if (e._richIdx == null) continue;
+    if (!claimants.has(e._richIdx)) claimants.set(e._richIdx, []);
+    claimants.get(e._richIdx).push(e);
+  }
+  for (const list of claimants.values()) {
+    if (list.length <= 1) continue;
+    const keeper = list.find((e) => e._typedGoal) || list[0];
+    for (const e of list) if (e !== keeper && !e._typedGoal) e.isGoal = false;
   }
 
   // sort ascending by t, tiebreak by event id (stable order)
   events.sort((a, b) => (a.t - b.t) || ((a._id || 0) - (b._id || 0)));
-  // drop the internal id from the emitted records
-  for (const ev of events) delete ev._id;
+  // drop the internal id + temp goal-dedup fields from the emitted records
+  for (const ev of events) { delete ev._id; delete ev._richIdx; delete ev._typedGoal; }
 
   const firstT = events.length ? events[0].t : 0;
-  const lastT = events.length ? events[events.length - 1].t : 0;
+  // fullT must EXCLUDE the shootout (else the dramatic clock would run to ~126' and count
+  // shootout kicks as goals) — use the last REGULATION/extra-time event.
+  const regEvents = events.filter((e) => !e.shootout);
+  const lastT = regEvents.length ? regEvents[regEvents.length - 1].t
+    : (events.length ? events[events.length - 1].t : 0);
+  // ordered SHOOTOUT result: one entry per kick (Goal = scored, else missed/saved).
+  const shootout = events
+    .filter((e) => e.shootout && SHOT_TYPES.has(e.type))
+    .map((e) => ({ team: e.team, scored: e.type === 'Goal' }));
 
   return {
     matchId: String((rich && rich.matchId) || (raw.matchId) || ''),
@@ -120,6 +156,7 @@ function buildOne(raw, rich) {
     away: { id: awayId, name: (raw.away && raw.away.name) || richAway.name || 'Away', abbr: awayAbbr, color: awayColor },
     kickoff: firstT,
     fullT: lastT,
+    ...(shootout.length ? { shootout } : {}),
     events,
   };
 }
