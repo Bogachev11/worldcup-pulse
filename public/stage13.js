@@ -1881,7 +1881,9 @@ function computeA(t, dt) {
   const wave = goalWaveAt(t) || (shootActive ? shootoutWaveAt() : null);
   for (let j = 0; j < gy; j++) {
     A_frontDisp[j] += (A_frontEff[j] - A_frontDisp[j]) * kd;
-    let fr = A_frontDisp[j];
+    // during the shootout the base is a CLEAN 50/50 colour split (not the jagged end-of-match
+    // territory); a SCORED kick floods it fully to the kicker's colour, a MISS leaves the split.
+    let fr = shootActive ? 0.5 : A_frontDisp[j];
     if (wave && wave.cover > 0) fr = lerp(fr, wave.front, wave.cover);
     const row = j * gx;
     for (let i = 0; i < gx; i++) A_own[row + i] = fr;   // front-u, constant along u
@@ -2177,7 +2179,10 @@ function shootoutPenPulse() {
   const f = clamp(seq.tIn / SHOOT_WAVE_S, 0, 1);
   let env = Math.sin(Math.PI * f) ** 0.6;
   if (!seq.kick.scored) env *= (1 - 0.4 * smoothstep(0.55, 1, f));   // recoil/gашение on a miss
-  return { u: SHOOT_SPOT_U, v: 0.5, team: seq.kick.team, dir: 1, f, env, scored: seq.kick.scored };
+  // teams kick at OPPOSITE goals: home → the u→1 goal (spot 0.885, dir +1); away → the u→0
+  // goal (spot 0.115, dir −1). The wave rolls from the spot toward that goal.
+  const home = seq.kick.team === 'home';
+  return { u: home ? SHOOT_SPOT_U : 1 - SHOOT_SPOT_U, v: 0.5, team: seq.kick.team, dir: home ? 1 : -1, f, env, scored: seq.kick.scored };
 }
 
 // bilinear sample a grid at normalized (u,v) (v already flipped by caller convention)
@@ -3420,76 +3425,47 @@ function drawPulse(t) {
   const dur = pulseDuration();
   const xOf = (min) => x0 + clamp(min / dur, 0, 1) * innerW;
   const yOf = (v) => mid - clamp(v, -1, 1) * ribH;
-  const px = xOf(clamp(t, 0, dur));      // playhead x at the current clock
+  // PLAYHEAD synced to the DISPLAYED (football) minute — the pulse must not run ahead of the
+  // clock. nowMin also gates everything so the pulse DRAWS AS THE MATCH RUNS (no faint preview
+  // of the future — that would spoil the intrigue).
+  const nowMin = clamp(footballMinuteAt(t), 0, dur);
+  const px = xOf(nowMin);
   const hasMom = momentum && momentum.length >= 2;
 
-  // ZONE FILLS — home pressure ABOVE the midline in the HOME colour, away pressure BELOW
-  // in the AWAY colour (split exactly at the centre). Dim over the whole match, brighter
-  // for the already-played portion (clipped to x ≤ playhead). Transparent over the scene.
+  // CENTRE LINE — only up to the playhead (grows with the match).
+  plCtx.strokeStyle = 'rgba(233,231,244,0.5)'; plCtx.lineWidth = 1.3 * dpr;
+  plCtx.beginPath(); plCtx.moveTo(x0, mid); plCtx.lineTo(px, mid); plCtx.stroke();
+
+  // MOMENTUM — home pressure ABOVE the midline (home colour), away BELOW (away colour), plus a
+  // crisp trace. Everything CLIPPED to x ≤ playhead so only the PLAYED part is ever drawn.
   if (hasMom) {
-    const fillArea = (pick, col, alpha) => {
+    plCtx.save(); plCtx.beginPath(); plCtx.rect(0, 0, Math.max(px, x0), H); plCtx.clip();
+    const fillArea = (pick, col) => {
       plCtx.beginPath();
       plCtx.moveTo(xOf(momentum[0].minute), mid);
       for (const d of momentum) plCtx.lineTo(xOf(d.minute), mid - pick(d.v) * ribH);
       plCtx.lineTo(xOf(momentum[momentum.length - 1].minute), mid);
-      plCtx.closePath();
-      plCtx.fillStyle = hexA(col, alpha); plCtx.fill();
+      plCtx.closePath(); plCtx.fillStyle = hexA(col, 0.5); plCtx.fill();
     };
-    const up = (v) => Math.max(0, v), down = (v) => Math.min(0, v);
-    fillArea(up, FRA_HEX, 0.16); fillArea(down, SEN_HEX, 0.16);           // whole match, dim
-    plCtx.save(); plCtx.beginPath(); plCtx.rect(0, 0, px, H); plCtx.clip();
-    fillArea(up, FRA_HEX, 0.5);  fillArea(down, SEN_HEX, 0.5);            // played, bright
-    plCtx.restore();
-  }
-
-  // momentum LINE for crisp definition (dim full trace + bright played overlay).
-  if (hasMom) {
+    fillArea((v) => Math.max(0, v), FRA_HEX);
+    fillArea((v) => Math.min(0, v), SEN_HEX);
     const pts = momentum.map((d) => ({ x: xOf(d.minute), y: yOf(d.v) }));
-    const tracePath = () => { plCtx.beginPath(); pts.forEach((p, i) => (i ? plCtx.lineTo(p.x, p.y) : plCtx.moveTo(p.x, p.y))); };
     plCtx.lineJoin = 'round'; plCtx.lineCap = 'round';
-    plCtx.strokeStyle = 'rgba(233,231,244,0.26)'; plCtx.lineWidth = 1.3 * dpr; tracePath(); plCtx.stroke();
-    plCtx.save(); plCtx.beginPath(); plCtx.rect(0, 0, px, H); plCtx.clip();
-    plCtx.strokeStyle = 'rgba(233,231,244,0.85)'; plCtx.lineWidth = 1.6 * dpr; tracePath(); plCtx.stroke();
+    plCtx.strokeStyle = 'rgba(233,231,244,0.85)'; plCtx.lineWidth = 1.6 * dpr;
+    plCtx.beginPath(); pts.forEach((p, i) => (i ? plCtx.lineTo(p.x, p.y) : plCtx.moveTo(p.x, p.y)));
+    plCtx.stroke();
     plCtx.restore();
   }
 
-  // CLEAR CENTRE LINE — drawn ON TOP so the halfway split always reads.
-  plCtx.strokeStyle = 'rgba(233,231,244,0.5)'; plCtx.lineWidth = 1.3 * dpr;
-  plCtx.beginPath(); plCtx.moveTo(x0, mid); plCtx.lineTo(x1, mid); plCtx.stroke();
-
-  // xG / SHOT markers — a thin tick rising from the midline on the shooting team's side, its
-  // HEIGHT ∝ √xG (a big chance stands tall), tipped with a dot; a GOAL gets a white tip + ring.
-  // The base wave stays possession-momentum; these add the SHOT-DANGER read the user wanted.
-  if (shotMarks && shotMarks.length) {
-    const nowFb = footballMinuteAt(t);
-    plCtx.lineCap = 'round';
-    for (const s of shotMarks) {
-      const mx = xOf(s.minute);
-      const up = s.team === 'home';
-      const h = (3 + 22 * Math.sqrt(clamp(s.xg, 0, 1))) * dpr;   // tick height ∝ √xG
-      const yTip = mid + (up ? -1 : 1) * Math.min(h, ribH * 0.96);
-      const played = s.minute <= nowFb + 0.01;
-      const col = up ? FRA_HEX : SEN_HEX;
-      plCtx.globalAlpha = played ? 0.92 : 0.28;
-      plCtx.strokeStyle = hexA(col, 0.9); plCtx.lineWidth = 1.6 * dpr;
-      plCtx.beginPath(); plCtx.moveTo(mx, mid); plCtx.lineTo(mx, yTip); plCtx.stroke();
-      plCtx.beginPath(); plCtx.arc(mx, yTip, (s.isGoal ? 3.4 : 2.1) * dpr, 0, Math.PI * 2);
-      plCtx.fillStyle = s.isGoal ? '#ffffff' : hexA(col, 0.95); plCtx.fill();
-      if (s.isGoal) { plCtx.beginPath(); plCtx.arc(mx, yTip, 5.4 * dpr, 0, Math.PI * 2); plCtx.strokeStyle = 'rgba(255,255,255,0.85)'; plCtx.lineWidth = 1.3 * dpr; plCtx.stroke(); }
-      plCtx.globalAlpha = 1;
-    }
-  }
-
-  // PERIOD markers — halftime (45'), full time / extra-time start (90') and, on matches that
-  // went to EXTRA TIME, the ET boundaries (105', 120'). Faint dashed verticals + a tiny minute
-  // label make it clear WHEN extra time began.
+  // PERIOD markers — reveal ONLY once reached (like the pulse itself): halftime 45', full time
+  // / extra-time start 90', ET boundaries 105'/120'. So they never pre-announce extra time.
   {
     const marks = dur > 100 ? [45, 90, 105, 120] : [45, 90];
-    const labels = dur > 100 ? { 45: "45'", 90: "90'", 120: "120'" } : { 45: "45'", 90: "90'" };
+    const labels = { 45: "45'", 90: "90'", 120: "120'" };
     plCtx.font = `${8.5 * dpr}px 'Space Mono', ui-monospace, monospace`;
     plCtx.textAlign = 'center'; plCtx.textBaseline = 'top';
     for (const mn of marks) {
-      if (mn >= dur) continue;
+      if (mn >= dur || mn > nowMin) continue;
       const mx = xOf(mn);
       const key = (mn === 90 || mn === 120);
       plCtx.strokeStyle = key ? 'rgba(233,231,244,0.26)' : 'rgba(233,231,244,0.13)';
@@ -3500,7 +3476,7 @@ function drawPulse(t) {
     }
   }
 
-  // PLAYHEAD at the current clock position (thin cursor + dot on the midline).
+  // PLAYHEAD.
   plCtx.strokeStyle = 'rgba(233,231,244,0.6)'; plCtx.lineWidth = 1 * dpr;
   plCtx.beginPath(); plCtx.moveTo(px, padY * 0.3); plCtx.lineTo(px, H - padY * 0.3); plCtx.stroke();
   plCtx.beginPath(); plCtx.arc(px, mid, 4 * dpr, 0, Math.PI * 2);
