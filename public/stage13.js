@@ -2157,10 +2157,11 @@ function goalWaveAt(t) {
   const flat = floodHoldV + lullV;
   const reset = Number.isFinite(cfg.A.goalReset) ? clamp(cfg.A.goalReset, 0, 8) : FLOOD_RELAX_S;
   const kick = Number.isFinite(cfg.A.goalPause) ? clamp(cfg.A.goalPause, 0, 6) : 0.4;  // KICKOFF HOLD at centre (within the drama-dwell)
-  const KICK_RELEASE_S = 1.1;   // ease cover→0 AFTER the drama-dwell ends (clock RESUMED): the front
-                                // then eases from centre into the LIVE post-goal front instead of
-                                // SNAPPING onto the FROZEN pre-goal attack value — that snap was the
-                                // phantom Norway-«выпад» that hung after every goal.
+  const KICK_RELEASE_S = 0.15;  // SHORT cover→0 once the drama-dwell ends (clock RESUMED): the reach
+                                // memory is already cleared at the goal, so the LIVE post-goal front
+                                // is correct — hand off to it QUICKLY so the match RESUMES SHARPLY
+                                // (like normal play), not a slow 1s glide into position. Keep it >0
+                                // so it's not a hard jump-cut.
   const total = roll + flat + reset + kick + KICK_RELEASE_S;
   if (elapsed < 0 || elapsed >= total) return null;
   // end E extreme front-u: home covers everything up to u=1 (E=1), away up to u=0 (E=0).

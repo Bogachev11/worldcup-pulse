@@ -74,7 +74,7 @@
   .standfirst b{ font-weight:600; color:#fff; }
 
   /* body copy */
-  article{ padding:clamp(28px,4vw,44px) 0 20px; }
+  article{ padding:clamp(28px,4vw,44px) 0 clamp(60px,9vw,100px); }
   article section{ padding-bottom:clamp(26px,4vw,40px); }
   h2{
     font-family:var(--grot); font-weight:600; font-size:13px; letter-spacing:.22em;
@@ -107,10 +107,9 @@
 
   /* visual guide — three real match moments, annotated */
   .guide{ display:grid; gap:16px; grid-template-columns:repeat(3,1fr); margin-top:8px; }
-  .gcard{ background:linear-gradient(180deg,var(--bg-2),#160f2c); border:1px solid var(--fainter);
-    border-radius:12px; overflow:hidden; }
-  .gcard img{ display:block; width:100%; height:auto; background:#0a0510; border-bottom:1px solid var(--fainter); }
-  .gcard .gc{ padding:13px 15px 15px; }
+  .gcard{ }  /* no plate — the frame just holds an image + its caption, clean */
+  .gcard img{ display:block; width:100%; height:auto; background:#0a0510; border-radius:8px; }
+  .gcard .gc{ padding:12px 2px 0; }
   .gcard .gt{ font-family:var(--grot); font-weight:600; font-size:14.5px; color:#fff; display:flex; align-items:center; }
   .gcard .gt .sw{ width:9px; height:9px; border-radius:50%; margin-right:8px; box-shadow:0 0 0 1px rgba(255,255,255,.14); flex:0 0 auto; }
   .gcard .gd{ font-size:13px; line-height:1.55; color:#c6c2da; margin-top:6px; }
@@ -127,32 +126,25 @@
   .siteftr .fmeta b{ color:var(--dim); font-weight:700; }
 
   /* methodology cards */
-  .meth{ display:grid; gap:14px; grid-template-columns:1fr 1fr; margin-top:4px; }
-  .meth .m{
-    background:linear-gradient(180deg,var(--bg-2),#160f2c); border:1px solid var(--fainter);
-    border-radius:12px; padding:16px 18px;
-  }
+  .meth{ display:grid; gap:22px 40px; grid-template-columns:1fr 1fr; margin-top:6px; }
+  .meth .m{ padding-top:16px; border-top:1px solid var(--fainter); }   /* hairline, no plate */
   .meth .m .k{ font-family:var(--mono); font-size:11px; letter-spacing:.06em; color:var(--accent);
     text-transform:uppercase; margin-bottom:8px; }
   .meth .m p{ font-size:14px; line-height:1.6; margin:0; color:#cdc9e0; }
   @media (max-width:560px){ .meth{ grid-template-columns:1fr; } }
 
-  /* credits */
-  .credits{
-    background:linear-gradient(180deg,var(--bg-2),#160f2c); border:1px solid var(--fainter);
-    border-radius:14px; padding:22px 24px; margin-top:4px;
-  }
-  .credits .who{ font-family:var(--grot); font-weight:600; font-size:18px; color:#fff; }
+  /* credits — no plate, just the author signing off */
+  .credits{ margin-top:2px; }
+  .credits .who{ font-family:var(--grot); font-weight:700; font-size:22px; color:#fff; letter-spacing:-.01em; }
   .credits .role{ font-family:var(--grot); font-size:13px; color:var(--dim); margin-top:3px; letter-spacing:.02em; }
   .credits .links{ display:flex; flex-wrap:wrap; gap:10px 12px; margin-top:16px; }
   .credits .lnk{
-    display:inline-flex; align-items:center; gap:7px; text-decoration:none;
-    font-family:var(--grot); font-size:13px; color:var(--ink);
-    border:1px solid var(--faint); border-radius:999px; padding:8px 15px;
-    transition:border-color .16s ease, background .16s ease;
+    display:inline-flex; align-items:center; gap:8px; text-decoration:none;
+    font-family:var(--grot); font-size:13.5px; color:var(--dim);
+    transition:color .16s ease;
   }
-  .credits .lnk:hover{ border-color:var(--accent); background:rgba(56,126,240,.08); }
-  .credits .lnk svg{ width:14px; height:14px; fill:currentColor; }
+  .credits .lnk:hover{ color:var(--ink); }
+  .credits .lnk svg{ width:14px; height:14px; fill:currentColor; opacity:.9; }
 
   /* footer */
   .footstrip{
@@ -338,13 +330,6 @@
       </section>
     </article>
 
-    <footer class="siteftr">
-      <div class="fm">World Cup Pulse</div>
-      <div class="fmeta">
-        <a href="https://wc26.bogachev.fr" target="_blank" rel="noopener">wc26.bogachev.fr</a>
-        <span class="dot">·</span><b>Data:</b> FotMob · WhoScored (Opta)
-      </div>
-    </footer>
   </div>
 </body>
 </html>
