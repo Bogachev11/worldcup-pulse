@@ -2604,7 +2604,11 @@ function computeField(t, dt) {
   // the whole relief melts toward flat (like the post-goal lull) so the surface resolves to
   // a calm quiet state, then holds. settleEase softens the ramp so it glides, not snaps.
   const settleEase = smoothstep(0, 1, clamp(settle, 0, 1));
-  const reliefMul = (1 - lullFlat) * (1 - 0.92 * settleEase);
+  // KEEP ~40% of the terrain during the post-goal lull (was full melt → a DEAD-FLAT field that
+  // read as a "freeze" right after the goal/rollback). The goal crest is applied OUTSIDE reliefMul
+  // so it still towers alone; the surrounding cloth just keeps some living shape instead of going
+  // perfectly flat. Settle still melts fully (final held frame is calm).
+  const reliefMul = (1 - 0.6 * lullFlat) * (1 - 0.92 * settleEase);
 
   // CORNER WAVES — active ripples this frame (most-recent corner per side, deterministic
   // from the clock → scrub-safe). Each ripples OUTWARD from its pitch corner (cu,cv) in
