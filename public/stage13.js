@@ -1907,28 +1907,23 @@ function computeA(t, dt) {
   // PEAKS at the goal, a HOLD at the peak for cfg.A.goalHold wall-seconds («держать пик»),
   // then a decay. Independent of the shot's recorded xG so low-xG / own goals still read as
   // rising danger → GOAL → flood. env is 0..1 (magnitude comes from goalH in the vertex loop).
-  // The crest lifetime is TIED to the flood wave phases (goalWaveAt) so the peak can NEVER
-  // outlive the flood: it RISES into the goal, HOLDS at full while the flood covers the
-  // conceded end (roll + flatten), then FADES exactly as the front ROLLS BACK to centre
-  // (the RESET phase, cover→0). No stranded hill left behind in the opponent half after the
-  // rollback. Same phase durations as goalWaveAt → crest and flood move as one event.
+  // The crest RISES into the goal, holds a BRIEF peak (a punch), then gently DECAYS — its env is
+  // ALWAYS in motion. ⚠️ A long held env=1 PLATEAU (was ~3s, through the whole flood-flatten) read
+  // as a spike "hanging" frozen at the goal-mouth for 1–2s while the drama-clock dwells on the goal
+  // — the phantom "выпад after every goal". The punch comes from the HEIGHT (goalH), not from
+  // holding. Wall-seconds (scrub-safe); xG-independent so low-xG/own goals still punch. Decays well
+  // before the front rolls back → nothing stranded in the opponent half.
   const gLead = GOAL_CREST_LEAD_S;
-  const gRoll = FLOOD_SWEEP_S;
-  const gFloodHold = Number.isFinite(cfg.A.floodHold) ? clamp(cfg.A.floodHold, 0, 12) : FLOOD_HOLD_DEFAULT_S;
-  const gLull = Number.isFinite(cfg.A.lull) ? clamp(cfg.A.lull, 0, 12) : 0;
-  const gExtra = Number.isFinite(cfg.A.goalHold) ? clamp(cfg.A.goalHold, 0, 6) : 0.4;  // «держать пик» — extra hold, but WITHIN the flood flatten so it can't strand
-  const gFlat = gFloodHold + gLull;
-  const gHoldEnd = gRoll + Math.min(gFlat, gRoll + gFlat);          // peak holds through roll+flatten
-  const gReset = Number.isFinite(cfg.A.goalReset) ? clamp(cfg.A.goalReset, 0, 8) : FLOOD_RELAX_S;
-  const gPeakEnd = gRoll + gFlat + Math.min(gExtra, gFlat);         // clamp extra hold so fade still lands within the flood's reset
-  const gTotal = gRoll + gFlat + gReset;
+  const gPeak = 0.7;     // peak-hold at full (wall-sec) — long enough to fully RISE + read as a punch, short enough it's no static plateau
+  const gTau = 0.9;      // decay τ (wall-sec) — the spike recedes continuously afterwards, never frozen
+  const gTotal = gPeak + 5 * gTau;   // cutoff (env negligible past here)
   for (const g of goalSpots) {
     const w = wallSecondsSinceGoal(g.t, t);              // wall-seconds since goal (<0 before)
-    if (!Number.isFinite(w) || w < -gLead || w >= gTotal) continue;  // build window = flood window
+    if (!Number.isFinite(w) || w < -gLead || w >= gTotal) continue;
     let env;
-    if (w < 0) { const f = (w + gLead) / gLead; env = f * f * (3 - 2 * f); }        // RISE → peak at goal
-    else if (w < gPeakEnd) env = 1;                                                  // HOLD while flood covers
-    else { const f = clamp((w - gPeakEnd) / Math.max(0.1, gTotal - gPeakEnd), 0, 1); env = 1 - f * f * (3 - 2 * f); }  // FADE with the rollback to centre
+    if (w < 0) { const f = (w + gLead) / gLead; env = f * f * (3 - 2 * f); }   // RISE → peak at the goal
+    else if (w < gPeak) env = 1;                                               // brief punch
+    else env = Math.exp(-(w - gPeak) / gTau);                                  // gentle DECAY — always receding
     if (env < 0.02) continue;
     const Ggrid = g.team === 'home' ? A_gH : A_gA;
     stamp(Ggrid, gx, gy, g.u, g.v, env, sharpRad);
@@ -2108,10 +2103,10 @@ function computeA(t, dt) {
       const dj = j - d.jc; const g = Math.exp(-(dj * dj) / (2 * d.sig * d.sig)) * d.env;
       if (g < 0.1) continue;
       const w = Math.min(1, g * 2.2);   // at the finger core the tongue reaches the shot FULLY (env<1 otherwise stops short)
-      // reach toward the shot but KEEP A MARGIN from the goal line (cap 0.90 / floor 0.10) so a
-      // deep attack doesn't push the cloth past the pitch edge — the выпад stays ON the field.
-      if (d.home) { const tgt = lerp(fr, Math.min(0.90, d.su + 0.03), w); if (tgt > fr) fr = tgt; }   // home stabs toward u→1
-      else { const tgt = lerp(fr, Math.max(0.10, d.su - 0.03), w); if (tgt < fr) fr = tgt; }           // away stabs toward u→0
+      // reach toward the shot with only the TINIEST margin from the goal line (cap 0.97 / floor
+      // 0.03) — the выпад gets right up to the goal but the cloth never spills past the pitch edge.
+      if (d.home) { const tgt = lerp(fr, Math.min(0.97, d.su + 0.03), w); if (tgt > fr) fr = tgt; }   // home stabs toward u→1
+      else { const tgt = lerp(fr, Math.max(0.03, d.su - 0.03), w); if (tgt < fr) fr = tgt; }           // away stabs toward u→0
     }
     const row = j * gx;
     for (let i = 0; i < gx; i++) A_own[row + i] = fr;   // front-u, constant along u
@@ -2155,8 +2150,12 @@ function goalWaveAt(t) {
   const lullV = Number.isFinite(cfg.A.lull) ? clamp(cfg.A.lull, 0, 12) : 0;
   const flat = floodHoldV + lullV;
   const reset = Number.isFinite(cfg.A.goalReset) ? clamp(cfg.A.goalReset, 0, 8) : FLOOD_RELAX_S;
-  const kick = Number.isFinite(cfg.A.goalPause) ? clamp(cfg.A.goalPause, 0, 6) : 0.4;  // KICKOFF HOLD at centre
-  const total = roll + flat + reset + kick;
+  const kick = Number.isFinite(cfg.A.goalPause) ? clamp(cfg.A.goalPause, 0, 6) : 0.4;  // KICKOFF HOLD at centre (within the drama-dwell)
+  const KICK_RELEASE_S = 1.1;   // ease cover→0 AFTER the drama-dwell ends (clock RESUMED): the front
+                                // then eases from centre into the LIVE post-goal front instead of
+                                // SNAPPING onto the FROZEN pre-goal attack value — that snap was the
+                                // phantom Norway-«выпад» that hung after every goal.
+  const total = roll + flat + reset + kick + KICK_RELEASE_S;
   if (elapsed < 0 || elapsed >= total) return null;
   // end E extreme front-u: home covers everything up to u=1 (E=1), away up to u=0 (E=0).
   const endE = g.team === 'home' ? 1.0 : 0.0;
@@ -2180,14 +2179,16 @@ function goalWaveAt(t) {
     const f = (elapsed - roll - flat) / reset; const e = f * f * (3 - 2 * f);
     front = lerp(endE, mid, e);
     cover = 1;
+  } else if (elapsed < roll + flat + reset + kick) {
+    // KICKOFF HOLD — the front RESTS at the centre (kickoff), cover FULL, through the rest of the
+    // drama-dwell (the clock is still frozen on the goal). A clean 50/50 — «позиции выровнялись».
+    front = mid; cover = 1;
   } else {
-    // KICKOFF HOLD — the front RESTS at the centre (kickoff). cover stays FULL for the first
-    // ~65% of the hold so the 50/50 is clearly SEEN, then eases to 0 over the tail, releasing
-    // the boundary back to the natural tide. So after a goal the field settles at CENTRE for a
-    // real beat, THEN normal play resumes — never a residual hump stranded in the opponent half.
-    const f = (elapsed - roll - flat - reset) / Math.max(0.1, kick);   // 0..1 through the hold
-    front = mid;
-    cover = f < 0.65 ? 1 : (1 - smoothstep(0.65, 1, f));
+    // KICKOFF RELEASE — the drama-dwell is OVER, the clock has RESUMED. Ease cover 1→0 so the front
+    // eases from centre into the LIVE post-goal front (now moving with resumed play), instead of
+    // snapping onto the FROZEN pre-goal attack value. Kills the phantom «выпад» that hung after each goal.
+    const f = (elapsed - roll - flat - reset - kick) / KICK_RELEASE_S; const e = f * f * (3 - 2 * f);
+    front = mid; cover = 1 - e;
   }
   return { team: g.team, front: clamp(front, 0, 1), cover: clamp(cover, 0, 1) };
 }
