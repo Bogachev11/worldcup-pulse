@@ -1756,10 +1756,16 @@ function buildAttackReach(t, gx, gy, band) {
   const win = eventsInWindow(t, winMin);
   const reach = REACH_SIGV * 3;
   const inv2sig2 = 1 / (2 * REACH_SIGV * REACH_SIGV);
+  // A GOAL ENDS the scoring team's attack — clear THEIR reach memory from BEFORE that goal, so the
+  // front doesn't stay stranded attack-deep in the opponent half after they score (this leftover
+  // reach was the phantom post-goal «выпад» toward the goal, hanging after every goal).
+  let lastGoalH = -Infinity, lastGoalA = -Infinity;
+  for (const g of (goalsByTime || [])) { if (g.t > t) break; if (g.team === 'home') lastGoalH = g.t; else if (g.team === 'away') lastGoalA = g.t; }
   for (let wi = 0; wi < win.length; wi++) {
     const e = win[wi];
     const isH = e.team === 'home';
     if (!isH && e.team !== 'away') continue;
+    if (e.t < (isH ? lastGoalH : lastGoalA)) continue;   // attack was before this team's latest goal → cleared
     // envelope in WALL time: gentle ease-in + medium decay (deterministic from t).
     const wall = wallSecondsSinceGoal(e.t, t);
     if (!Number.isFinite(wall) || wall < 0) continue;
@@ -3576,7 +3582,11 @@ function buildXgLabels() {
   for (const e of cand) { if (e.isGoal) continue; const h = halfOf(Number(e.minute) || 0); (byHalf[h] = byHalf[h] || []).push(e); }
   for (const h of Object.keys(byHalf)) {
     if (haveHalf.has(Number(h))) continue;
-    const top = byHalf[h].filter((e) => (Number(e.xg) || 0) > 0 && resolvePlayer(e))
+    // only promote a chance that ALSO produces a visible выпад — a DANGER shot (on-target/saved OR
+    // xg ≥ DANGER_XG). A weak OFF-target shot (e.g. Undav 5', xg 0.03) has NO peak/finger, so its
+    // name would float over nothing. Better no forced label than an unanchored one.
+    const top = byHalf[h].filter((e) => resolvePlayer(e)
+        && (e.type === 'SavedShot' || e.type === 'ShotOnPost' || (Number(e.xg) || 0) >= DANGER_XG))
       .sort((a, b) => (Number(b.xg) || 0) - (Number(a.xg) || 0))[0];
     if (top) pushLabel(top);
   }
