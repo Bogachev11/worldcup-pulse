@@ -91,7 +91,7 @@ let SEN_HEX = '#0c954e';   // away colour (fallback = Senegal green)
 // "where danger was created" hills) casts readable silhouette/shadow instead of reading
 // flat. (stage13's tuned view was pos [-17.33,16.41,15.40] / target [-0.62,1.83,0.27].)
 // This is a KNOB — retune freely; the ?dev camera panel + copy-camera still work.
-const DEFAULT_CAM = { pos: [-17.80, 15.27, 15.98], target: [-1.09, 0.69, 0.85] };
+const DEFAULT_CAM = { pos: [-12.27, 14.51, 12.95], target: [0.0, 0.35, 0.10] };
 function applyDefaultCamera() {
   camera.position.set(DEFAULT_CAM.pos[0], DEFAULT_CAM.pos[1], DEFAULT_CAM.pos[2]);
   controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
@@ -198,7 +198,7 @@ const DEFAULTS = () => ({
   //  opaque sheet tucks this far PAST the front under the other). cOWN..cALL =
   //  contributor on/off; wOWN..wALL = weights.
   A: {
-    on: true, open: false, atk: 0.46, rel: 2.3, grid: 0.78, height: 6.15,
+    on: true, open: false, atk: 0.46, rel: 2.3, grid: 0.78, height: 7.0,
     colour: 1.1, blur: 0.22, sharp: 1.0, floor: 0.0, lap: 0.005,
     // КРОМКА ▸ подъём — LIP HEIGHT (world-Y) of the fabric fold where the TOP
     // blanket laps OVER the under one at the seam. A SHORT, thin folded edge so the

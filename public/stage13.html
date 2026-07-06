@@ -263,6 +263,19 @@
     #hud13 .team--away .rail { background: var(--away-color);
       box-shadow: 0 0 10px color-mix(in srgb, var(--away-color) 55%, transparent); }
 
+    /* POST-MATCH STATS — revealed under each team's goals once the animation settles */
+    #hud13 .tstats { margin-top: 18px; display: none; flex-direction: column; gap: 8px;
+      min-width: 168px; opacity: 0; transition: opacity .8s ease; }
+    #hud13 .tstats.show { display: flex; opacity: 1; }
+    #hud13 .tstats .srow { display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+      border-top: 1px solid rgba(255,255,255,.14); padding-top: 7px; }
+    #hud13 .tstats .srow:first-child { border-top: none; padding-top: 0; }
+    /* text-shadow so the floating stats stay legible over the pitch (no plate) */
+    #hud13 .tstats .slab { font-family: var(--s13-grot); font-size: 10.5px; letter-spacing: .14em;
+      text-transform: uppercase; color: #c9c6dd; text-shadow: 0 1px 7px rgba(0,0,0,.9), 0 0 2px rgba(0,0,0,.95); }
+    #hud13 .tstats .sval { font-family: var(--s13-mono); font-size: 16px; color: #fff;
+      font-variant-numeric: tabular-nums; font-weight: 700; text-shadow: 0 1px 7px rgba(0,0,0,.9), 0 0 3px rgba(0,0,0,.95); }
+
     #hud13 .score { font-family: var(--s13-mono); font-weight: 700; font-size: 116px; line-height: .9;
       letter-spacing: -.02em; color: #fff; margin-top: 14px;
       font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
@@ -404,6 +417,8 @@
             <div class="rail"></div>
             <div class="score" id="hScore">0</div>
             <div class="events" id="hEvents"><!-- goals / red / shootout rows injected by updateEventBlocks() --></div>
+            <!-- post-match stats (revealed when the animation settles) -->
+            <div class="tstats" id="hStats"></div>
           </div>
           <!-- AWAY team -->
           <div class="team team--away">
@@ -411,6 +426,7 @@
             <div class="rail"></div>
             <div class="score" id="aScore">0</div>
             <div class="events" id="aEvents"><!-- goals / red / shootout rows injected by updateEventBlocks() --></div>
+            <div class="tstats" id="aStats"></div>
           </div>
         </div>
 

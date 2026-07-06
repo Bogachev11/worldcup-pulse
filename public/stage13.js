@@ -87,7 +87,7 @@ let FRA_HEX = '#387ef0';   // home colour (fallback = France blue)
 let SEN_HEX = '#0c954e';   // away colour (fallback = Senegal green)
 
 // baked-in default camera (STAGE12 — the user's tuned ortho ракурс)
-const DEFAULT_CAM = { pos: [-17.33, 16.41, 15.40], target: [-0.62, 1.83, 0.27] };
+const DEFAULT_CAM = { pos: [-17.80, 15.27, 15.98], target: [-1.09, 0.69, 0.85] };
 function applyDefaultCamera() {
   camera.position.set(DEFAULT_CAM.pos[0], DEFAULT_CAM.pos[1], DEFAULT_CAM.pos[2]);
   controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
@@ -183,6 +183,12 @@ const EVENT_LAG_S = 0.7;
 // TALLER (a flurry of chances = an emotional swing). Each shot counts the dangerous shots
 // (either team) in the preceding STREAK_WIN_MIN match-minutes → e._streakN; contribLift
 // multiplies the xG crest by 1 + streakK·min(streakN, STREAK_MAX).
+// DANGER FLOOD — a dangerous NON-goal shot briefly washes the WHOLE field toward the SHOOTING
+// team's colour (a soft mini-goal-flood), so the more dangerous side visibly «floods with its
+// colour» during its chances — NEVER a local island in the opponent's half (that was wrong).
+// In WALL seconds so it plays under the dramatic clock (scrub-safe). Strength ∝ xG × the knob.
+const DANGER_XG = 0.14;            // floods only for a real chance (goals excluded — they have their own flood)
+const DANGER_FLOOD_S = 1.7;        // wall-seconds life of the danger wash (rise → peak → recede)
 const STREAK_XG = 0.08;            // a shot counts toward a streak if xg ≥ this (goals always count)
 const STREAK_WIN_MIN = 6.0;        // look-back window (match-minutes) for the streak
 const STREAK_MAX = 4;              // cap the streak count so a chaotic spell doesn't tower absurdly
@@ -209,7 +215,7 @@ const DEFAULTS = () => ({
   //  opaque sheet tucks this far PAST the front under the other). cOWN..cALL =
   //  contributor on/off; wOWN..wALL = weights.
   A: {
-    on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 3.0,
+    on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 6.15,
     colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0, lap: 0.005,
     // КРОМКА ▸ подъём — LIP HEIGHT (world-Y) of the fabric fold where the TOP
     // blanket laps OVER the under one at the seam. A SHORT, thin folded edge so the
@@ -275,7 +281,7 @@ const DEFAULTS = () => ({
     // (~few seconds), so an unsustained foray recedes fast while a sustained attack
     // lets the SLOW territorial base catch up and consolidate. 0 = off (front stays
     // the smooth lateral tide). Default keeps counters clearly visible but not noisy.
-    thrust: 1.0,
+    thrust: 1.5,
     // ── TERRITORIAL DRAMA in the DRAMATIC CLOCK (A + a pinch of B) ───────────────
     // The dramatic warp used to slow ONLY for shots/goals, so a sharp forward
     // penetration (a «выпад» finger) that ends without a shot got ZERO room → the
@@ -301,6 +307,15 @@ const DEFAULTS = () => ({
     // shot's xG crest (consecutive chances build taller → the match's emotional swings).
     // 0 = off (each chance stands alone).
     streakK: 0.4,
+    // dangerPush — how hard a DANGEROUS shot pushes the TERRITORY (front) toward the attacked
+    // goal, so a side with the better CHANCES on the counter shows on the cloth even without
+    // the ball. Higher = counters/threat win the territory over tame possession. Fixes «теряем
+    // контратаки». 0 = danger doesn't move territory (possession-only).
+    dangerPush: 1.5,
+    // dangerFlood — a dangerous NON-goal shot briefly washes the WHOLE field toward the
+    // shooter's colour (soft mini-goal-flood), so the more dangerous side «пробивает всем
+    // цветом» during its chances (NOT a local island in the opponent's half). 0 = off.
+    dangerFlood: 0.7,
     // УГЛОВЫЕ (STAGE11) — corner-ripple layer. cCorner on/off; wCorner strength
     // (0..~2, ×CORNER_AMP). When cCorner is off there is NO corner ripple/tint at all.
     // Old cfgs without these keys default to on + the reduced strength (loads gracefully).
@@ -389,8 +404,11 @@ async function init() {
     if (rich && Array.isArray(rich.momentum)) momentum = rich.momentum
       .map((d) => ({ minute: Number(d.minute) || 0, v: Number(d.valueNorm) || 0 }))
       .filter((d) => Number.isFinite(d.minute));
+    // real ball-possession % (backfilled from FotMob into the rich record) for the post-match stats
+    if (rich && rich.possession && Number.isFinite(rich.possession.home)) matchPossession = rich.possession;
   } catch { momentum = []; }
   buildGoalMarkers();        // STAGE11 CHANGE #5 — persistent goal-token row (open-play/penalty)
+  buildMatchStats();         // aggregate post-match stats (shown after the animation settles)
 
   setupThree();
   buildCloth();
@@ -1604,7 +1622,12 @@ function buildThrustFingers(t, gx, gy, band) {
       fv = Number.isFinite(e.ev) ? e.ev : (Number.isFinite(e.v) ? e.v : 0.5);
       endU = isH ? hi : lo;                        // stab to the goal band
       const xg = clamp(e.xg || 0, 0, 1);
-      w = (0.7 + 2.6 * xg) * env * strength;       // a real chance = a strong tongue
+      // a DANGEROUS shot = a strong forward LUNGE (выпад) — the attacking colour tongues
+      // toward the goal band at that flank. Boosted (×~2) + scaled by dangerPush so a side
+      // with the better CHANCES visibly lunges into the opponent's half on its counters, even
+      // with less possession. This is how attacks/counters read: FRONT movement, not a flood.
+      const dPush = Number.isFinite(cfg.A.dangerPush) ? clamp(cfg.A.dangerPush, 0, 4) : 1;
+      w = (1.3 + 5.2 * xg) * (0.6 + 0.4 * dPush) * env * strength;
     } else {
       const fwd = isH ? (e.eu - e.u) : (e.u - e.eu);
       if (fwd < THRUST_MIN_FWD) continue;
@@ -1661,7 +1684,7 @@ function buildThrustFingers(t, gx, gy, band) {
 const REACH_MEM_S = 7.0;       // MEDIUM decay — territorial memory half-life in WALL seconds
 const REACH_ATK_S = 0.6;       // gentle ease-IN (wall seconds) so a reach push grows in, doesn't pop
 const REACH_SIGV = 0.13;       // lateral half-width in v (WIDER than a thrust finger — a phase, not a stab)
-const REACH_MAX_PULL = 0.34;   // max u-units the reach advances the front PAST the backbone (per side)
+const REACH_MAX_PULL = 0.42;   // max u-units the reach advances the front PAST the backbone (per side) — raised so a DANGER counter can overcome a possession-heavy backbone (see dangerPush)
 function buildAttackReach(t, gx, gy, band) {
   A_reachH.fill(0); A_reachA.fill(0); A_reachWH.fill(0); A_reachWA.fill(0);
   if (!timeline) return;
@@ -1696,11 +1719,15 @@ function buildAttackReach(t, gx, gy, band) {
     let fv = Number.isFinite(e.ev) ? e.ev : (Number.isFinite(e.v) ? e.v : 0.5);
     let endU, w = 0;
     if (e.kind === 'shot') {
-      // a shot = the team reached the goal. Depth = the goal band; weight ∝ xg (a real
-      // chance holds the territory harder) with a solid floor so even a low-xg shot pushes.
+      // a shot = the team reached the goal. Depth = the goal band; weight ∝ xg. DANGER now
+      // pushes the territory HARD (dangerPush): the piece kept reading "the possession team
+      // dominated" while the OTHER side had the better CHANCES on the counter — a few
+      // dangerous shots must out-push a volume of tame possession events, so territory
+      // reflects THREAT, not just who held the ball. Тут и жили потерянные контратаки.
       endU = isH ? hi : lo;
       const xg = clamp(e.xg || 0, 0, 1);
-      w = (0.85 + 1.6 * xg) * env;
+      const dangerPush = Number.isFinite(cfg.A.dangerPush) ? clamp(cfg.A.dangerPush, 0, 4) : 1;
+      w = (0.7 + 3.4 * xg) * dangerPush * env;
       fv = Number.isFinite(e.v) ? e.v : fv;             // shot spot flank
     } else if (e.type === 'CornerAwarded' && e.outcome === 'Successful') {
       // a won corner = deep at that flank/byline. Snap to the attacked goal band + the
@@ -2129,6 +2156,24 @@ function goalLullAt(t) {
   // RESET — recover the height as the front eases back to centre.
   const f = (elapsed - roll - flat) / reset;
   const s = f * f * (3 - 2 * f); return 1 - s;
+}
+
+// DANGER FLOOD — the newest dangerous non-goal shot ≤ t, within its wall life, returns the
+// {team, amt} of a soft FULL-FIELD colour wash toward the shooter (a partial uFlood override,
+// NOT a full goal flood — the territory still reads under it). Strength ∝ xG × cfg.A.dangerFlood.
+// Scrub-safe (deterministic from t via wallSecondsSinceGoal). Null when no wash is active.
+function dangerFloodAt(t) {
+  if (!dangerShots || !dangerShots.length) return null;
+  const strength = Number.isFinite(cfg.A.dangerFlood) ? clamp(cfg.A.dangerFlood, 0, 1) : 0;
+  if (strength <= 0) return null;
+  let g = null;
+  for (let i = 0; i < dangerShots.length; i++) { if (dangerShots[i].t <= t) g = dangerShots[i]; else break; }
+  if (!g) return null;
+  const w = wallSecondsSinceGoal(g.t, t);
+  if (!Number.isFinite(w) || w < 0 || w >= DANGER_FLOOD_S) return null;
+  const env = Math.pow(Math.sin(Math.PI * clamp(w / DANGER_FLOOD_S, 0, 1)), 0.7);   // 0→1→0
+  const amt = clamp(strength * env * clamp(g.xg / 0.4, 0.5, 1.5), 0, 0.95);
+  return { team: g.team, amt };
 }
 
 // ============================================================================
@@ -2736,6 +2781,8 @@ function computeField(t, dt) {
     bH.u.uFlood.value = amt; bA.u.uFlood.value = amt;
     bH.u.uFloodTeam.value.copy(_shootCol); bA.u.uFloodTeam.value.copy(_shootCol);
   } else {
+    // NORMAL PLAY — uFlood stays 0. Only a GOAL floods (via the front). Attacks/counters are
+    // shown by the FRONT MOVING in the plane (thrust fingers / attack reach), NOT a flood.
     bH.u.uFlood.value = 0; bA.u.uFlood.value = 0;
   }
   // НАХЛЁСТ ▸ глубина (u-units) → both blanket shaders (coverage cutoff + fold width).
@@ -3348,18 +3395,42 @@ function progressOfMatchT(t) {
 // ============================================================================
 let goalsByTime = [];
 let goalSpots = [];    // {t, team, u, v} — goal pitch spot, drives the pre-goal height crest (computeA)
+let dangerShots = [];  // {t, team, xg} — dangerous non-goal shots that briefly flood the field (dangerFloodAt)
 let cardEvents = [];   // {t, minute, team, red} — drawn as CARDS in the markers panel (drawMarkers)
 // STAGE11 CHANGE #5/#6 — persistent goal-token list (built in buildGoalMarkers) +
 // real per-minute momentum (fetched in init) for the pulse strip.
 let goalMarkers = [];  // {t, minute, team, pen} in match-time order, for the markers row
 let shotMarks = [];    // {minute, team, xg, isGoal} — xG/shot markers on the momentum pulse
 let momentum = [];     // [{minute, v}] valueNorm +home/−away, real data (rich record)
+let matchPossession = null;   // {home, away} ball-possession % (from the rich record)
+let matchStats = null;        // aggregated post-match stats {home:{...}, away:{...}} (buildMatchStats)
+// Aggregate the REAL post-match stats per team (xG, possession, shots, corners, cards) from
+// the timeline + cornersByTime + cardEvents + the rich possession. Shown after the animation
+// settles (drawStatsPanel). Real data only — nothing fabricated.
+function buildMatchStats() {
+  const blank = () => ({ xg: 0, shots: 0, corners: 0, cards: 0, poss: null });
+  const s = { home: blank(), away: blank() };
+  for (const e of (timeline || [])) {
+    if (e.kind !== 'shot') continue;
+    const t = e.team; if (t !== 'home' && t !== 'away') continue;
+    s[t].shots++; s[t].xg += Number(e.xg) || 0;
+  }
+  for (const c of (cornersByTime || [])) { if (s[c.team]) s[c.team].corners++; }
+  for (const c of (cardEvents || [])) { if (s[c.team]) s[c.team].cards++; }
+  if (matchPossession) { s.home.poss = matchPossession.home; s.away.poss = matchPossession.away; }
+  s.home.xg = +s.home.xg.toFixed(2); s.away.xg = +s.away.xg.toFixed(2);
+  matchStats = s;
+}
 function countGoals() {
   goalsByTime = timeline.filter((it) => it.kind === 'shot' && it.isGoal).map((g) => ({ t: g.t, team: g.team }));
   // EMOTIONAL-ESCALATION streak count — for every shot, how many DANGEROUS shots (either
   // team, xg ≥ STREAK_XG or a goal) fell in the preceding STREAK_WIN_MIN match-minutes. A
   // flurry of chances then reads TALLER (see contribLift). Deterministic from the timeline.
   {
+    // DANGER FLOOD source — dangerous NON-goal shots (goals flood via goalWaveAt). Newest ≤ t
+    // washes the whole field toward the shooter's colour (dangerFloodAt).
+    dangerShots = timeline.filter((it) => it.kind === 'shot' && !it.isGoal && (Number(it.xg) || 0) >= DANGER_XG)
+                          .map((s) => ({ t: s.t, team: s.team, xg: Number(s.xg) || 0 })).sort((a, b) => a.t - b.t);
     const danger = timeline.filter((it) => it.kind === 'shot' && ((Number(it.xg) || 0) >= STREAK_XG || it.isGoal))
                            .sort((a, b) => a.t - b.t);
     for (const e of timeline) {
@@ -3448,12 +3519,20 @@ function momentumAt(t) {
 // map the current clock to the nearest event's football minute. (The engine still runs on the
 // expanded clock — only the DISPLAY changes; period LABEL still uses the monotonic expanded t.)
 let _fmTable = null;
+let _fmMax = 0;   // max FOOTBALL minute reached — the honest ET signal (an ET match reaches ~120)
 function buildFootballMinuteTable() {
   _fmTable = (timeline || [])
     .filter((e) => Number.isFinite(e.t) && Number.isFinite(e.minute))
     .map((e) => ({ t: e.t, m: e.minute }))
     .sort((a, b) => a.t - b.t);
+  _fmMax = 0; for (const e of _fmTable) if (e.m > _fmMax) _fmMax = e.m;
 }
+// Did the match actually go to EXTRA TIME? Detect from the max FOOTBALL minute, NOT the
+// expanded engine duration — a 2nd half with heavy stoppage inflates the expanded duration
+// past 100 without any ET (e.g. Brazil-Norway topped out at 101' football = 90+11 stoppage,
+// NOT extra time). Real ET restarts and climbs to ~120, so a threshold of 106 cleanly
+// separates ET from even a long stoppage.
+function matchWentToET() { return _fmMax >= 106; }
 function footballMinuteAt(t) {
   if (!_fmTable || !_fmTable.length) return Math.floor(t);
   let lo = 0, hi = _fmTable.length - 1, ans = 0;
@@ -3481,7 +3560,7 @@ function updateHud() {
   const halfEl = el('clkHalf');
   if (halfEl) {
     const dur = teamMeta.duration || 90;
-    const isET = dur >= 100;   // match went to extra time (expanded-minute duration ≳ 2×ET)
+    const isET = matchWentToET();   // by FOOTBALL minutes, not expanded duration (stoppage ≠ ET)
     let lab;
     if (isET) {
       lab = mm >= dur - 1 ? 'Full Time' : mm >= 98 ? 'Extra Time' : mm >= 48 ? '2nd Half' : '1st Half';
@@ -3492,6 +3571,7 @@ function updateHud() {
   }
   // STAGE13 — per-team event rows (goals / red / shootout) from live data.
   updateEventBlocks(t);
+  drawStatsPanel(t);
   // the scrubber tracks WALL-PROGRESS through the 15s dramatic pass (not linear
   // match-minutes), so its position matches how long each moment holds on screen.
   if (document.activeElement !== el('clock')) el('clock').value = String(wallProgress * 100);
@@ -3560,6 +3640,31 @@ function updateEventBlocks(t) {
     const m = eventsMarkupFor('away', t);
     if (m !== _evSig.away) { aE.innerHTML = m; _evSig.away = m; }
   }
+}
+// POST-MATCH STATS panel — revealed under each team's goals once the match has SETTLED (the
+// animation is over; for a shootout match, once the shootout has fully resolved). Shows the
+// real per-team xG / possession / shots / corners / cards. Signature-diffed so it only writes
+// the DOM when the markup changes.
+let _statsSig = { home: '', away: '' };
+function drawStatsPanel(t) {
+  const hS = el('hStats'), aS = el('aStats');
+  if (!hS || !aS) return;
+  const midShoot = shootActive && shootoutOrder && shootoutOrder.length && (((shootoutSeq() || {}).reveal) || 0) < shootoutOrder.length;
+  const show = !!matchStats && settle > 0.55 && !midShoot;
+  hS.classList.toggle('show', show); aS.classList.toggle('show', show);
+  if (!show) return;
+  const mk = (team) => {
+    const s = matchStats[team]; if (!s) return '';
+    const rows = [];
+    if (s.poss != null) rows.push(['Владение', s.poss + '%']);
+    rows.push(['xG', (Number(s.xg) || 0).toFixed(2)]);
+    rows.push(['Удары', s.shots]);
+    rows.push(['Угловые', s.corners]);
+    rows.push(['Карточки', s.cards]);
+    return rows.map(([l, v]) => `<div class="srow"><span class="slab">${l}</span><span class="sval">${v}</span></div>`).join('');
+  };
+  const hm = mk('home'); if (hm !== _statsSig.home) { hS.innerHTML = hm; _statsSig.home = hm; }
+  const am = mk('away'); if (am !== _statsSig.away) { aS.innerHTML = am; _statsSig.away = am; }
 }
 function updateCamReadout() {
   if (!controls) return;
@@ -3737,7 +3842,7 @@ function drawPulse(t) {
   // EXTRA-TIME DIVIDER — NO minute numbers on the timeline (user-directed). Extra time is
   // marked by a SINGLE thin WHITE vertical line at 90' (the end of regular time), shown only
   // for matches that went to ET, and revealed once the playhead reaches it (never pre-announced).
-  if (dur > 100 && nowMin >= 90) {
+  if (matchWentToET() && nowMin >= 90) {
     const mx = xOf(90);
     plCtx.strokeStyle = 'rgba(255,255,255,0.6)';
     plCtx.lineWidth = 1 * dpr; plCtx.setLineDash([]);
@@ -3965,6 +4070,7 @@ const LAYER_DEFS = [
     { id: 'thrustHold', label: 'выпад ▸ живучесть', min: 0.5, max: 12, step: 0.1, fmt: (v) => v.toFixed(1) + ' с' },
     { id: 'xgImp', label: 'xG ▸ вес во времени', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2), rebuildClock: true },
     { id: 'streakK', label: 'xG ▸ эскалация серии', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'dangerPush', label: 'опасность ▸ двигает территорию', min: 0, max: 4, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'penImp', label: 'прорыв ▸ вес во времени', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2), rebuildClock: true },
     { id: 'penMin', label: 'прорыв ▸ порог (ниже=больше)', min: 0.02, max: 0.3, step: 0.01, fmt: (v) => v.toFixed(2), rebuildClock: true },
     { id: 'wCorner', label: 'угловые ▸ сила', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
