@@ -279,7 +279,7 @@ const DEFAULTS = () => ({
     // goalPause — a SMALL extra calm dwell AFTER the whole wave, on top of the auto goal
     //           room (which now tracks the real flood envelope so there's no dead time).
     //           Wall seconds.
-    goalPause: 0.5,
+    goalPause: 0.3,
     // ВЫПАД ▸ сила — THRUST FINGER strength. A FAST FORWARD pass by the attacking
     // team makes the colour front STAB FORWARD as a sharp, narrow FINGER of that
     // team's colour into the opponent half (in the PLANE of the blanket — the
@@ -1731,7 +1731,7 @@ function buildThrustFingers(t, gx, gy, band) {
 // FRACTION of that pass. A ~7s wall half-life is clearly MEDIUM (vs the ~3s thrust,
 // shorter than permanent) — a real attacking PHASE is held ~7s then recedes, without
 // smearing the whole 40s pass into one team's colour.
-const REACH_MEM_S = 7.0;       // MEDIUM decay — territorial memory half-life in WALL seconds
+const REACH_MEM_S = 4.0;       // territorial memory half-life (WALL sec) — was 7.0, but a counter's reach then HUNG deep long after the play had moved to the other end. Depth (REACH_MAX_PULL) unchanged; it just fades faster so a finger doesn't linger while the OTHER team is already attacking.
 const REACH_ATK_S = 0.6;       // gentle ease-IN (wall seconds) so a reach push grows in, doesn't pop
 const REACH_SIGV = 0.13;       // lateral half-width in v (WIDER than a thrust finger — a phase, not a stab)
 const REACH_MAX_PULL = 0.42;   // max u-units the reach advances the front PAST the backbone (per side) — raised so a DANGER counter can overcome a possession-heavy backbone (see dangerPush)
@@ -3556,8 +3556,9 @@ function buildXgLabels() {
     if (!player) {
       let best = null, bestD = 1e9;
       for (const rs of richShots) {
+        if (rs.team && e.team && rs.team !== e.team) continue;   // SAME team only — else a chance can borrow the opponent's name (Mbappé on a Paraguay chance)
         const dm = Math.abs((Number(rs.minute) || 0) - (Number(e.minute) || 0));
-        if (dm > 2) continue;
+        if (dm > 1.5) continue;
         const d = dm + Math.abs((Number(rs.xg) || 0) - (Number(e.xg) || 0)) * 3;
         if (d < bestD) { bestD = d; best = rs; }
       }
@@ -3719,6 +3720,7 @@ function buildGoalMarkers() {
     if (byOrder) return byOrder;
     let best = null, bestD = 1e9;
     for (const rs of richShots) {
+      if (rs.team && g.team && rs.team !== g.team) continue;   // same team only
       const dm = Math.abs((Number(rs.minute) || 0) - (Number(g.minute) || 0));
       if (dm > 2) continue;
       const d = dm + Math.abs((Number(rs.xg) || 0) - (Number(g.xg) || 0)) * 3;
@@ -3970,8 +3972,9 @@ function drawXgLabels(t) {
         }
       }
     } else {
-      // chance name — appears WITH the peak (age≥0), quick rise then decay with the crest.
-      if (age >= 0) env = Math.min(1, age / 0.25) * Math.exp(-Math.max(0, age - 0.25) / 0.9);
+      // chance name — appears WITH the peak (age≥0), quick rise then a SLOWER decay so the name is
+      // readable, not a flash (τ 0.9→1.7 match-min).
+      if (age >= 0) env = Math.min(1, age / 0.25) * Math.exp(-Math.max(0, age - 0.25) / 1.7);
     }
     if (env < 0.06) { if (d.style.opacity !== '0') d.style.opacity = '0'; continue; }
     _xgV3.set(worldX(L.u), 2.8, worldZ(L.v)).project(camera);   // peak spot, lifted a touch above the crest tip
