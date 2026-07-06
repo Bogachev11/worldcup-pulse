@@ -148,6 +148,7 @@ function buildOne(raw, rich) {
   // ordered SHOOTOUT result: one entry per kick (Goal = scored, else missed/saved).
   const shootout = events
     .filter((e) => e.shootout && SHOT_TYPES.has(e.type))
+    .sort((a, b) => a.t - b.t)                                    // CHRONOLOGICAL kick order (raw order isn't reliably t-sorted → the rings/sky-lean revealed in the wrong sequence)
     .map((e) => ({ team: e.team, scored: e.type === 'Goal' }));
 
   return {

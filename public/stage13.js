@@ -4316,6 +4316,13 @@ function bindGlobalUI() {
       const min = clamp(expandedOfFootballMinute(fMin), 0, teamMeta.duration || fMin);  // → EXPANDED clock
       resetSettle(); clock = min; wallProgress = clamp(progressOfMatchT(min), 0, 1);
       _dramaCursor = 0; _ballCursor = 0; playing = false; snapASmoothing();
+      // scrub to the very END of a penalty match → jump straight to the RESOLVED shootout (rings +
+      // winner sky) so it's visible without playing the whole match through. (Play still runs the
+      // full choreography.)
+      if (f >= 0.99 && shootoutOrder && shootoutOrder.length) {
+        clock = teamMeta.duration; wallProgress = 1; settle = 1; settling = false;
+        shootActive = true; shootWall = 999; shootoutRevealed = shootoutOrder.length;   // fully resolved (all kicks)
+      }
     };
     pw.addEventListener('pointerdown', (e) => { scrubbing = true; try { pw.setPointerCapture(e.pointerId); } catch (_) {} seekTo(e.clientX); });
     pw.addEventListener('pointermove', (e) => { if (scrubbing) seekTo(e.clientX); });
