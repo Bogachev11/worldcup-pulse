@@ -174,6 +174,21 @@ const FLOOD_RELAX_S = 1.8;      // RESET: front eases back to centre (kickoff)
 // seconds via wallSecondsSinceGoal so it is scrub-safe and warp-independent.)
 const EVENT_LAG_S = 0.7;
 
+// GOAL CREST — every goal MUST be preceded by a big height spike (rising danger), then
+// the flood. The per-shot xG spire (contribLift) is xG-scaled and appears only AT/AFTER
+// the shot, so a low-xG or own goal gets no visible build. This dedicated goal crest
+// BUILDS over GOAL_CREST_LEAD_MIN match-minutes BEFORE the goal, peaks AT the goal
+// instant, then decays — a guaranteed tall spire regardless of the shot's recorded xG.
+// EMOTIONAL ESCALATION — dangerous moments in quick succession build tension and read
+// TALLER (a flurry of chances = an emotional swing). Each shot counts the dangerous shots
+// (either team) in the preceding STREAK_WIN_MIN match-minutes → e._streakN; contribLift
+// multiplies the xG crest by 1 + streakK·min(streakN, STREAK_MAX).
+const STREAK_XG = 0.08;            // a shot counts toward a streak if xg ≥ this (goals always count)
+const STREAK_WIN_MIN = 6.0;        // look-back window (match-minutes) for the streak
+const STREAK_MAX = 4;              // cap the streak count so a chaotic spell doesn't tower absurdly
+const GOAL_CREST_LEAD_S = 0.5;     // WALL-seconds of pre-goal build — a short RISE that peaks AT the goal
+const GOAL_CREST_DECAY_S = 1.4;    // WALL-seconds decay τ AFTER the hold. Magnitude is now the cfg.A.goalH slider (per-team A_gH/A_gA grid), independent of the xG spire.
+
 // ============================================================================
 // CONFIG — every layer's enable flag + its own knobs. This whole object is what
 // gets serialised to the URL hash / COPY CONFIG and restored from a preset.
@@ -184,7 +199,7 @@ const DEFAULTS = () => ({
   speed: 1.0,
   // SHOOTOUT choreography timing (post-match penalties) — adjustable in the left panel:
   // pause0 = seconds of stillness after the match before the 1st kick; gap = seconds between kicks.
-  shoot: { pause0: 2.4, gap: 1.7 },
+  shoot: { pause0: 0.8, gap: 1.7 },   // pause0 = stillness after full time before the 1st kick — kept SHORT (was 2.4) so the shootout starts promptly
   // A · TWO TEAM BLANKETS (одеяла) — one cloth per team, meeting at an
   //  activity-shaped front with a small НАХЛЁСТ overlap. Height per team = amplitude
   //  · Σ ENABLED contributors through the asymmetric atk/rel envelope on the grid.
@@ -234,6 +249,22 @@ const DEFAULTS = () => ({
     // normal play resumes. Coordinated with the dramatic clock so the goal beat
     // gets its room. 0 = no post-goal lull (old behaviour).
     lull: 1.2,
+    // ── GOAL CREST + POST-GOAL TIMING (all adjustable in the panel) ──────────────
+    // goalH   — HEIGHT of the dedicated goal spire, SEPARATE from the xG spire (xgH).
+    //           Rendered from its OWN grid (A_gH/A_gA) so a goal can tower above or sit
+    //           below the xG peaks independently. World-Y units.
+    goalH: 4.5,
+    // goalHold — hold the goal spire AT ITS PEAK for this many WALL seconds before it
+    //           decays (rise → HOLD → decay). Rendered outside the lull-flatten so the
+    //           held peak isn't pressed down by the post-goal штиль.
+    goalHold: 0.4,
+    // goalReset — the front's ROLLBACK-to-centre duration after the flood (was the hard
+    //           FLOOD_RELAX_S). Wall seconds.
+    goalReset: 1.8,
+    // goalPause — a SMALL extra calm dwell AFTER the whole wave, on top of the auto goal
+    //           room (which now tracks the real flood envelope so there's no dead time).
+    //           Wall seconds.
+    goalPause: 0.4,
     // ВЫПАД ▸ сила — THRUST FINGER strength. A FAST FORWARD pass by the attacking
     // team makes the colour front STAB FORWARD as a sharp, narrow FINGER of that
     // team's colour into the opponent half (in the PLANE of the blanket — the
@@ -245,6 +276,31 @@ const DEFAULTS = () => ({
     // lets the SLOW territorial base catch up and consolidate. 0 = off (front stays
     // the smooth lateral tide). Default keeps counters clearly visible but not noisy.
     thrust: 1.0,
+    // ── TERRITORIAL DRAMA in the DRAMATIC CLOCK (A + a pinch of B) ───────────────
+    // The dramatic warp used to slow ONLY for shots/goals, so a sharp forward
+    // penetration (a «выпад» finger) that ends without a shot got ZERO room → the
+    // clock raced past it and the transient finger was smeared away. These feed the
+    // SAME penetration signal the finger uses into the importance curve I(t), so the
+    // clock lingers a beat wherever a real deep thrust happens (verifiable structure,
+    // not decoration — the core of the piece).
+    // penImp — how much dramatic ROOM a penetration earns (0 = old behaviour, off).
+    penImp: 1.0,
+    // penMin — min forward gain (u-units) for a pass to COUNT as a penetration. LOWER
+    // = more thrusts qualify (the «побольше» dial); HIGHER = only the deepest.
+    penMin: 0.10,
+    // thrustHold — (pinch of B) the finger's HALF-LIFE in wall-seconds. LONGER = the
+    // finger lingers and survives fast playback instead of being averaged out.
+    thrustHold: 4.0,
+    // xgImp — how strongly a SHOT'S xG dilates the dramatic clock. The xG spire is a
+    // tall peak that gets SMEARED on fast playback unless the clock lingers on it. The
+    // importance is now STEEPLY xG-weighted (low base, steep xG term) so a DANGEROUS
+    // chance earns real room and its spire plays out, while a positional/fruitless shot
+    // barely slows the clock — the piece distinguishes danger from possession. 0 = flat.
+    xgImp: 1.0,
+    // streakK — EMOTIONAL ESCALATION: how much a RUN of dangerous moments amplifies each
+    // shot's xG crest (consecutive chances build taller → the match's emotional swings).
+    // 0 = off (each chance stands alone).
+    streakK: 0.4,
     // УГЛОВЫЕ (STAGE11) — corner-ripple layer. cCorner on/off; wCorner strength
     // (0..~2, ×CORNER_AMP). When cCorner is off there is NO corner ripple/tint at all.
     // Old cfgs without these keys default to on + the reduced strength (loads gracefully).
@@ -539,7 +595,24 @@ function paintSky(lean, tintCol, flash) {
 // t (scrub-safe); the ease + flash decay are dt-smoothed (snap on scrub via dt=Inf).
 function updateSky(t, dt) {
   const sc = scoreAt(t);
-  const margin = sc.home - sc.away;                  // + = home leads
+  let margin = sc.home - sc.away;                     // + = home leads
+  // SHOOTOUT SKY — regulation is tied, so the advantage comes from the shootout. CRUCIAL
+  // (user rule): advantage arises PER PAIR, not per kick — a lone scored penalty gives NO
+  // advantage until its pair (the opponent's reply) is taken. So we count scored kicks only
+  // over COMPLETE PAIRS (kicks 2i, 2i+1): a pair where both score (or both miss) is even; a
+  // pair where one scores and the other misses swings the lead. The sky leans by that net,
+  // and only updates when a pair completes — so the winner's colour washes the sky at the end.
+  if (shootActive && shootoutOrder && shootoutOrder.length) {
+    const sq = shootoutSeq();
+    const rev = sq ? sq.reveal : 0;
+    const nPairs = Math.floor(rev / 2);                // completed home+away pairs
+    let hs = 0, as = 0;
+    for (let k = 0; k < nPairs * 2 && k < shootoutOrder.length; k++) {
+      const kk = shootoutOrder[k];
+      if (kk && kk.scored) { if (kk.team === 'home') hs++; else if (kk.team === 'away') as++; }
+    }
+    if (hs !== as) margin = (hs > as ? 1 : -1) * 3;    // net of decisive PAIRS → the shootout leader
+  }
   // lean magnitude grows with margin but saturates (a 3-goal lead isn't 3× a 1-goal
   // lead visually) — sqrt-ish curve, capped at 1.
   const mag = clamp(Math.abs(margin) / 2, 0, 1);
@@ -1233,10 +1306,12 @@ function gridDims(t01, minC, maxC) {
 // contributors, the focus-hill body) + per-team xG crest grids (xH/xA).
 let A_gx = 0, A_gy = 0, A_hH = null, A_hA = null;
 let A_xH = null, A_xA = null;     // xG SHARP crests (kept separate so they stay tall)
+let A_gH = null, A_gA = null;     // GOAL crests (own grid → height independent of xG's xgH)
 // temporally-SMOOTHED copies of the per-team height/crest grids. Each frame the
 // freshly computed grids are lerped INTO these (see smoothA), and rendering reads
 // from these — so the surface + colour edges glide instead of twitching.
 let A_shH = null, A_shA = null, A_sxH = null, A_sxA = null;
+let A_sgH = null, A_sgA = null;    // temporally-smoothed GOAL crest grids
 let A_own = null, A_sown = null;   // ownership (0..1 home share) sampled by the partition
 // POSSESSION TIDE front (stage5 feel): per lateral CHANNEL (one value per grid
 // row v) the recent BALL depth in u. home owns u<front, away owns u>front, so the
@@ -1267,8 +1342,10 @@ function ensureA(gx, gy) {
   A_gx = gx; A_gy = gy; const n = gx * gy;
   A_hH = new Float32Array(n); A_hA = new Float32Array(n);
   A_xH = new Float32Array(n); A_xA = new Float32Array(n);
+  A_gH = new Float32Array(n); A_gA = new Float32Array(n);
   A_shH = new Float32Array(n); A_shA = new Float32Array(n);
   A_sxH = new Float32Array(n); A_sxA = new Float32Array(n);
+  A_sgH = new Float32Array(n); A_sgA = new Float32Array(n);
   A_own = new Float32Array(n);          // 0..1 home share per cell (1 = home owns)
   A_sown = new Float32Array(n);         // sampled by the partition
   A_frontRaw = new Float32Array(gy);    // per-channel target front (this frame)
@@ -1297,6 +1374,8 @@ function smoothA(k) {
     A_shA[i] += (A_hA[i] - A_shA[i]) * kk;
     A_sxH[i] += (A_xH[i] - A_sxH[i]) * kk;
     A_sxA[i] += (A_xA[i] - A_sxA[i]) * kk;
+    A_sgH[i] += (A_gH[i] - A_sgH[i]) * kk;
+    A_sgA[i] += (A_gA[i] - A_sgA[i]) * kk;
   }
 }
 
@@ -1481,7 +1560,8 @@ function buildThrustFingers(t, gx, gy, band) {
   if (strength <= 0) return;
   // decay constant from half-life; attack τ for the fast rise. Window a few
   // half-lives so a faded finger drops out cheaply.
-  const relS = THRUST_HALF_S / Math.LN2;
+  const halfS = Number.isFinite(cfg.A.thrustHold) ? clamp(cfg.A.thrustHold, 0.5, 12) : THRUST_HALF_S;
+  const relS = halfS / Math.LN2;
   // work in CLOCK match-minutes for the event window (timeline.t is match-minutes),
   // but the thrust time constants are authored in SECONDS of wall time → convert via
   // the playback rate (minutes advanced per second) so the finger life is in wall
@@ -1693,7 +1773,12 @@ function contribLift(e) {
     // get the spire only. The spire stands exactly at the shot's pitch spot and fades
     // a couple seconds after (arWeight decay).
     const xg = clamp(e.xg || 0, 0, 1);
-    sharp += A.wXg * (1.0 + 4.5 * xg);
+    // EMOTIONAL ESCALATION — a run of dangerous moments close together builds tension, so
+    // each shot in a streak rises TALLER than a lone chance. e._streakN (preceding dangerous
+    // shots in a short window) is precomputed in countGoals; streakK scales the boost live.
+    const streakK = Number.isFinite(A.streakK) ? clamp(A.streakK, 0, 2) : 0;
+    const streakMul = 1 + streakK * Math.min(e._streakN || 0, STREAK_MAX);
+    sharp += A.wXg * (1.0 + 4.5 * xg) * streakMul;
   }
   return { lift, sharp };
 }
@@ -1707,7 +1792,7 @@ function computeA(t, dt) {
   // coarse → fine. grid 0 = ~14 cells long, grid 1 = ~34.
   const { gx, gy } = gridDims(cfg.A.grid, 14, 34);
   ensureA(gx, gy);
-  A_hH.fill(0); A_hA.fill(0); A_xH.fill(0); A_xA.fill(0);
+  A_hH.fill(0); A_hA.fill(0); A_xH.fill(0); A_xA.fill(0); A_gH.fill(0); A_gA.fill(0);
   // base radius from detail; smoothing (blur) widens the swells; the xG crest uses
   // a much tighter radius so the chance reads as a sharp spire, not a swell.
   const radCells = lerp(2.6, 1.4, clamp(cfg.A.grid, 0, 1)) * lerp(0.6, 2.2, clamp(cfg.A.blur, 0, 1));
@@ -1738,6 +1823,25 @@ function computeA(t, dt) {
       // xG crest: tall, tight, kept separate so the chance reads as a spire.
       stamp(Xgrid, gx, gy, e.u, e.v, sharp * env, sharpRad);
     }
+  }
+  // GOAL CREST — a guaranteed spire per goal on its OWN grid (A_gH/A_gA), height applied at
+  // render time from cfg.A.goalH (SEPARATE from the xG spire's xgH). Timing is in WALL seconds
+  // (scrub-safe via wallSecondsSinceGoal, same basis as the flood phases): a short RISE that
+  // PEAKS at the goal, a HOLD at the peak for cfg.A.goalHold wall-seconds («держать пик»),
+  // then a decay. Independent of the shot's recorded xG so low-xG / own goals still read as
+  // rising danger → GOAL → flood. env is 0..1 (magnitude comes from goalH in the vertex loop).
+  const gLead = GOAL_CREST_LEAD_S;
+  const gHold = Number.isFinite(cfg.A.goalHold) ? clamp(cfg.A.goalHold, 0, 6) : 0.4;
+  for (const g of goalSpots) {
+    const w = wallSecondsSinceGoal(g.t, t);              // wall-seconds since goal (<0 before)
+    if (!Number.isFinite(w) || w < -gLead) continue;     // not building yet
+    let env;
+    if (w < 0) { const f = (w + gLead) / gLead; env = f * f * (3 - 2 * f); }   // RISE → peak at goal
+    else if (w < gHold) env = 1;                                               // HOLD at peak
+    else env = Math.exp(-(w - gHold) / GOAL_CREST_DECAY_S);                    // decay
+    if (env < 0.02) continue;
+    const Ggrid = g.team === 'home' ? A_gH : A_gA;
+    stamp(Ggrid, gx, gy, g.u, g.v, env, sharpRad);
   }
   // glide the HEIGHT/hill grids (presence + xG crest) toward this frame's fields
   // with the frame-rate-independent dt filter (tau = TAU_GRID). dt = Infinity on
@@ -1931,8 +2035,13 @@ function goalWaveAt(t) {
   const elapsed = wallSecondsSinceGoal(g.t, t);
   if (!Number.isFinite(elapsed)) return null;
   const roll = FLOOD_SWEEP_S;
-  const flat = Number.isFinite(cfg.A.floodHold) ? clamp(cfg.A.floodHold, 0, 12) : FLOOD_HOLD_DEFAULT_S;
-  const reset = FLOOD_RELAX_S;
+  // FLATTEN/HOLD phase = «держать заливку» (floodHold) + «пауза-штиль» (lull). Wiring
+  // cfg.A.lull here makes the штиль knob live: the flood colour holds at the conceded end
+  // AND the relief stays flat for floodHold+lull wall-seconds before the front resets.
+  const floodHoldV = Number.isFinite(cfg.A.floodHold) ? clamp(cfg.A.floodHold, 0, 12) : FLOOD_HOLD_DEFAULT_S;
+  const lullV = Number.isFinite(cfg.A.lull) ? clamp(cfg.A.lull, 0, 12) : 0;
+  const flat = floodHoldV + lullV;
+  const reset = Number.isFinite(cfg.A.goalReset) ? clamp(cfg.A.goalReset, 0, 8) : FLOOD_RELAX_S;
   const total = roll + flat + reset;
   if (elapsed < 0 || elapsed >= total) return null;
   // end E extreme front-u: home covers everything up to u=1 (E=1), away up to u=0 (E=0).
@@ -1996,8 +2105,13 @@ function goalLullAt(t) {
   }
   if (!g) return 0;
   const roll = FLOOD_SWEEP_S;
-  const flat = Number.isFinite(cfg.A.floodHold) ? clamp(cfg.A.floodHold, 0, 12) : FLOOD_HOLD_DEFAULT_S;
-  const reset = FLOOD_RELAX_S;
+  // FLATTEN/HOLD phase = «держать заливку» (floodHold) + «пауза-штиль» (lull). Wiring
+  // cfg.A.lull here makes the штиль knob live: the flood colour holds at the conceded end
+  // AND the relief stays flat for floodHold+lull wall-seconds before the front resets.
+  const floodHoldV = Number.isFinite(cfg.A.floodHold) ? clamp(cfg.A.floodHold, 0, 12) : FLOOD_HOLD_DEFAULT_S;
+  const lullV = Number.isFinite(cfg.A.lull) ? clamp(cfg.A.lull, 0, 12) : 0;
+  const flat = floodHoldV + lullV;
+  const reset = Number.isFinite(cfg.A.goalReset) ? clamp(cfg.A.goalReset, 0, 8) : FLOOD_RELAX_S;
   const elapsed = wallSecondsSinceGoal(g.t, t);
   if (!Number.isFinite(elapsed)) return 0;
   const total = roll + flat + reset;
@@ -2141,7 +2255,20 @@ function penaltyWavesAt(t) {
 // ============================================================================
 const SHOOT_WAVE_S = 0.85;     // spot→goal wave duration per kick
 const SHOOT_FLOOD_S = 1.25;    // flood dwell on a SCORED kick
-const SHOOT_SPOT_U = 0.885;    // penalty spot (~12yd) — both teams kick at the u→1 goal
+const SHOOT_SPOT_U = 0.885;    // penalty spot (~12yd) — home kicks at u→1, away at u→0
+// REDESIGN (user-directed): the shootout field is a DARK NEUTRAL stage (no team split).
+// Each kick RISES a HILL in the kicker's colour at the spot — SCORED = tall hill + the
+// WHOLE field floods that colour; MISSED = a small hill, no flood. The dark base + the
+// flood are both driven through uFlood (uFloodTeam = dark ↔ kicker); the coloured hill
+// is a local height bump + tint (survives the dark wash because the tint is applied AFTER
+// uFlood in the blanket shader). Dots (○ scored / ● miss) unchanged.
+const SHOOT_DARK_COL = new THREE.Color(0x0a0c14);  // neutral dark base wash colour
+const SHOOT_DARK_AMT = 0.98;   // uFlood strength at the dark base — near-full wash so no team territory bleeds through (cloth weave still reads via lighting/normals)
+const SHOOT_HILL_BIG = 3.4;    // world-Y peak of a SCORED kick's hill
+const SHOOT_HILL_SMALL = 1.1;  // world-Y peak of a MISSED kick's hill
+const SHOOT_HILL_SIGU = 0.15;  // hill radius along u (pitch length)
+const SHOOT_HILL_SIGV = 0.15;  // hill radius along v (pitch width)
+const _shootCol = new THREE.Color();   // scratch for the dark↔kicker flood blend
 function shootTiming() {
   const s = (cfg && cfg.shoot) || {};
   return { pause0: clamp(Number(s.pause0) || 2.4, 0, 12), gap: clamp(Number(s.gap) || 1.7, 0.4, 8) };
@@ -2194,6 +2321,25 @@ function shootoutPenPulse() {
   // goal (spot 0.115, dir −1). The wave rolls from the spot toward that goal.
   const home = seq.kick.team === 'home';
   return { u: home ? SHOOT_SPOT_U : 1 - SHOOT_SPOT_U, v: 0.5, team: seq.kick.team, dir: home ? 1 : -1, f, env, scored: seq.kick.scored };
+}
+// KICK HILL (REDESIGN) — the current kick RISES a hill in the kicker's colour at the spot.
+// Envelope in wall-seconds (seq.tIn): rise → HOLD → recede. SCORED hills are TALL and hold
+// longer (the moment before the flood); MISSED hills are SMALL and short. Returns
+// {u, v, team, h (world-Y peak × envelope), tint (0..1), scored} or null between kicks.
+function shootHillAt() {
+  const seq = shootoutSeq();
+  if (!seq || !seq.kick || seq.tIn < 0) return null;
+  const kick = seq.kick;
+  const rise = 0.35, hold = kick.scored ? 1.05 : 0.55, fall = 0.8;
+  const s = seq.tIn;
+  if (s >= rise + hold + fall) return null;
+  let env;
+  if (s < rise) { const f = s / rise; env = f * f * (3 - 2 * f); }
+  else if (s < rise + hold) env = 1;
+  else { const f = (s - rise - hold) / fall; env = 1 - f * f * (3 - 2 * f); }
+  const home = kick.team === 'home';
+  const peak = kick.scored ? SHOOT_HILL_BIG : SHOOT_HILL_SMALL;
+  return { u: home ? SHOOT_SPOT_U : 1 - SHOOT_SPOT_U, v: 0.5, team: kick.team, h: peak * env, tint: env, scored: kick.scored };
 }
 
 // bilinear sample a grid at normalized (u,v) (v already flipped by caller convention)
@@ -2280,6 +2426,7 @@ function computeField(t, dt) {
   const ph = (typeof performance !== 'undefined' ? performance.now() : Date.now()) * 0.00011;
   const amp = clamp(cfg.A.height, 0, 8);
   const xgH = Number.isFinite(cfg.A.xgH) ? clamp(cfg.A.xgH, 0, 4) : 1;   // xG spire height (independent of amp)
+  const goalK = Number.isFinite(cfg.A.goalH) ? clamp(cfg.A.goalH, 0, 12) : 4.5;  // GOAL spire height (independent of xgH)
   // TERRITORY LIES FLAT. The old uniform base body raised EVERY covered cell, so
   // a team whose coverage spanned multiple zones (e.g. both wings) showed several
   // detached raised domes. The base is now ~0 — covered-but-quiet zones stay flat
@@ -2329,8 +2476,14 @@ function computeField(t, dt) {
   // (old cfgs without cCorner default to on via DEFAULTS). When off: no ripple, no tint.
   const cornersOn = cfg.A.on && (cfg.A.cCorner !== false);
   const cornerWaves = cornersOn ? cornerWavesAt(t) : [];
-  const penWaves = aOn ? penaltyWavesAt(t) : [];    // penalty pulses always show when Layer A is on
-  if (aOn && shootActive) { const sp = shootoutPenPulse(); if (sp) penWaves.push(sp); }   // shootout kick wave
+  const penWaves = aOn ? penaltyWavesAt(t) : [];    // in-match penalty pulses (NOT the shootout)
+  // SHOOTOUT KICK HILL — the current kick's coloured hill (redesign, replaces the old
+  // neutral spot→goal pulse). Precompute its centre + inverse sigmas so the vertex loop
+  // just evaluates a gaussian bump. Height goes to BOTH sheets; tint (kicker colour, via
+  // uCornerCol below) is written into cData so it survives the dark base wash.
+  const shHill = (aOn && shootActive) ? shootHillAt() : null;
+  const shInvU = 1 / (2 * SHOOT_HILL_SIGU * SHOOT_HILL_SIGU);
+  const shInvV = 1 / (2 * SHOOT_HILL_SIGV * SHOOT_HILL_SIGV);
   const cwAspect = WORLD_Z / WORLD_X;                 // v-distance weight so rings are round
   let cornerColHome = false;                          // whether the dominant live corner is home's
   if (cornerWaves.length) {
@@ -2429,6 +2582,8 @@ function computeField(t, dt) {
         // is NO spire, only the gentle mounds below.
         const xH = sampleGrid(A_sxH, A_gx, A_gy, u, v);
         const xA = sampleGrid(A_sxA, A_gx, A_gy, u, v);
+        const gCrH = sampleGrid(A_sgH, A_gx, A_gy, u, v);   // GOAL crest (own grid)
+        const gCrA = sampleGrid(A_sgA, A_gx, A_gy, u, v);
         // GENTLE-MOUND mask for the general (non-shot) relief. The old code used the
         // focus mask to concentrate a TALL hill at the ball locus — that spurious
         // peak (where no shot was) is exactly what the user disliked. We now KEEP the
@@ -2486,9 +2641,16 @@ function computeField(t, dt) {
         // AMPLITUDE CEILING — a high-xG crest (or two overlapping shots that stack) could
         // otherwise tower absurdly into a monstrous spire (the user's "what IS this?" spike).
         // Lowered 8 → 4.5 so a shot still reads as a clear RISE but never a monster.
-        let reliefH = (rH * 0.5 * amp * moundMask * notch + xH * crestK * fmCrest * crestNotch) * reliefMul;
-        let reliefA = (rA * 0.5 * amp * moundMask * notch + xA * crestK * fmCrest * crestNotch) * reliefMul;
-        reliefH = Math.min(reliefH, 4.5); reliefA = Math.min(reliefA, 4.5);
+        // MOUNDS are capped LOW (tame swells); the xG SPIRE + GOAL crest are then added ON
+        // TOP so danger clearly TOWERS above the terrain (fixes «не вижу усиление xG»: before,
+        // the xG crest shared the mound's 4.5 cap so a busy area swallowed it). Total capped
+        // higher so a real chance reads as a distinct rise, streaks even taller (contribLift).
+        let moundH = (rH * 0.5 * amp * moundMask * notch) * reliefMul;
+        let moundA = (rA * 0.5 * amp * moundMask * notch) * reliefMul;
+        moundH = Math.min(moundH, 4.0); moundA = Math.min(moundA, 4.0);
+        let reliefH = moundH + (xH * crestK * fmCrest * crestNotch) * reliefMul + gCrH * goalK * crestNotch;
+        let reliefA = moundA + (xA * crestK * fmCrest * crestNotch) * reliefMul + gCrA * goalK * crestNotch;
+        reliefH = Math.min(reliefH, 7.5); reliefA = Math.min(reliefA, 7.5);
         // PER-TEAM RELIEF — each blanket carries its OWN (notched-at-seam) height, so
         // the two sheets are TWO DISTINCT surfaces; the visible LAP is the TOP sheet's
         // short lip fold (vertex shader), never a merged plane.
@@ -2510,6 +2672,15 @@ function computeField(t, dt) {
           if (homeIsTop) { const cap = hH - margin; if (hA > cap) hA = lerp(hA, cap, near); }
           else           { const cap = hA - margin; if (hH > cap) hH = lerp(hH, cap, near); }
         }
+      }
+      // SHOOTOUT KICK HILL — a gaussian rise in the kicker's colour at the spot (added to
+      // BOTH sheets so it stands on the dark neutral base). Its tint feeds the same cData
+      // channel (uCornerCol = kicker colour during the shootout), applied AFTER uFlood in
+      // the shader so the coloured hill shows on top of the dark wash.
+      if (shHill) {
+        const dU = u - shHill.u, dV = v - shHill.v;
+        const g = Math.exp(-(dU * dU) * shInvU - (dV * dV) * shInvV);
+        if (g > 0.01) { hH += shHill.h * g; hA += shHill.h * g; const tt = shHill.tint * g; if (tt > cwTint) cwTint = tt; }
       }
       // CORNER WAVE — add the radial ripple to BOTH sheets' height (a transient surface
       // ripple, added AFTER the seam clamp so it isn't flattened), and write the crest
@@ -2553,7 +2724,20 @@ function computeField(t, dt) {
   // colour override. So uFlood stays 0: the scorer's colour covers the conceded side
   // through the ordinary coverage/front mechanic (the seam sweeps to end E), not a flat
   // blend. uFloodTeam is left harmless. (The shader uFlood path is thus inert here.)
-  bH.u.uFlood.value = 0; bA.u.uFlood.value = 0;
+  // In normal play uFlood stays 0 (the goal flood rolls via the FRONT, not this uniform).
+  // During the SHOOTOUT it drives the whole redesign: a DARK NEUTRAL base wash, and on a
+  // SCORED kick (or the finale) the wash colour eases to the kicker's/winner's colour and
+  // the strength to full — the whole field floods that colour. A MISS keeps the dark base.
+  if (shootActive) {
+    const sw = shootoutWaveAt();                 // {team, cover} on a scored flood / finale, else null
+    let amt = SHOOT_DARK_AMT;
+    _shootCol.copy(SHOOT_DARK_COL);
+    if (sw) { const c = clamp(sw.cover, 0, 1); amt = lerp(SHOOT_DARK_AMT, 1, c); _shootCol.lerp(teamColor(sw.team), c); }
+    bH.u.uFlood.value = amt; bA.u.uFlood.value = amt;
+    bH.u.uFloodTeam.value.copy(_shootCol); bA.u.uFloodTeam.value.copy(_shootCol);
+  } else {
+    bH.u.uFlood.value = 0; bA.u.uFlood.value = 0;
+  }
   // НАХЛЁСТ ▸ глубина (u-units) → both blanket shaders (coverage cutoff + fold width).
   bH.u.uLap.value = lap; bA.u.uLap.value = lap;
   // КРОМКА ▸ подъём — the VISIBLE lip height by which the TOP sheet laps over the
@@ -2594,7 +2778,9 @@ function computeField(t, dt) {
   // NEUTRAL set-piece crest — corners AND penalties tint toward pitch-line white, never the
   // taking team's colour (a set piece is a THREAT, not owned territory; only a goal floods a
   // colour). Same uniform for both since they share the crest channel.
-  const cwCol = SETPIECE_COL;
+  // Set-piece crest colour = neutral pitch-line white in normal play; during the SHOOTOUT
+  // the shared crest/tint channel carries the KICK HILL, so it takes the KICKER's colour.
+  const cwCol = (shootActive && shHill) ? teamColor(shHill.team) : SETPIECE_COL;
   bH.u.uCornerCol.value.copy(cwCol); bA.u.uCornerCol.value.copy(cwCol);
   bH.cTex.needsUpdate = true; bA.cTex.needsUpdate = true;
   bH.hTex.needsUpdate = true; bH.aTex.needsUpdate = true;
@@ -2811,6 +2997,15 @@ window.__frontStats = () => {
   if (A_frontRaw) for (let j = 0; j < A_frontRaw.length; j++) { const v = A_frontRaw[j]; if (v < rmn) rmn = v; if (v > rmx) rmx = v; rs += v; }
   return { clock: +clock.toFixed(2), mean: +(s / A_frontDisp.length).toFixed(3), min: +mn.toFixed(3), max: +mx.toFixed(3), mom: +momentumAt(clock).toFixed(3), momFront: +_dbgMomFront.toFixed(3), ballMean: +_dbgBallMean.toFixed(3), rawMean: A_frontRaw ? +(rs / A_frontRaw.length).toFixed(3) : null, rawMin: +rmn.toFixed(3), rawMax: +rmx.toFixed(3) };
 };
+// dev/verification hook — DWELL of the dramatic clock at a match-minute: screen-seconds
+// spent on a ±half-minute window around t (higher = the clock lingers there). Lets us
+// verify penetration room objectively (e.g. a 14' thrust minute should now out-dwell an
+// empty routine minute). Pure read-out of the baked warp.
+window.__warpDwell = (t, half) => {
+  const h = Number.isFinite(+half) ? +half : 0.5;
+  const passSeconds = DRAMA_TOTAL_S / Math.max(0.05, Number(cfg.speed) || 1);
+  return +((progressOfMatchT(t + h) - progressOfMatchT(t - h)) * passSeconds).toFixed(3);
+};
 // STAGE11 CHANGE #3 dev/verify hook — force the END-OF-MATCH settled state (clock at the
 // final whistle, settle=amount 0..1, playback stopped) and render one snapped frame, so
 // the calm resolved final frame can be captured deterministically. amount defaults to 1.
@@ -2876,6 +3071,19 @@ const DRAMA_MAX_MIN_PER_SEC = 13.0;  // ≤ 13 match-minutes per screen-second a
 // were REMOVED with the goal dilation (goals now play in the normal flow). Only the
 // non-goal CHANCE room remains (the "visible-beats warp for shots").
 const CHANCE_ROOM_S = 1.0;    // ×normalized importance → a big non-goal chance's room
+// GOAL room — RE-INTRODUCED (reverses STAGE11 CHANGE #3). Every goal gets a guaranteed
+// screen-time plateau so its full flood→hold→штиль→reset envelope PLAYS OUT before the
+// next beat — critical when two goals land close in match-time (e.g. an exchange in the
+// dying minutes): without this the second goal's «latest-goal-wins» wave instantly
+// swallows the first's flood/pause. The room LENGTH now tracks the live flood envelope +
+// cfg.A.goalPause (computed as `goalRoom` in buildDramaticClock), so there's no dead dwell.
+// Placed ASYMMETRICALLY (tiny sigPre → no pre-goal hang; wide sigPost → room AT/AFTER goal).
+// NO pre-goal slowdown — sigPre is TIGHT (like a chance). The clock runs into the goal at
+// normal speed (no «замирает перед голом» freeze), then all the room lives AT/AFTER the
+// goal where the flood plays. The goal CREST still rises on the fast approach, PEAKS at the
+// goal, and stands VISIBLE through the slow post-goal ROLL — so the spike reads WITHOUT any
+// pre-goal hang. (An earlier 0.28 gave ~1.5s of pre-goal dwell → the freeze the user hit.)
+const GOAL_SIG_PRE = 0.05, GOAL_SIG_POST = 0.6;
 // I(t) sampling resolution (match-minutes per bin) + smoothing window (minutes).
 const DRAMA_DT = 0.05;
 const DRAMA_SMOOTH_MIN = 0.55;   // short Gaussian: each episode → a localized hump
@@ -2914,12 +3122,36 @@ function buildImportanceCurve() {
       // on-target shot (∝ xG + on-target bonus), so it plays WITHIN the normal
       // 2×-slower flow. The visible SHOT warp (xG-spire beats) is kept.
       const onTarget = (e.type === 'SavedShot' || e.type === 'ShotOnPost' || e.outcome === 'Successful' || e.isGoal);
-      add(e.t, 3.0 + 14.0 * xg + (onTarget ? 3.0 : 0));
+      // STEEPLY xG-weighted so a DANGEROUS chance out-dwells a positional shot: low flat
+      // base (a weak effort barely slows the clock) + a steep xG term + an on-target
+      // bonus, all scaled by the xgImp dial. This gives each real xG PEAK its own place —
+      // the clock lingers on danger so the tall spire plays out instead of being smeared.
+      const xgImp = Number.isFinite(cfg.A.xgImp) ? clamp(cfg.A.xgImp, 0, 3) : 1;
+      add(e.t, (1.5 + 20.0 * xg + (onTarget ? 2.5 : 0)) * xgImp);
+      continue;
+    }
+    // PENETRATION («выпад») — a sharp forward pass IS a visible beat (the finger stabs
+    // the front forward, in-plane), so it now earns dramatic room too — using the SAME
+    // penetration signal buildThrustFingers renders, so the clock slows exactly where a
+    // finger appears. Gated (deep / through / long, fwd ≥ penMin) so only real thrusts
+    // count. Weight ∝ forward depth × boosts × penImp; penImp=0 restores the old
+    // shots-only behaviour. This is the "territorial drama" the piece is really about.
+    if (e.kind === 'pass' && Number.isFinite(e.eu)) {
+      const penImp = Number.isFinite(cfg.A.penImp) ? clamp(cfg.A.penImp, 0, 3) : 0;
+      if (penImp <= 0) continue;
+      const isH = e.team === 'home';
+      if (!isH && e.team !== 'away') continue;
+      const fwd = isH ? (e.eu - e.u) : (e.u - e.eu);
+      const penMin = Number.isFinite(cfg.A.penMin) ? cfg.A.penMin : 0.10;
+      if (fwd < penMin) continue;
+      const deep = isH ? (e.eu >= 0.60) : (e.eu <= 0.40);   // reached the final third
+      if (!deep && !e.through && !e.long) continue;         // penetration gate
+      const w = clamp(fwd * 3.0, 0, 1.2) * (e.through ? 1.8 : 1) * (e.long ? 1.4 : 1) * (deep ? 1.2 : 1);
+      add(e.t, 3.2 * penImp * w);   // room ∝ penetration depth; less than a shot so shots/goals still dominate
       continue;
     }
     // (box-entry / final-third / transition / card / penalty importance intentionally
-    //  removed — they are INVISIBLE beats; keeping them zeroed keeps the minute
-    //  running continuously through routine and slowing only at a flood/spire.)
+    //  NOT added — they have no distinct on-screen visual; only shots/goals/penetrations do.)
   }
 
   // Light Gaussian smooth → each episode becomes a localized hump (not a spike).
@@ -2984,12 +3216,24 @@ function buildDramaticClock() {
   // minute" — the pre-event side is tight.
   const CHANCE_SIG_PRE = 0.05, CHANCE_SIG_POST = 0.42;
   const guaranteed = [];
-  // STAGE11 CHANGE #3 — REMOVE the goal FREEZE/hold/dilation. In stage10 every goal
-  // (and its post-goal lull) got a WIDE guaranteed screen-time plateau so the clock
-  // crawled/held around goals. The user wants goals to play WITHIN the normal
-  // (2×-slower) flow now — no extra room, no hold, no pause. So we DON'T push any goal
-  // beat here. Non-goal CHANCES keep their small warp below (the "visible-beats warp
-  // for shots").
+  // GOALS FIRST — each goal claims a guaranteed screen-time plateau (GOAL_ROOM_S) so its
+  // whole flood→hold→штиль→reset envelope plays before the next beat. Reverses STAGE11
+  // CHANGE #3 (which let goals play in normal flow → a rapid exchange lost the first
+  // goal's flood/pause). Asymmetric (GOAL_SIG_PRE≪GOAL_SIG_POST) so there's NO pre-goal
+  // hang — the room sits AT/AFTER the goal, exactly where the flood plays. Pushed before
+  // the chance loop so its nearGoal test suppresses a redundant chance beat on the shot.
+  // GOAL room now TRACKS the real flood envelope (roll + hold + штиль + reset) + a small
+  // adjustable extra (goalPause) — so the clock dwells exactly as long as the wave plays,
+  // no dead time after the front resets. Read live from cfg (rebuilt on the goal sliders).
+  const _fh = Number.isFinite(cfg.A.floodHold) ? clamp(cfg.A.floodHold, 0, 12) : FLOOD_HOLD_DEFAULT_S;
+  const _lu = Number.isFinite(cfg.A.lull) ? clamp(cfg.A.lull, 0, 12) : 0;
+  const _rs = Number.isFinite(cfg.A.goalReset) ? clamp(cfg.A.goalReset, 0, 8) : FLOOD_RELAX_S;
+  const _pa = Number.isFinite(cfg.A.goalPause) ? clamp(cfg.A.goalPause, 0, 6) : 0.4;
+  const goalRoom = FLOOD_SWEEP_S + _fh + _lu + _rs + _pa;
+  const goalTimes = timeline.filter((e) => e.kind === 'shot' && e.isGoal).map((e) => e.t);
+  for (const gt of goalTimes) {
+    guaranteed.push({ t: gt, sec: goalRoom, sigPre: GOAL_SIG_PRE, sigPost: GOAL_SIG_POST });
+  }
   for (const beat of dramaKeyBeats) {
     const nearGoal = guaranteed.some((g) => Math.abs(g.t - beat.t) < 1.0);
     if (beat.w > 0.55 && !nearGoal) guaranteed.push({ t: beat.t, sec: CHANCE_ROOM_S * beat.w, sigPre: CHANCE_SIG_PRE, sigPost: CHANCE_SIG_POST });
@@ -3103,6 +3347,7 @@ function progressOfMatchT(t) {
 // HUD / camera (cloned from stage9)
 // ============================================================================
 let goalsByTime = [];
+let goalSpots = [];    // {t, team, u, v} — goal pitch spot, drives the pre-goal height crest (computeA)
 let cardEvents = [];   // {t, minute, team, red} — drawn as CARDS in the markers panel (drawMarkers)
 // STAGE11 CHANGE #5/#6 — persistent goal-token list (built in buildGoalMarkers) +
 // real per-minute momentum (fetched in init) for the pulse strip.
@@ -3111,6 +3356,27 @@ let shotMarks = [];    // {minute, team, xg, isGoal} — xG/shot markers on the 
 let momentum = [];     // [{minute, v}] valueNorm +home/−away, real data (rich record)
 function countGoals() {
   goalsByTime = timeline.filter((it) => it.kind === 'shot' && it.isGoal).map((g) => ({ t: g.t, team: g.team }));
+  // EMOTIONAL-ESCALATION streak count — for every shot, how many DANGEROUS shots (either
+  // team, xg ≥ STREAK_XG or a goal) fell in the preceding STREAK_WIN_MIN match-minutes. A
+  // flurry of chances then reads TALLER (see contribLift). Deterministic from the timeline.
+  {
+    const danger = timeline.filter((it) => it.kind === 'shot' && ((Number(it.xg) || 0) >= STREAK_XG || it.isGoal))
+                           .sort((a, b) => a.t - b.t);
+    for (const e of timeline) {
+      if (e.kind !== 'shot') continue;
+      let n = 0;
+      for (const d of danger) { if (d === e) continue; if (d.t < e.t && d.t >= e.t - STREAK_WIN_MIN) n++; else if (d.t >= e.t) break; }
+      e._streakN = n;
+    }
+  }
+  // GOAL SPOTS for the pre-goal height crest. Use the shot's pitch coords; if a goal
+  // lacks u/v (rare), fall back to the attacked goal-mouth (home attacks u→1, away u→0)
+  // so EVERY goal still gets its big spire.
+  goalSpots = timeline.filter((it) => it.kind === 'shot' && it.isGoal).map((g) => ({
+    t: g.t, team: g.team,
+    u: Number.isFinite(g.u) ? g.u : (g.team === 'home' ? 0.92 : 0.08),
+    v: Number.isFinite(g.v) ? g.v : 0.5,
+  }));
   // xG/shot markers for the pulse: every real shot (skip near-zero-xG noise; always keep goals).
   shotMarks = timeline
     .filter((it) => it.kind === 'shot')
@@ -3468,23 +3734,14 @@ function drawPulse(t) {
     plCtx.restore();
   }
 
-  // PERIOD markers — reveal ONLY once reached (like the pulse itself): halftime 45', full time
-  // / extra-time start 90', ET boundaries 105'/120'. So they never pre-announce extra time.
-  {
-    const marks = dur > 100 ? [45, 90, 105, 120] : [45, 90];
-    const labels = { 45: "45'", 90: "90'", 120: "120'" };
-    plCtx.font = `${8.5 * dpr}px 'Space Mono', ui-monospace, monospace`;
-    plCtx.textAlign = 'center'; plCtx.textBaseline = 'top';
-    for (const mn of marks) {
-      if (mn >= dur || mn > nowMin) continue;
-      const mx = xOf(mn);
-      const key = (mn === 90 || mn === 120);
-      plCtx.strokeStyle = key ? 'rgba(233,231,244,0.26)' : 'rgba(233,231,244,0.13)';
-      plCtx.lineWidth = 1 * dpr; plCtx.setLineDash([2 * dpr, 3 * dpr]);
-      plCtx.beginPath(); plCtx.moveTo(mx, padY * 0.2); plCtx.lineTo(mx, H - padY * 0.2); plCtx.stroke();
-      plCtx.setLineDash([]);
-      if (labels[mn]) { plCtx.fillStyle = key ? 'rgba(233,231,244,0.5)' : 'rgba(233,231,244,0.3)'; plCtx.fillText(labels[mn], mx, padY * 0.25); }
-    }
+  // EXTRA-TIME DIVIDER — NO minute numbers on the timeline (user-directed). Extra time is
+  // marked by a SINGLE thin WHITE vertical line at 90' (the end of regular time), shown only
+  // for matches that went to ET, and revealed once the playhead reaches it (never pre-announced).
+  if (dur > 100 && nowMin >= 90) {
+    const mx = xOf(90);
+    plCtx.strokeStyle = 'rgba(255,255,255,0.6)';
+    plCtx.lineWidth = 1 * dpr; plCtx.setLineDash([]);
+    plCtx.beginPath(); plCtx.moveTo(mx, padY * 0.2); plCtx.lineTo(mx, H - padY * 0.2); plCtx.stroke();
   }
 
   // PLAYHEAD.
@@ -3698,9 +3955,18 @@ const LAYER_DEFS = [
     { id: 'ownBand', label: 'мин. территория ▸ у ворот', min: 0, max: 0.35, step: 0.01, fmt: (v) => v.toFixed(2) },
     { id: 'xgW', label: 'xG ▸ ширина шпиля', min: 0.2, max: 4, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'xgH', label: 'xG ▸ высота шпиля', min: 0, max: 4, step: 0.05, fmt: (v) => v.toFixed(2) },
-    { id: 'floodHold', label: 'гол ▸ держать заливку', min: 0, max: 8, step: 0.1, fmt: (v) => v.toFixed(1) + ' с' },
-    { id: 'lull', label: 'гол ▸ пауза (штиль)', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) + ' с' },
+    { id: 'goalH', label: 'гол ▸ высота пика', min: 0, max: 10, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'goalHold', label: 'гол ▸ держать пик', min: 0, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) + ' с' },
+    { id: 'floodHold', label: 'гол ▸ держать заливку', min: 0, max: 8, step: 0.1, fmt: (v) => v.toFixed(1) + ' с', rebuildClock: true },
+    { id: 'lull', label: 'гол ▸ пауза (штиль)', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) + ' с', rebuildClock: true },
+    { id: 'goalReset', label: 'гол ▸ откат к центру', min: 0, max: 6, step: 0.1, fmt: (v) => v.toFixed(1) + ' с', rebuildClock: true },
+    { id: 'goalPause', label: 'гол ▸ пауза после', min: 0, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) + ' с', rebuildClock: true },
     { id: 'thrust', label: 'выпад ▸ сила', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'thrustHold', label: 'выпад ▸ живучесть', min: 0.5, max: 12, step: 0.1, fmt: (v) => v.toFixed(1) + ' с' },
+    { id: 'xgImp', label: 'xG ▸ вес во времени', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2), rebuildClock: true },
+    { id: 'streakK', label: 'xG ▸ эскалация серии', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+    { id: 'penImp', label: 'прорыв ▸ вес во времени', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2), rebuildClock: true },
+    { id: 'penMin', label: 'прорыв ▸ порог (ниже=больше)', min: 0.02, max: 0.3, step: 0.01, fmt: (v) => v.toFixed(2), rebuildClock: true },
     { id: 'wCorner', label: 'угловые ▸ сила', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
     { id: 'markerH', label: 'отметки ▸ высота', min: 0, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
   ], toggles: [
@@ -3746,6 +4012,9 @@ function buildLayerUI() {
       refs.sliders[c.id] = { inp, val, fmt: c.fmt };
       inp.addEventListener('input', () => {
         cfg[def.key][c.id] = +inp.value; val.textContent = c.fmt(+inp.value);
+        // goal-timing knobs feed the baked dramatic-clock GOAL room (goalRoom) — rebuild it
+        // so the post-goal dwell tracks the new envelope live.
+        if (c.rebuildClock) buildDramaticClock();
         writeHash(); _ballCursor = 0; if (!playing) snapASmoothing(); renderFrame(clock); composer.render();
         drawOverlays(clock);   // STAGE11 — reflect e.g. отметки ▸ высота live while paused
       });

@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Colour v5 · Background lift study</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root{ --ink:#e9e7f4; --dim:#8f89ad; --faint:#4a4470;
+    --fra:#1e2a5a; --sen:#0a7c3f; }
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:#0a0d16;color:var(--ink);
+    font-family:'Space Grotesk',system-ui,sans-serif;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1000px;margin:0 auto;padding:34px 30px 60px;}
+  h1{font-size:19px;font-weight:700;letter-spacing:.01em;margin:0 0 4px;}
+  h1 .v{color:#9fb2d8;}
+  .sub{font-size:13px;color:var(--dim);line-height:1.55;max-width:74ch;margin:0 0 26px;}
+  .sub b{color:var(--ink);font-weight:600;}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;}
+  @media(max-width:820px){.grid{grid-template-columns:1fr 1fr;}}
+  @media(max-width:560px){.grid{grid-template-columns:1fr;}}
+  .card{border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;}
+  .stage{position:relative;aspect-ratio:16/12;}
+  .stage svg{position:absolute;inset:0;width:100%;height:100%;}
+  .meta{padding:10px 13px;font-family:'Space Mono',monospace;font-size:11px;line-height:1.5;color:var(--dim);}
+  .meta b{color:var(--ink);font-weight:700;display:block;font-family:'Space Grotesk';font-size:12px;letter-spacing:.02em;margin-bottom:2px;}
+  .tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:20px;margin-top:5px;}
+  .win{background:rgba(127,208,160,.15);color:#7fd0a0;}
+  .meh{background:rgba(255,154,154,.13);color:#ff9a9a;}
+  .ok{background:rgba(159,178,216,.15);color:#9fb2d8;}
+  .note{margin-top:24px;font-size:12.5px;line-height:1.65;color:var(--dim);border-left:2px solid var(--faint);padding-left:14px;}
+  .note b{color:var(--ink);}
+  code{font-family:'Space Mono',monospace;color:#cfd8ea;font-size:11.5px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Background <span class="v">v5 — the "too black" study</span></h1>
+  <p class="sub">Same France/Senegal blankets on six base tones. Pure black (#000) and the current
+  <code>#05070d</code> read as a <b>harsh void</b> — no atmosphere, the cloth edge is a hard cut. Premium
+  data-art (Bremer/Visual Cinnamon, NYT, The Pudding) almost never sits on true black; it uses a
+  <b>lifted near-neutral</b> (L≈8–14) often with a hint of hue and a <b>faint radial vignette-in-reverse</b>
+  so the centre glows a touch above the corners.</p>
+
+  <div class="grid" id="grid"></div>
+
+  <p class="note">
+    <b>Recommendation.</b> Move off <code>#05070d</code> to a <b>lifted deep plum-navy</b> around
+    <code>#101625</code> at centre easing to <code>#0b0f18</code> at the edges (a soft reverse-vignette),
+    optionally with the faintest <b>chroma-gated score-tint</b> already in the engine. This keeps the
+    blankets the unquestioned star, adds the "gallery" atmosphere the piece wants, and gives dark team
+    colours (France navy, Germany grey) an edge to sit against instead of merging into a black hole.
+    Keep text off pure white — use <code>#e9e7f4</code>.
+  </p>
+</div>
+
+<script>
+const swatches = [
+  {name:'Pure black', bg:'#000000', edge:'#000000', tag:'void', cls:'meh', desc:'#000000 — harsh, edges cut'},
+  {name:'Current', bg:'#05070d', edge:'#05070d', tag:'current', cls:'meh', desc:'#05070d — still nearly a void'},
+  {name:'Lifted neutral', bg:'#12141a', edge:'#0c0e13', tag:'calmer', cls:'ok', desc:'#12141a — neutral graphite'},
+  {name:'Deep plum-navy', bg:'#101625', edge:'#0b0f18', tag:'RECOMMENDED', cls:'win', desc:'#101625→#0b0f18 · reverse vignette'},
+  {name:'Warm charcoal', bg:'#16130f', edge:'#0e0c09', tag:'warm', cls:'ok', desc:'#16130f — subtle warmth'},
+  {name:'Too lifted', bg:'#1c2333', edge:'#161c2a', tag:'blankets lose pop', cls:'meh', desc:'#1c2333 — cloth stops glowing'},
+];
+document.getElementById('grid').innerHTML = swatches.map((s,i)=>`
+  <div class="card">
+    <div class="stage" style="background:${s.bg}">
+      <svg viewBox="0 0 400 300" preserveAspectRatio="none">
+        <defs>
+          <radialGradient id="vig${i}" cx="50%" cy="46%" r="72%">
+            <stop offset="0" stop-color="${s.bg}"/>
+            <stop offset="1" stop-color="${s.edge}"/>
+          </radialGradient>
+          <linearGradient id="f${i}" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stop-color="#141d40"/><stop offset="1" stop-color="#1e2a5a"/>
+          </linearGradient>
+          <linearGradient id="s${i}" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stop-color="#0a7c3f"/><stop offset="1" stop-color="#0c5c30"/>
+          </linearGradient>
+          <radialGradient id="h${i}" cx="50%" cy="40%" r="60%">
+            <stop offset="0" stop-color="#fff" stop-opacity=".9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <rect x="0" y="0" width="400" height="300" fill="url(#vig${i})"/>
+        <polygon points="30,95 232,78 232,238 30,255" fill="url(#f${i})"/>
+        <polygon points="232,78 372,88 372,232 232,238" fill="url(#s${i})"/>
+        <line x1="232" y1="78" x2="232" y2="238" stroke="${s.bg}" stroke-width="2" opacity=".45"/>
+        <ellipse cx="150" cy="150" rx="46" ry="28" fill="url(#h${i})"/>
+      </svg>
+    </div>
+    <div class="meta"><b>${s.name}</b>${s.desc}<br><span class="tag ${s.cls}">${s.tag}</span></div>
+  </div>`).join('');
+</script>
+</body>
+</html>

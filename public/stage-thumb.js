@@ -91,7 +91,7 @@ let SEN_HEX = '#0c954e';   // away colour (fallback = Senegal green)
 // "where danger was created" hills) casts readable silhouette/shadow instead of reading
 // flat. (stage13's tuned view was pos [-17.33,16.41,15.40] / target [-0.62,1.83,0.27].)
 // This is a KNOB — retune freely; the ?dev camera panel + copy-camera still work.
-const DEFAULT_CAM = { pos: [-13.5, 6.8, 17.2], target: [0.0, 0.35, 0.10] };
+const DEFAULT_CAM = { pos: [-17.80, 15.27, 15.98], target: [-1.09, 0.69, 0.85] };
 function applyDefaultCamera() {
   camera.position.set(DEFAULT_CAM.pos[0], DEFAULT_CAM.pos[1], DEFAULT_CAM.pos[2]);
   controls.target.set(DEFAULT_CAM.target[0], DEFAULT_CAM.target[1], DEFAULT_CAM.target[2]);
@@ -198,8 +198,8 @@ const DEFAULTS = () => ({
   //  opaque sheet tucks this far PAST the front under the other). cOWN..cALL =
   //  contributor on/off; wOWN..wALL = weights.
   A: {
-    on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 3.0,
-    colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0, lap: 0.005,
+    on: true, open: false, atk: 0.46, rel: 2.3, grid: 0.78, height: 6.15,
+    colour: 1.1, blur: 0.22, sharp: 1.0, floor: 0.0, lap: 0.005,
     // КРОМКА ▸ подъём — LIP HEIGHT (world-Y) of the fabric fold where the TOP
     // blanket laps OVER the under one at the seam. A SHORT, thin folded edge so the
     // two blankets read as two separate sheets (one over the other) WITHOUT a tall
@@ -212,7 +212,7 @@ const DEFAULTS = () => ({
     // front lives between the two bands and can be pushed deep, but never erases
     // the defender's band. Fraction of pitch LENGTH per team. Overridden only by
     // the celebratory goal-flood. 0 = no guaranteed band (old behaviour).
-    ownBand: 0.13,
+    ownBand: 0.14,
     // ЯРКОСТЬ ЦВЕТА — emissive strength of the FLAT painted territory. The
     // coverage colour lies flat on the pitch (no tall body), so under scene
     // lighting it would render dark; this glow term makes it read VIVID team
@@ -222,12 +222,12 @@ const DEFAULTS = () => ({
     // stamp radius), xgH = spire HEIGHT (scales the crest term). The spire stands
     // at each REAL shot's pitch spot and fades a couple seconds after; NO spire
     // appears anywhere there was no shot.
-    xgW: 1.0, xgH: 1.0,
+    xgW: 0.95, xgH: 3.0,
     // ФОКУС ▸ зона игры — radius of the spatial focus mask that anchors the
     // HEIGHT relief to the single live play locus (ballAt(t)). Tight = one
     // coherent swell where play is; wide → approaches the old free-form field.
     // Colour/coverage stay BROAD; only height is gated. 0..1 → σ in world units.
-    focus: 0.2,
+    focus: 0.92,
     // ГОЛ ▸ держать заливку — how long the celebratory goal-flood HOLDS the
     // scorer's colour over the whole pitch, in SECONDS of wall time (at the
     // current speed). Default 3s (was ~1.2). Sweep-in/relax are fixed.
@@ -258,14 +258,14 @@ const DEFAULTS = () => ({
     // ОТМЕТКИ ▸ ВЫСОТА (STAGE11 CHANGE #5) — vertical position of the goal-token row
     // above the pitch. 0 = low (near the field), 1 = high (top of the screen). Purely
     // a 2D-overlay layout knob (see drawMarkers).
-    markerH: 0.55,
+    markerH: 0.66,
     // contributors (☑ default = true): which signals RAISE a team's blanket.
     // The general relief (Владение/Продвижение/…) is now capped to GENTLE LOW
     // MOUNDS — the ONLY tall spires in the scene are the real xG shot crests
     // (cXg, placed exactly at each shot's pitch spot; see contribLift/computeA).
-    cOwn: true,  wOwn: 1.0,   // Владение — on-ball control density
-    cXg: true,   wXg: 1.0,    // Удары · xG — sharp tall crest at the REAL shot spot, ×xg
-    cProg: true, wProg: 1.0,  // Продвижение — final-third / box entries, forward passes
+    cOwn: true,  wOwn: 2.7,   // Владение — on-ball control density
+    cXg: true,   wXg: 2.4,    // Удары · xG — sharp tall crest at the REAL shot spot, ×xg
+    cProg: true, wProg: 2.0,  // Продвижение — final-third / box entries, forward passes
     cPass: false, wPass: 1.0, // Пасы — pass density
     cDuel: false, wDuel: 1.0, // Единоборства — Tackle/Aerial/Challenge/Interception/Dispossessed
     cDrib: false, wDrib: 1.0, // Обводки — TakeOn
@@ -314,7 +314,25 @@ const ESSENCE = {
   // SHOTS / danger as sharper PEAKS on top of the density:
   XG_MIN: 0.03,         // ignore shots below this xg (goals always kept).
   XG_RAD_CELLS: 2.0,    // gaussian radius per shot crest (tighter than the mounds → a peak).
-  XG_AMP: 5.0,          // crest amplitude per unit xg (a goal towers).
+  // stamp values are multiplied by crestK (=4.2·xgH ≈ 12.6) in the render, so they are SMALL.
+  XG_BASE: 0.05,        // base shot-crest stamp (a weak shot barely rises).
+  XG_AMP: 0.20,         // + per unit xg → a dangerous shot ≈ 2–3 world-Y peak.
+  // GOALS = BIG HILLS. Every goal MUST read as a big distinct hill regardless of its xG (a
+  // tap-in goal still matters), so it gets a fixed TALL peak (well above shots) + an xG bonus.
+  GOAL_PEAK: 0.67,      // goal-crest stamp → ≈ 8.4 world-Y (towers over shots/mounds; xgH-scaled)
+  GOAL_XG_K: 0.6,       // extra height fraction for a high-xG goal (×xg on top of GOAL_PEAK)
+  GOAL_RAD_CELLS: 3.0,  // goal hill radius (WIDER than a shot crest → a rounded HILL, not a spike)
+  // ACTIVITY SCALE — a busier match (more events + more xG) rides visibly TALLER than a sparse
+  // one, so quiet and frantic games look different (not all the same height). Multiplies the
+  // whole mound field. Combines total xG and event count, clamped to a sane band.
+  ACT_SCALE_BASE: 0.45, // floor height factor for a very quiet match
+  ACT_SCALE_XG: 0.28,   // + per unit of total match xG
+  ACT_SCALE_EV: 0.00035,// + per on-ball event (a busy match has ~1000+ events)
+  ACT_SCALE_MIN: 0.5,   // clamp low
+  ACT_SCALE_MAX: 1.8,   // clamp high
+  // SEAM CURVE — the possession boundary is NOT a straight line: it bows per lateral channel
+  // toward whoever was quieter there, from the home/away activity balance in that row. 0 = flat.
+  SEAM_CURVE: 0.16,     // max per-channel deflection of the front (u-units)
   // GRID resolution of the activity grid (coarse→fine long-axis cells).
   GRID_LONG: 34,
 };
@@ -328,13 +346,11 @@ async function init() {
   // STAGE-THUMB — start from the built-in default (NOT the user's stage13 localStorage,
   // so every thumbnail renders deterministically the same), then apply the ESSENCE relief
   // tuning below. A #cfg= share link still wins for dev experimentation.
+  // The ESSENCE relief tuning now lives in DEFAULTS() (A.height/xgH/focus/… baked to the
+  // user's tuned values), so DEFAULTS() alone drives every thumbnail deterministically.
+  // NO post-load override here — that hardcoded block used to clobber A.height/xgH/focus
+  // back to old values, so panel-tuned defaults never showed. A #cfg= share link still wins.
   cfg = loadCfgFromHash() || MATCH_DEFAULT();
-  // ESSENCE relief tuning — the cumulative-xG hills must READ as a landscape at the small
-  // thumbnail size, so raise the xG spire height (xgH) and give the mounds a touch of body.
-  // These are the two dials that make the "essence" relief visible; retune freely.
-  cfg.A.xgH = 3.0;      // xG spire height multiplier (crestK = 4.2·xgH in the vertex loop)
-  cfg.A.height = 3.2;   // overall relief amplitude (mounds ride under the xG crests)
-  cfg.A.focus = 1.0;    // wide focus so the whole cumulative-xG field lifts (not gated to one spot)
 
   let tlDoc = null;
   try { tlDoc = await fetch('/api/timeline/' + ID).then((r) => (r.ok ? r.json() : null)); } catch { tlDoc = null; }
@@ -1825,39 +1841,62 @@ function essenceComputeA() {
   // (already mirrored into the shared frame by toUV). Summed over the whole match → the
   // busiest zones (where a team camped / built play) stand tallest. This is the match's
   // SHAPE, not a flat split. Real events only — nothing fabricated.
+  let nEv = 0;
   for (const e of (timeline || [])) {
     if (!Number.isFinite(e.u) || !Number.isFinite(e.v)) continue;
     const isH = e.team === 'home';
     if (!isH && e.team !== 'away') continue;
     stamp(isH ? A_hH : A_hA, gx, gy, e.u, e.v, 1.0, ESSENCE.ACT_RAD_CELLS);
+    nEv++;
   }
   // normalise each team's density to 0..1 + gamma so the busiest zones read as clear mounds.
   const norm = (g) => { let mx = 1e-4; for (const v of g) if (v > mx) mx = v; const inv = 1 / mx; for (let i = 0; i < g.length; i++) g[i] = Math.pow(g[i] * inv, ESSENCE.ACT_GAMMA); };
   norm(A_hH); norm(A_hA);
+  // ACTIVITY SCALE — busier matches ride TALLER. After the shape-normalise above, multiply the
+  // WHOLE mound field by a factor from total xG + event count, so a frantic game clearly towers
+  // over a sparse one (they no longer all look the same height).
+  let sumXg = 0;
+  for (const e of (timeline || [])) { if (e.kind === 'shot') sumXg += Number(e.xg) || 0; }
+  const actScale = clamp(ESSENCE.ACT_SCALE_BASE + ESSENCE.ACT_SCALE_XG * sumXg + ESSENCE.ACT_SCALE_EV * nEv,
+                         ESSENCE.ACT_SCALE_MIN, ESSENCE.ACT_SCALE_MAX);
+  for (let i = 0; i < A_hH.length; i++) { A_hH[i] *= actScale; A_hA[i] *= actScale; }
 
-  // ---- RELIEF PART 2: SHOTS / danger as sharper PEAKS on top of the density ----
+  // ---- RELIEF PART 2: GOALS as BIG HILLS + dangerous shots as sharper peaks ----
   for (const e of (timeline || [])) {
     if (e.kind !== 'shot') continue;
     const xg = Number(e.xg) || 0;
-    if (!(xg >= ESSENCE.XG_MIN || e.isGoal)) continue;
     const isH = e.team === 'home';
     if (!isH && e.team !== 'away') continue;
-    stamp(isH ? A_xH : A_xA, gx, gy, e.u, e.v, 1.0 + ESSENCE.XG_AMP * clamp(xg, 0, 1), ESSENCE.XG_RAD_CELLS);
+    if (e.isGoal) {
+      // GOAL — a BIG hill, height mostly INDEPENDENT of xg (every goal reads clearly), with a
+      // bonus for a high-xg goal. Wider radius → a rounded HILL, not a needle.
+      stamp(isH ? A_xH : A_xA, gx, gy, e.u, e.v, ESSENCE.GOAL_PEAK * (1 + ESSENCE.GOAL_XG_K * clamp(xg, 0, 1)), ESSENCE.GOAL_RAD_CELLS);
+    } else if (xg >= ESSENCE.XG_MIN) {
+      // a non-goal dangerous shot: a sharper, MUCH lower peak scaled by xg.
+      stamp(isH ? A_xH : A_xA, gx, gy, e.u, e.v, ESSENCE.XG_BASE + ESSENCE.XG_AMP * clamp(xg, 0, 1), ESSENCE.XG_RAD_CELLS);
+    }
   }
   // static → copy straight into the SMOOTHED grids the renderer samples. Mounds = activity
-  // density (A_shH/A_shA); xG crests = danger peaks (A_sxH/A_sxA).
+  // density (A_shH/A_shA); xG crests + goal hills = danger peaks (A_sxH/A_sxA).
   A_shH.set(A_hH); A_shA.set(A_hA);
   A_sxH.set(A_xH); A_sxA.set(A_xA);
 
-  // ---- FRONT: flat lean from the TIME-AVERAGED possession ---------------------
+  // ---- FRONT: a CURVED seam — base lean from avg possession, then a per-channel deflection
+  // from the home/away activity BALANCE in that lateral row, so the boundary BOWS toward
+  // whoever was quieter there (a living, curved seam, not a straight diagonal). ------------
   const mom = essenceAvgMomentum();               // −1..+1 mean lean (+ = home)
-  // steepen with POSS_GAIN so a moderate average still reads; cap at POSS_MAX from centre.
   const lean = Math.sign(mom) * Math.pow(Math.abs(mom), ESSENCE.POSS_GAIN);
-  const front = clamp(0.5 + ESSENCE.POSS_MAX * lean, 0.5 - ESSENCE.POSS_MAX, 0.5 + ESSENCE.POSS_MAX);
-  _essenceFrontU = front;
-  // fill the front buffers FLAT (same front-u in every channel + along u).
-  for (let j = 0; j < gy; j++) { A_front[j] = front; A_frontRaw[j] = front; A_frontDisp[j] = front; }
-  for (let k = 0; k < A_own.length; k++) A_own[k] = front;
+  const baseFront = clamp(0.5 + ESSENCE.POSS_MAX * lean, 0.5 - ESSENCE.POSS_MAX, 0.5 + ESSENCE.POSS_MAX);
+  _essenceFrontU = baseFront;
+  const loF = 0.5 - ESSENCE.POSS_MAX - 0.15, hiF = 0.5 + ESSENCE.POSS_MAX + 0.15;
+  for (let j = 0; j < gy; j++) {
+    let sh = 0, sa = 0;
+    for (let i = 0; i < gx; i++) { sh += A_hH[j * gx + i]; sa += A_hA[j * gx + i]; }
+    const bal = (sh - sa) / (sh + sa + 1e-4);       // −1..+1, + = home busier in this channel
+    const fr = clamp(baseFront + ESSENCE.SEAM_CURVE * bal, loF, hiF);
+    A_front[j] = fr; A_frontRaw[j] = fr; A_frontDisp[j] = fr;
+    for (let i = 0; i < gx; i++) A_own[j * gx + i] = fr;   // per-cell ownership follows the curved front
+  }
   A_sown.set(A_own);
 }
 // dev/verify read-out: the cumulative-xG crest field + the flat front, so the essence
@@ -2489,11 +2528,14 @@ function computeField(t, dt) {
   // toward ~0 for a beat, so the surface "выпрямилось, обнулилось" after the goal
   // flood, then recovers. reliefMul multiplies every vertex's relief below.
   const lullFlat = goalLullAt(t);
-  // STAGE11 CHANGE #3 — END-OF-MATCH SETTLE: as `settle` eases 0→1 at the final whistle,
-  // the whole relief melts toward flat (like the post-goal lull) so the surface resolves to
-  // a calm quiet state, then holds. settleEase softens the ramp so it glides, not snaps.
-  const settleEase = smoothstep(0, 1, clamp(settle, 0, 1));
-  const reliefMul = (1 - lullFlat) * (1 - 0.92 * settleEase);
+  // ESSENCE OVERRIDE — this is a STATIC, cumulative WHOLE-MATCH portrait (essenceComputeA
+  // sums every event, t-independent). The stage13 melts are WRONG here: the end-of-match
+  // SETTLE (settle→1 after the final whistle) and the post-goal LULL both flatten the
+  // relief, and since the essence auto-plays then settles, the held frame we capture was
+  // rendering the FLATTENED end state — «всё плоское, где холмы?». Force NO melt so the
+  // terrain (activity mounds + goal/xG crests) always stands at full height, at any frame.
+  const settleEase = 0;              // never settle the essence toward the flat final-whistle state
+  const reliefMul = 1;               // no lull/settle flatten — cumulative relief always full
 
   // CORNER WAVES — active ripples this frame (most-recent corner per side, deterministic
   // from the clock → scrub-safe). Each ripples OUTWARD from its pitch corner (cu,cv) in
@@ -2665,7 +2707,7 @@ function computeField(t, dt) {
         // Lowered 8 → 4.5 so a shot still reads as a clear RISE but never a monster.
         let reliefH = (rH * 0.5 * amp * moundMask * notch + xH * crestK * fmCrest * crestNotch) * reliefMul;
         let reliefA = (rA * 0.5 * amp * moundMask * notch + xA * crestK * fmCrest * crestNotch) * reliefMul;
-        reliefH = Math.min(reliefH, 4.5); reliefA = Math.min(reliefA, 4.5);
+        reliefH = Math.min(reliefH, 9.5); reliefA = Math.min(reliefA, 9.5);   // ESSENCE: raised cap so goals tower + activity height differentiates (was 4.5 → everything flat-capped)
         // PER-TEAM RELIEF — each blanket carries its OWN (notched-at-seam) height, so
         // the two sheets are TWO DISTINCT surfaces; the visible LAP is the TOP sheet's
         // short lip fold (vertex shader), never a merged plane.

@@ -1,6 +1,6 @@
 {
   "generatedAtNote": "(no timestamp - Date unavailable in scripts; stamp externally)",
-  "count": 54,
+  "count": 72,
   "matches": [
     {
       "matchId": "1953853",
@@ -1003,26 +1003,6 @@
       }
     },
     {
-      "matchId": "1976986",
-      "date": "2026-06-24",
-      "group": null,
-      "home": {
-        "abbr": "CZE",
-        "score": 0,
-        "colorHex": "#D9273C"
-      },
-      "away": {
-        "abbr": "MEX",
-        "score": 3,
-        "colorHex": "#00634b"
-      },
-      "counts": {
-        "passes": 869,
-        "shots": 24,
-        "momentum": 94
-      }
-    },
-    {
       "matchId": "1976990",
       "date": "2026-06-24",
       "group": null,
@@ -1080,6 +1060,386 @@
         "passes": 1139,
         "shots": 21,
         "momentum": 94
+      }
+    },
+    {
+      "matchId": "1953872",
+      "date": "2026-06-25",
+      "group": null,
+      "home": {
+        "abbr": "ECU",
+        "score": 2,
+        "colorHex": "#e29b00"
+      },
+      "away": {
+        "abbr": "GER",
+        "score": 1,
+        "colorHex": "#464646"
+      },
+      "counts": {
+        "passes": 1048,
+        "shots": 18,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1953873",
+      "date": "2026-06-25",
+      "group": null,
+      "home": {
+        "abbr": "CUR",
+        "score": 0,
+        "colorHex": "#2162BC"
+      },
+      "away": {
+        "abbr": "ICO",
+        "score": 2,
+        "colorHex": "#FD8B06"
+      },
+      "counts": {
+        "passes": 1051,
+        "shots": 18,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1976986",
+      "date": "2026-06-25",
+      "group": null,
+      "home": {
+        "abbr": "CZE",
+        "score": 0,
+        "colorHex": "#D9273C"
+      },
+      "away": {
+        "abbr": "MEX",
+        "score": 3,
+        "colorHex": "#00634b"
+      },
+      "counts": {
+        "passes": 869,
+        "shots": 24,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1953867",
+      "date": "2026-06-26",
+      "group": null,
+      "home": {
+        "abbr": "PAR",
+        "score": 0,
+        "colorHex": "#EE3F2D"
+      },
+      "away": {
+        "abbr": "AUS",
+        "score": 0,
+        "colorHex": "#de9c00"
+      },
+      "counts": {
+        "passes": 1043,
+        "shots": 19,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1953875",
+      "date": "2026-06-26",
+      "group": null,
+      "home": {
+        "abbr": "TUN",
+        "score": 1,
+        "colorHex": "#D7393D"
+      },
+      "away": {
+        "abbr": "NET",
+        "score": 3,
+        "colorHex": "#213C8B"
+      },
+      "counts": {
+        "passes": 977,
+        "shots": 31,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1953890",
+      "date": "2026-06-26",
+      "group": null,
+      "home": {
+        "abbr": "NOR",
+        "score": 1,
+        "colorHex": "#b53032"
+      },
+      "away": {
+        "abbr": "FRA",
+        "score": 4,
+        "colorHex": "#26406A"
+      },
+      "counts": {
+        "passes": 1039,
+        "shots": 28,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1976981",
+      "date": "2026-06-26",
+      "group": null,
+      "home": {
+        "abbr": "JAP",
+        "score": 1,
+        "colorHex": "#435D99"
+      },
+      "away": {
+        "abbr": "SWE",
+        "score": 1,
+        "colorHex": "#dd9a00"
+      },
+      "counts": {
+        "passes": 910,
+        "shots": 19,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1976982",
+      "date": "2026-06-26",
+      "group": null,
+      "home": {
+        "abbr": "TUR",
+        "score": 3,
+        "colorHex": "#d71c00"
+      },
+      "away": {
+        "abbr": "USA",
+        "score": 2,
+        "colorHex": "#293664"
+      },
+      "counts": {
+        "passes": 1005,
+        "shots": 27,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1976996",
+      "date": "2026-06-26",
+      "group": null,
+      "home": {
+        "abbr": "SEN",
+        "score": 5,
+        "colorHex": "#0c954e"
+      },
+      "away": {
+        "abbr": "IRA",
+        "score": 0,
+        "colorHex": "#000000"
+      },
+      "counts": {
+        "passes": 935,
+        "shots": 34,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1953880",
+      "date": "2026-06-27",
+      "group": null,
+      "home": {
+        "abbr": "EGY",
+        "score": 1,
+        "colorHex": "#DE313C"
+      },
+      "away": {
+        "abbr": "IRA",
+        "score": 1,
+        "colorHex": "#5DB56A"
+      },
+      "counts": {
+        "passes": 1014,
+        "shots": 28,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1953881",
+      "date": "2026-06-27",
+      "group": null,
+      "home": {
+        "abbr": "NZE",
+        "score": 1,
+        "colorHex": "#000000"
+      },
+      "away": {
+        "abbr": "BEL",
+        "score": 5,
+        "colorHex": "#9f2533"
+      },
+      "counts": {
+        "passes": 1038,
+        "shots": 41,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1953886",
+      "date": "2026-06-27",
+      "group": null,
+      "home": {
+        "abbr": "CVE",
+        "score": 0,
+        "colorHex": "#004bab"
+      },
+      "away": {
+        "abbr": "SAR",
+        "score": 0,
+        "colorHex": "#16615B"
+      },
+      "counts": {
+        "passes": 981,
+        "shots": 22,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1953887",
+      "date": "2026-06-27",
+      "group": null,
+      "home": {
+        "abbr": "URU",
+        "score": 0,
+        "colorHex": "#6eadd6"
+      },
+      "away": {
+        "abbr": "SPA",
+        "score": 1,
+        "colorHex": "#c62035"
+      },
+      "counts": {
+        "passes": 991,
+        "shots": 11,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1953904",
+      "date": "2026-06-27",
+      "group": null,
+      "home": {
+        "abbr": "PAN",
+        "score": 0,
+        "colorHex": "#BF1F27"
+      },
+      "away": {
+        "abbr": "ENG",
+        "score": 2,
+        "colorHex": "#6FA3E6"
+      },
+      "counts": {
+        "passes": 908,
+        "shots": 30,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1953905",
+      "date": "2026-06-27",
+      "group": null,
+      "home": {
+        "abbr": "CRO",
+        "score": 2,
+        "colorHex": "#CC3737"
+      },
+      "away": {
+        "abbr": "GHA",
+        "score": 1,
+        "colorHex": "#100f10"
+      },
+      "counts": {
+        "passes": 1042,
+        "shots": 14,
+        "momentum": 94
+      }
+    },
+    {
+      "matchId": "1953895",
+      "date": "2026-06-28",
+      "group": null,
+      "home": {
+        "abbr": "JOR",
+        "score": 1,
+        "colorHex": null
+      },
+      "away": {
+        "abbr": "ARG",
+        "score": 3,
+        "colorHex": null
+      },
+      "counts": {
+        "passes": 1135,
+        "shots": 0,
+        "momentum": 0
+      }
+    },
+    {
+      "matchId": "1953896",
+      "date": "2026-06-28",
+      "group": null,
+      "home": {
+        "abbr": "ALG",
+        "score": 3,
+        "colorHex": null
+      },
+      "away": {
+        "abbr": "AUS",
+        "score": 3,
+        "colorHex": null
+      },
+      "counts": {
+        "passes": 1196,
+        "shots": 0,
+        "momentum": 0
+      }
+    },
+    {
+      "matchId": "1953899",
+      "date": "2026-06-28",
+      "group": null,
+      "home": {
+        "abbr": "COL",
+        "score": 0,
+        "colorHex": null
+      },
+      "away": {
+        "abbr": "POR",
+        "score": 0,
+        "colorHex": null
+      },
+      "counts": {
+        "passes": 1038,
+        "shots": 0,
+        "momentum": 0
+      }
+    },
+    {
+      "matchId": "1976993",
+      "date": "2026-06-28",
+      "group": null,
+      "home": {
+        "abbr": "DCO",
+        "score": 3,
+        "colorHex": null
+      },
+      "away": {
+        "abbr": "UZB",
+        "score": 1,
+        "colorHex": null
+      },
+      "counts": {
+        "passes": 931,
+        "shots": 0,
+        "momentum": 0
       }
     }
   ]

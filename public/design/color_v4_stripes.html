@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Colour v4 · Flag-stripe / pattern fills</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#05070d;
+    --ink:#e9e7f4; --dim:#8f89ad; --faint:#4a4470;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:'Space Grotesk',system-ui,sans-serif;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1000px;margin:0 auto;padding:34px 30px 60px;}
+  h1{font-size:19px;font-weight:700;letter-spacing:.01em;margin:0 0 4px;}
+  h1 .v{color:#e0b84a;}
+  .sub{font-size:13px;color:var(--dim);line-height:1.55;max-width:74ch;margin:0 0 26px;}
+  .sub b{color:var(--ink);font-weight:600;}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:26px;}
+  @media(max-width:820px){.row{grid-template-columns:1fr;}}
+  .card{border:1px solid rgba(255,255,255,.08);border-radius:14px;overflow:hidden;background:var(--bg);}
+  .card h2{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--dim);margin:0;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,.06);}
+  .card h2 .fixed{color:#7fd0a0;}
+  .stage{position:relative;aspect-ratio:16/11;}
+  .stage svg{position:absolute;inset:0;width:100%;height:100%;}
+  .legend{display:flex;gap:18px;padding:11px 16px;font-family:'Space Mono',monospace;font-size:11.5px;color:var(--dim);}
+  .legend span{display:inline-flex;align-items:center;gap:7px;}
+  .note{margin-top:22px;font-size:12.5px;line-height:1.6;color:var(--dim);border-left:2px solid var(--faint);padding-left:14px;}
+  .note b{color:var(--ink);}
+  .pro{color:#7fd0a0;} .con{color:#ff9a9a;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Colour approach <span class="v">v4 — Flag-stripe / pattern fills</span></h1>
+  <p class="sub">The blanket is filled with the country's <b>flag banding</b> (or a per-team texture)
+  rather than one flat colour. Pattern is a <b>second channel</b> beyond hue — so even when two teams
+  share a colour, their <b>weave</b> differs. This is the redundant-encoding fix data-viz uses for
+  colourblind safety, applied for football identity.</p>
+
+  <div class="row">
+    <!-- FRA vs SEN -->
+    <div class="card">
+      <h2>France (bleu-blanc-rouge) &nbsp;vs&nbsp; Senegal (vert-jaune-rouge)</h2>
+      <div class="stage">
+        <svg viewBox="0 0 400 275" preserveAspectRatio="none">
+          <defs>
+            <!-- France: subtle diagonal tricolore banding, blue-dominant -->
+            <linearGradient id="fraTri" x1="0" y1="0" x2="0.9" y2="0.15">
+              <stop offset="0"   stop-color="#0055A4"/>
+              <stop offset=".58" stop-color="#0055A4"/>
+              <stop offset=".62" stop-color="#123a72"/>
+              <stop offset=".80" stop-color="#5a6f95"/>
+              <stop offset=".84" stop-color="#123a72"/>
+              <stop offset="1"   stop-color="#7d1f27"/>
+            </linearGradient>
+            <!-- Senegal: green-dominant with yellow & red ribbons -->
+            <linearGradient id="senTri" x1="0" y1="0" x2="0.9" y2="0.15">
+              <stop offset="0"   stop-color="#00853F"/>
+              <stop offset=".55" stop-color="#00853F"/>
+              <stop offset=".60" stop-color="#0a6f38"/>
+              <stop offset=".78" stop-color="#c9a227"/>
+              <stop offset=".82" stop-color="#0a6f38"/>
+              <stop offset="1"   stop-color="#7d1f27"/>
+            </linearGradient>
+            <radialGradient id="hill4a" cx="50%" cy="40%" r="60%">
+              <stop offset="0" stop-color="#ffffff" stop-opacity=".92"/>
+              <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <polygon points="0,60 232,40 232,235 0,255" fill="url(#fraTri)"/>
+          <polygon points="232,40 400,55 400,240 232,235" fill="url(#senTri)"/>
+          <line x1="232" y1="40" x2="232" y2="235" stroke="#05070d" stroke-width="2" opacity=".5"/>
+          <ellipse cx="150" cy="120" rx="48" ry="30" fill="url(#hill4a)"/>
+        </svg>
+      </div>
+      <div class="legend"><span>flag banding baked into each blanket · hue + stripe order = identity</span></div>
+    </div>
+
+    <!-- CAN vs MAR clash — solved by pattern -->
+    <div class="card">
+      <h2 class="fixed">Canada vs Morocco — CLASH solved by pattern</h2>
+      <div class="stage">
+        <svg viewBox="0 0 400 275" preserveAspectRatio="none">
+          <defs>
+            <!-- Canada: red with a WHITE central band (the flag's pale square) -->
+            <linearGradient id="canBand" x1="0" y1="0" x2="0.9" y2="0.12">
+              <stop offset="0"   stop-color="#FF0000"/>
+              <stop offset=".40" stop-color="#e50914"/>
+              <stop offset=".46" stop-color="#f2f2ee"/>
+              <stop offset=".54" stop-color="#f2f2ee"/>
+              <stop offset=".60" stop-color="#e50914"/>
+              <stop offset="1"   stop-color="#FF0000"/>
+            </linearGradient>
+            <!-- Morocco: red with a GREEN pentagram cue — different weave -->
+            <pattern id="marWeave" width="26" height="26" patternUnits="userSpaceOnUse" patternTransform="rotate(-14)">
+              <rect width="26" height="26" fill="#C1272D"/>
+              <path d="M13 3 L15.5 10 L23 10 L17 14.5 L19.5 22 L13 17.5 L6.5 22 L9 14.5 L3 10 L10.5 10 Z"
+                    fill="#0a7c3f" opacity=".55"/>
+            </pattern>
+            <radialGradient id="hill4b" cx="50%" cy="40%" r="60%">
+              <stop offset="0" stop-color="#ffffff" stop-opacity=".92"/>
+              <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <polygon points="0,60 200,48 200,232 0,252" fill="url(#canBand)"/>
+          <polygon points="200,48 400,58 400,238 200,232" fill="url(#marWeave)"/>
+          <line x1="200" y1="48" x2="200" y2="232" stroke="#05070d" stroke-width="2.4" opacity=".65"/>
+          <ellipse cx="270" cy="130" rx="46" ry="29" fill="url(#hill4b)"/>
+        </svg>
+      </div>
+      <div class="legend"><span style="color:#7fd0a0">both red — but Canada's white centre-band vs Morocco's green-star weave keep them apart</span></div>
+    </div>
+  </div>
+
+  <p class="note">
+    <b>How it reads.</b> Pattern adds a <b>second identity channel</b>, so the red/red clash finally
+    resolves: Canada's white flag-band reads differently from Morocco's green pentagram weave even though
+    the base hue matches. It's also the <b>colourblind-safe</b> route (colour + texture = redundant
+    encoding). <b>Risk:</b> on a soft, undulating 3D cloth with moving xG relief, fine stripes can turn to
+    <span class="con">visual noise / moiré</span> and fight the "calm gallery" north star — patterns must
+    be broad and low-contrast, essentially a whisper.<br><br>
+    <span class="pro">PRO:</span> only option that truly solves clashes; colourblind-safe; richest national read.
+    <span class="con">CON:</span> most complex to render on cloth; easy to over-do into busyness; can undercut the minimal, premium feel.
+  </p>
+</div>
+</body>
+</html>

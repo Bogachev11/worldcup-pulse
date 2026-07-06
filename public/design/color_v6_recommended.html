@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Colour v6 · RECOMMENDED — anchored hue + de-clash on lifted base</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root{ --ink:#e9e7f4; --dim:#8f89ad; --faint:#4a4470; }
+  *{box-sizing:border-box;}
+  html,body{margin:0;
+    /* the recommended base: lifted deep plum-navy, reverse-vignette applied per-stage */
+    background:#0c1019;color:var(--ink);
+    font-family:'Space Grotesk',system-ui,sans-serif;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1000px;margin:0 auto;padding:34px 30px 60px;}
+  h1{font-size:19px;font-weight:700;letter-spacing:.01em;margin:0 0 4px;}
+  h1 .v{color:#7fd0a0;}
+  .sub{font-size:13px;color:var(--dim);line-height:1.55;max-width:76ch;margin:0 0 24px;}
+  .sub b{color:var(--ink);font-weight:600;}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:26px;}
+  @media(max-width:820px){.row{grid-template-columns:1fr;}}
+  .card{border:1px solid rgba(255,255,255,.09);border-radius:14px;overflow:hidden;}
+  .card h2{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--dim);margin:0;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,.06);}
+  .card h2 .ok{color:#7fd0a0;}
+  .stage{position:relative;aspect-ratio:16/11;}
+  .stage svg{position:absolute;inset:0;width:100%;height:100%;}
+  .legend{padding:11px 16px;font-family:'Space Mono',monospace;font-size:11px;color:var(--dim);line-height:1.5;}
+  .rules{margin-top:26px;display:grid;grid-template-columns:1fr 1fr;gap:18px 30px;}
+  @media(max-width:820px){.rules{grid-template-columns:1fr;}}
+  .rule{font-size:12.5px;line-height:1.6;color:var(--dim);}
+  .rule b{color:var(--ink);display:block;margin-bottom:3px;letter-spacing:.02em;}
+  code{font-family:'Space Mono',monospace;color:#cfd8ea;font-size:11.5px;}
+  .step{color:#7fd0a0;font-weight:700;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Colour approach <span class="v">v6 — RECOMMENDED</span></h1>
+  <p class="sub"><b>Anchored team hue + automatic de-clash + a flag whisper only when needed, on a
+  lifted plum-navy base.</b> Keep the FotMob team colour as the default identity, but run every pairing
+  through a guard: if the two hues are too close (or too dark/too pale for the canvas), <b>nudge</b> one
+  and, in a true clash, add a <b>faint flag-band</b> as a second channel. Everything sits on the lifted
+  background from v5, not on black.</p>
+
+  <div class="row">
+    <!-- FRA vs SEN — no intervention needed -->
+    <div class="card">
+      <h2>France vs Senegal — <span class="ok">already distinct, hue only</span></h2>
+      <div class="stage">
+        <svg viewBox="0 0 400 275" preserveAspectRatio="none">
+          <defs>
+            <radialGradient id="vigA" cx="50%" cy="44%" r="75%">
+              <stop offset="0" stop-color="#101625"/><stop offset="1" stop-color="#0b0f18"/>
+            </radialGradient>
+            <linearGradient id="fraR" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#20336e"/><stop offset="1" stop-color="#2a4488"/>
+            </linearGradient>
+            <linearGradient id="senR" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#12934c"/><stop offset="1" stop-color="#0d6f39"/>
+            </linearGradient>
+            <radialGradient id="hillA" cx="50%" cy="40%" r="60%">
+              <stop offset="0" stop-color="#fff" stop-opacity=".92"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <rect width="400" height="275" fill="url(#vigA)"/>
+          <polygon points="0,60 232,40 232,235 0,255" fill="url(#fraR)"/>
+          <polygon points="232,40 400,55 400,240 232,235" fill="url(#senR)"/>
+          <line x1="232" y1="40" x2="232" y2="235" stroke="#0b0f18" stroke-width="2" opacity=".5"/>
+          <ellipse cx="150" cy="120" rx="48" ry="30" fill="url(#hillA)"/>
+        </svg>
+      </div>
+      <div class="legend">hue distance is large → ship the raw team colours, only lifted a touch for the darker base</div>
+    </div>
+
+    <!-- CAN vs MAR — de-clash + whisper -->
+    <div class="card">
+      <h2>Canada vs Morocco — <span class="ok">de-clashed automatically</span></h2>
+      <div class="stage">
+        <svg viewBox="0 0 400 275" preserveAspectRatio="none">
+          <defs>
+            <radialGradient id="vigB" cx="50%" cy="44%" r="75%">
+              <stop offset="0" stop-color="#101625"/><stop offset="1" stop-color="#0b0f18"/>
+            </radialGradient>
+            <!-- Canada: kept warm red, nudged brighter/lighter -->
+            <linearGradient id="canR" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#e23b34"/><stop offset="1" stop-color="#d3222a"/>
+            </linearGradient>
+            <!-- Morocco: rotated toward crimson/maroon + faint green flag-star whisper -->
+            <linearGradient id="marR" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#8e1b34"/><stop offset="1" stop-color="#6f1329"/>
+            </linearGradient>
+            <pattern id="marWhisper" width="34" height="34" patternUnits="userSpaceOnUse" patternTransform="rotate(-12)">
+              <rect width="34" height="34" fill="transparent"/>
+              <path d="M17 6 L19 12 L25 12 L20 16 L22 22 L17 18 L12 22 L14 16 L9 12 L15 12 Z"
+                    fill="#0a7c3f" opacity=".16"/>
+            </pattern>
+            <radialGradient id="hillB" cx="50%" cy="40%" r="60%">
+              <stop offset="0" stop-color="#fff" stop-opacity=".92"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <rect width="400" height="275" fill="url(#vigB)"/>
+          <polygon points="0,60 200,48 200,232 0,252" fill="url(#canR)"/>
+          <polygon points="200,48 400,58 400,238 200,232" fill="url(#marR)"/>
+          <polygon points="200,48 400,58 400,238 200,232" fill="url(#marWhisper)"/>
+          <line x1="200" y1="48" x2="200" y2="232" stroke="#0b0f18" stroke-width="2.4" opacity=".6"/>
+          <ellipse cx="270" cy="130" rx="46" ry="29" fill="url(#hillB)"/>
+        </svg>
+      </div>
+      <div class="legend">both red → keep Canada bright red, rotate Morocco toward maroon-crimson + a barely-there green flag-star weave</div>
+    </div>
+  </div>
+
+  <div class="rules">
+    <div class="rule"><b><span class="step">1.</span> Anchor on the team colour</b>
+      Default = FotMob primary. It's honest to the data and already looks right for ~80% of pairings.</div>
+    <div class="rule"><b><span class="step">2.</span> Measure the pair in a perceptual space</b>
+      Convert both to OKLCH/LAB and compute ΔE. If ΔE (and hue gap) exceed a threshold, do nothing.</div>
+    <div class="rule"><b><span class="step">3.</span> De-clash by rotating the AWAY hue</b>
+      Too close? Keep home, rotate away's hue and split lightness (one lighter, one darker) until they separate — never invent an off-brand colour, just bias within the family (red→crimson/maroon).</div>
+    <div class="rule"><b><span class="step">4.</span> Guard the canvas</b>
+      Clamp lightness so neither blanket is near-black (Germany grey) or near-white (Senegal kit) against the base — nudge toward mid-lightness so both always glow.</div>
+    <div class="rule"><b><span class="step">5.</span> Flag whisper only on a true clash</b>
+      If hue can't separate them enough, add a <b>very low-contrast</b> flag-band/star texture as a second channel (colourblind-safe). Off by default; a whisper, never stripes-as-noise.</div>
+    <div class="rule"><b><span class="step">6.</span> Lifted plum-navy base</b>
+      Background <code>#101625</code>→<code>#0b0f18</code> reverse-vignette (from v5). Gives dark colours an edge, adds gallery atmosphere, keeps blankets the star.</div>
+  </div>
+</div>
+</body>
+</html>

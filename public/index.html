@@ -94,8 +94,9 @@
   section{ padding-bottom:clamp(30px,4vw,52px); }
   .sec-head{
     display:flex; align-items:baseline; gap:16px; flex-wrap:wrap;
-    padding:14px 0 18px;
+    padding:14px 0 18px; margin-top:64px;   /* clear vertical break before each group */
   }
+  section > .sec-head:first-child{ margin-top:20px; }
   .sec-head h2{
     font-family:var(--grot); font-weight:600; font-size:clamp(17px,2.4vw,22px);
     letter-spacing:.18em; text-transform:uppercase; color:var(--ink);
@@ -107,26 +108,21 @@
 
   /* ————— GRID + CARDS ————— */
   .grid{
-    display:grid; gap:16px;
-    grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));
+    display:grid; gap:96px;   /* cards float free — same generous gaps; now 4 tighter cards per row */
+    grid-template-columns:repeat(4, minmax(0, 1fr));
   }
+  /* NO PLATE — cards float «in the air» on the page: no background, border, radius or
+     shadow. Only the content (essence thumb + teams/score + xG) sits on the grid. */
   .card{
     display:block; text-decoration:none; color:inherit;
-    background:linear-gradient(180deg, var(--bg-2) 0%, #160f2c 100%);
-    border:1px solid var(--fainter); border-radius:14px; overflow:hidden;
-    transition:transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+    transition:transform .16s ease;
   }
-  .card:hover{
-    transform:translateY(-3px); border-color:var(--faint);
-    box-shadow:0 16px 40px rgba(0,0,0,.5);
-  }
-  .card:hover .thumb .glow{ opacity:.9; }
+  .card:hover{ transform:translateY(-3px); }
 
   /* thumbnail placeholder — two team colours as split parallelogram silhouette */
   .thumb{
     position:relative; width:100%; aspect-ratio:16/8; overflow:hidden;
-    background:#0f0a20;
-    border-bottom:1px solid var(--fainter);
+    background:transparent;   /* essence floats free on the page — no plate behind it */
   }
   .thumb svg{ position:absolute; inset:0; width:100%; height:100%; display:block; }
   /* pre-rendered ESSENCE PNG (transparent) — sits ON TOP of the SVG placeholder; if it
@@ -144,12 +140,11 @@
     padding:3px 8px; border-radius:999px; backdrop-filter:blur(2px);
   }
   .thumb .dt{
-    position:absolute; top:10px; right:12px; z-index:2;
-    font-family:var(--mono); font-size:10px; letter-spacing:.03em; color:var(--dim);
-    background:rgba(15,10,32,.62); padding:3px 7px; border-radius:6px; backdrop-filter:blur(2px);
+    position:absolute; top:6px; right:6px; z-index:2;
+    font-family:var(--mono); font-size:10px; letter-spacing:.03em; color:var(--faint);
   }
 
-  .body{ padding:13px 15px 15px; }
+  .body{ padding:12px 2px 0; }
   .row{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
   .team{ display:inline-flex; align-items:center; gap:9px; min-width:0; }
   .team.away{ flex-direction:row-reverse; }
@@ -166,7 +161,7 @@
   .nums .dash{ color:var(--faint); margin:0 4px; font-weight:400; }
 
   .foot{
-    margin-top:12px; padding-top:11px; border-top:1px solid var(--fainter);
+    margin-top:9px;
     display:flex; align-items:center; justify-content:space-between;
     font-family:var(--mono); font-size:11px; letter-spacing:.02em; color:var(--faint);
   }
@@ -194,12 +189,17 @@
   .footstrip a.f-site{ color:var(--dim); text-decoration:none; }
   .footstrip a.f-site:hover{ color:var(--ink); }
 
+  /* tablet: 4 → 2 columns so cards don't get too thin */
+  @media (max-width:1000px){
+    .grid{ grid-template-columns:repeat(2, minmax(0,1fr)); gap:64px; }
+    .sec-head{ margin-top:48px; }
+  }
   @media (max-width:560px){
     .footstrip .f-sources{ margin-left:0; width:100%; margin-top:6px; }
-    /* let cards fill the full width so a 260px min never forces horizontal scroll */
-    .grid{ grid-template-columns:1fr; gap:14px; }
+    /* single column so nothing is squeezed */
+    .grid{ grid-template-columns:1fr; gap:56px; }
+    .sec-head{ padding:12px 0 14px; margin-top:36px; }
     .nums{ font-size:22px; }
-    .sec-head{ padding:12px 0 14px; }
   }
 </style>
 </head>
@@ -282,34 +282,13 @@ function thumbImg(m){
   return `<img class="thumb-png" loading="lazy" alt="" src="/thumbs/${encodeURIComponent(id)}.png"
     onerror="this.onerror=null;this.remove();">`;
 }
-// thumbnail placeholder: two team colours as a split parallelogram silhouette,
-// with a faint terrain-line motif nodding to the blanket/relief.
+// thumbnail fallback: a neutral dark panel only. NO team-colour split, NO lines —
+// the card shows ONLY the transparent 3D-essence PNG (thumbImg) on top of this.
+// If the PNG hasn't been built / 404s, this plain panel keeps the card from breaking.
 function thumbSVG(m){
-  const hc = m.home.colorHex || '#387ef0';
-  const ac = m.away.colorHex || '#e5333a';
-  // diagonal front from lower-left to upper-right — home camps left, away right.
-  return `
-  <svg viewBox="0 0 320 160" preserveAspectRatio="none" aria-hidden="true">
-    <defs>
-      <linearGradient id="hg${m.id}" x1="0" y1="1" x2="1" y2="0">
-        <stop offset="0" stop-color="${hc}" stop-opacity="0.92"/>
-        <stop offset="1" stop-color="${hc}" stop-opacity="0.42"/>
-      </linearGradient>
-      <linearGradient id="ag${m.id}" x1="1" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="${ac}" stop-opacity="0.92"/>
-        <stop offset="1" stop-color="${ac}" stop-opacity="0.42"/>
-      </linearGradient>
-    </defs>
-    <rect width="320" height="160" fill="#0f0a20"/>
-    <polygon points="0,0 196,0 124,160 0,160" fill="url(#hg${m.id})"/>
-    <polygon points="196,0 320,0 320,160 124,160" fill="url(#ag${m.id})"/>
-    <line x1="196" y1="0" x2="124" y2="160" stroke="#0f0a20" stroke-width="2" stroke-opacity="0.55"/>
-    <g stroke="#ffffff" stroke-opacity="0.08" stroke-width="1" fill="none">
-      <path d="M0,118 C60,104 110,126 160,112 C210,98 270,120 320,106"/>
-      <path d="M0,134 C60,122 110,142 160,130 C210,118 270,138 320,124"/>
-    </g>
-  </svg>
-  <span class="glow"></span>`;
+  // NO placeholder plate — cards float «in the air». The transparent essence PNG sits on
+  // the page background directly; if a thumb 404s the slot is simply empty (all built).
+  return ``;
 }
 
 function card(m, roundText){
@@ -325,7 +304,6 @@ function card(m, roundText){
 
   a.innerHTML = `
     <div class="thumb">
-      <span class="rd">${roundText}</span>
       <span class="dt">${fmtDate(m.date)}</span>
       ${thumbSVG(m)}
       ${thumbImg(m)}

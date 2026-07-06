@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Colour v2 · Flag colours</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#05070d;
+    --ink:#e9e7f4; --dim:#8f89ad; --faint:#4a4470;
+    /* National-flag primaries */
+    --fra:#0055A4;           /* France flag blue */
+    --sen:#00853F;           /* Senegal flag green */
+    --can:#FF0000;           /* Canada flag red */
+    --mar:#C1272D;           /* Morocco flag red */
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:'Space Grotesk',system-ui,sans-serif;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1000px;margin:0 auto;padding:34px 30px 60px;}
+  h1{font-size:19px;font-weight:700;letter-spacing:.01em;margin:0 0 4px;}
+  h1 .v{color:#e0b84a;}
+  .sub{font-size:13px;color:var(--dim);line-height:1.55;max-width:74ch;margin:0 0 26px;}
+  .sub b{color:var(--ink);font-weight:600;}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:26px;}
+  @media(max-width:820px){.row{grid-template-columns:1fr;}}
+  .card{border:1px solid rgba(255,255,255,.08);border-radius:14px;overflow:hidden;background:var(--bg);}
+  .card h2{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--dim);margin:0;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,.06);}
+  .card h2 .clash{color:#ff7a7a;}
+  .stage{position:relative;aspect-ratio:16/11;}
+  .stage svg{position:absolute;inset:0;width:100%;height:100%;}
+  .legend{display:flex;gap:18px;padding:11px 16px;font-family:'Space Mono',monospace;font-size:11.5px;color:var(--dim);}
+  .legend span{display:inline-flex;align-items:center;gap:7px;}
+  .sw{width:13px;height:13px;border-radius:3px;display:inline-block;}
+  .note{margin-top:22px;font-size:12.5px;line-height:1.6;color:var(--dim);border-left:2px solid var(--faint);padding-left:14px;}
+  .note b{color:var(--ink);}
+  .pro{color:#7fd0a0;} .con{color:#ff9a9a;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Colour approach <span class="v">v2 — National flag colours</span></h1>
+  <p class="sub">Each blanket takes the country's <b>flag primary</b> (France flag-blue #0055A4,
+  Senegal flag-green #00853F, Canada flag-red #FF0000, Morocco flag-red #C1272D). Flags are the most
+  universally recognised national signal — a broad audience reads "France = bleu" without being a fan.</p>
+
+  <div class="row">
+    <!-- FRA vs SEN -->
+    <div class="card">
+      <h2>France <span style="color:var(--fra)">■</span> &nbsp;vs&nbsp; Senegal <span style="color:var(--sen)">■</span></h2>
+      <div class="stage">
+        <svg viewBox="0 0 400 275" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="fra2" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#004a90"/><stop offset="1" stop-color="var(--fra)"/>
+            </linearGradient>
+            <linearGradient id="sen2" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="var(--sen)"/><stop offset="1" stop-color="#00702f"/>
+            </linearGradient>
+            <radialGradient id="hill2" cx="50%" cy="40%" r="60%">
+              <stop offset="0" stop-color="#ffffff" stop-opacity=".9"/>
+              <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <polygon points="0,60 232,40 232,235 0,255" fill="url(#fra2)"/>
+          <polygon points="232,40 400,55 400,240 232,235" fill="url(#sen2)"/>
+          <line x1="232" y1="40" x2="232" y2="235" stroke="#05070d" stroke-width="2" opacity=".5"/>
+          <ellipse cx="150" cy="120" rx="48" ry="30" fill="url(#hill2)"/>
+        </svg>
+      </div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--fra)"></i>FRA flag #0055A4</span>
+        <span><i class="sw" style="background:var(--sen)"></i>SEN flag #00853F</span>
+      </div>
+    </div>
+
+    <!-- CAN vs MAR clash -->
+    <div class="card">
+      <h2 class="clash">Canada <span style="color:var(--can)">■</span> &nbsp;vs&nbsp; Morocco <span style="color:var(--mar)">■</span> — CLASH</h2>
+      <div class="stage">
+        <svg viewBox="0 0 400 275" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="can2" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#e00000"/><stop offset="1" stop-color="var(--can)"/>
+            </linearGradient>
+            <linearGradient id="mar2" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="var(--mar)"/><stop offset="1" stop-color="#9c1f24"/>
+            </linearGradient>
+          </defs>
+          <polygon points="0,60 200,48 200,232 0,252" fill="url(#can2)"/>
+          <polygon points="200,48 400,58 400,238 200,232" fill="url(#mar2)"/>
+          <line x1="200" y1="48" x2="200" y2="232" stroke="#05070d" stroke-width="2" opacity=".5"/>
+          <ellipse cx="270" cy="130" rx="46" ry="29" fill="url(#hill2)"/>
+        </svg>
+      </div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--can)"></i>CAN flag #FF0000</span>
+        <span><i class="sw" style="background:var(--mar)"></i>MAR flag #C1272D</span>
+      </div>
+    </div>
+  </div>
+
+  <p class="note">
+    <b>How it reads.</b> Flag colours are the <b>most legible national signal to a layperson</b> — better
+    recall than kit or brand colours. FRA/SEN is crisp. But flags still <b>clash</b>: Canada and Morocco
+    are both flag-red, so <span class="con">the clash problem is not solved by switching source</span> — a
+    red/red pair stays red/red. Many flags also share a small palette (red, white, green, blue) so
+    collisions are common.<br><br>
+    <span class="pro">PRO:</span> instant national read for a broad audience; culturally "correct".
+    <span class="con">CON:</span> still clashes; white-flag countries (much of the field) give no colour at all against near-black; needs the same de-clash logic as v1.
+  </p>
+</div>
+</body>
+</html>

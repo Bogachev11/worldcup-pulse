@@ -49,7 +49,15 @@
       width: var(--col-w); max-width: 100vw; z-index: 10; pointer-events: none;
     }
     /* the 3D canvas is framed to the 1000px column (sky halo stays full-bleed behind) */
-    #stage { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; pointer-events: auto; }
+    #stage { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; pointer-events: auto;
+      /* FEATHER THE LEFT/RIGHT EDGES — the vignetted canvas is a hard-edged rectangle, so at
+         the column boundary its near-black edge meets the lighter deep-plum backdrop as a hard
+         vertical SEAM. This horizontal alpha mask fades the outer ~9% of the canvas to
+         transparent, dissolving the vignette edge into the backdrop → the seam becomes a soft
+         gradient, not a line. Only the already-vignette-dark margins fade (the pitch is centred),
+         and the HUD text lives in a separate #hud13 layer, so nothing legible is touched. */
+      -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 9%, #000 91%, transparent 100%);
+              mask-image: linear-gradient(to right, transparent 0%, #000 9%, #000 91%, transparent 100%); }
     #stage:active { cursor: grabbing; }
     .pnl {
       position: fixed; z-index: 30; pointer-events: auto;

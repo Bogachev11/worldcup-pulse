@@ -108,10 +108,44 @@ def _anchors_on_page(pg):
     }""")
 
 
+# On WhoScored the entire WC2026 knockout bracket (Round of 32 -> Final) lives
+# under ONE stage, 23752 ("World Cup Final Stage"), discovered from the season
+# page's stage dropdown (2026-07-06). Its fixtures page only renders the CURRENT
+# matchday's anchors, but the Calendar widget's #dayChangeBtn-prev button pages
+# back a month client-side and re-renders earlier knockout fixtures into the DOM
+# (verified: one back-click from Jul->Jun surfaces the Round-of-32 games, incl.
+# brazil-japan=1990729 and south-africa-canada=1988523). We click it a handful
+# of times and harvest anchors after each step so knockout games that have rolled
+# off the landing page still get a WhoScored anchor (instead of FotMob-only).
+WS_KNOCKOUT_STAGE_IDS = [23752]
+
+
+def _paginate_prev_and_ingest(pg, ingest, steps=8):
+    """Click the fixtures Calendar 'previous day/month' button `steps` times,
+    ingesting anchors after each click. Fail-soft; returns immediately if the
+    button is absent."""
+    for _ in range(steps):
+        try:
+            clicked = pg.evaluate(
+                "()=>{const b=document.querySelector('#dayChangeBtn-prev');"
+                "if(b){b.click();return true;}return false;}")
+        except Exception:
+            break
+        if not clicked:
+            break
+        pg.wait_for_timeout(2200)
+        try:
+            ingest(_anchors_on_page(pg))
+        except Exception:
+            pass
+
+
 def build_ws_pool(pg):
     """Return { team-pair -> {id, slug, url} } for every WhoScored WC anchor we
-    can see: the season landing page (current + recent knockout matchday) and the
-    12 group-stage fixtures pages. Team names come straight from the slug."""
+    can see: the season landing page (current + recent knockout matchday), the
+    12 group-stage fixtures pages, and the knockout Final Stage fixtures page
+    (paged back through earlier matchdays). Team names come straight from the
+    slug."""
     pool = {}
 
     def ingest(anchors):
@@ -149,6 +183,19 @@ def build_ws_pool(pg):
             ingest(_anchors_on_page(pg))
         except Exception as e:
             log(f"  [ws] stage {sid} failed: {str(e)[:60]}")
+        time.sleep(0.25)
+
+    # knockout Final Stage fixtures page(s), paging back to earlier matchdays so
+    # rolled-off knockout games (Round of 32 etc.) still get an anchor.
+    for sid in WS_KNOCKOUT_STAGE_IDS:
+        try:
+            log(f"  [ws] knockout stage {sid} fixtures (with pagination) ...")
+            pg.goto(H._ws_stage_fixtures_url(sid), wait_until="domcontentloaded")
+            pg.wait_for_timeout(3500)
+            ingest(_anchors_on_page(pg))            # current matchday
+            _paginate_prev_and_ingest(pg, ingest)   # earlier matchdays
+        except Exception as e:
+            log(f"  [ws] knockout stage {sid} failed: {str(e)[:80]}")
         time.sleep(0.25)
 
     log(f"  [ws] anchor pool size: {sum(len(v) for v in pool.values())}")
