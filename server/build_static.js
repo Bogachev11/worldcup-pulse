@@ -39,6 +39,9 @@ async function main() {
   // per-match 3D essence thumbnails for the gallery cards
   const THUMBS = path.join(PUBLIC, 'thumbs');
   if (await exists(THUMBS)) await cp(THUMBS, path.join(DIST, 'thumbs'), { recursive: true });
+  // About-page example images (goal / attack / territory crops)
+  const ABOUTDIR = path.join(PUBLIC, 'about');
+  if (await exists(ABOUTDIR)) await cp(ABOUTDIR, path.join(DIST, 'about'), { recursive: true });
 
   // 2) materialise /api/rich/{id} and /api/timeline/{id} (extensionless) for every match
   //    that has BOTH a rich record and a timeline (what stage13 fetches).
