@@ -263,18 +263,45 @@
     #hud13 .team--away .rail { background: var(--away-color);
       box-shadow: 0 0 10px color-mix(in srgb, var(--away-color) 55%, transparent); }
 
-    /* POST-MATCH STATS — revealed under each team's goals once the animation settles */
-    #hud13 .tstats { margin-top: 18px; display: none; flex-direction: column; gap: 8px;
-      min-width: 168px; opacity: 0; transition: opacity .8s ease; }
-    #hud13 .tstats.show { display: flex; opacity: 1; }
-    #hud13 .tstats .srow { display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
-      border-top: 1px solid rgba(255,255,255,.14); padding-top: 7px; }
-    #hud13 .tstats .srow:first-child { border-top: none; padding-top: 0; }
-    /* text-shadow so the floating stats stay legible over the pitch (no plate) */
-    #hud13 .tstats .slab { font-family: var(--s13-grot); font-size: 10.5px; letter-spacing: .14em;
-      text-transform: uppercase; color: #c9c6dd; text-shadow: 0 1px 7px rgba(0,0,0,.9), 0 0 2px rgba(0,0,0,.95); }
-    #hud13 .tstats .sval { font-family: var(--s13-mono); font-size: 16px; color: #fff;
-      font-variant-numeric: tabular-nums; font-weight: 700; text-shadow: 0 1px 7px rgba(0,0,0,.9), 0 0 3px rgba(0,0,0,.95); }
+    /* POST-MATCH STATS — ONE unified comparison table (home value · LABEL · away value + a
+       split mini-bar per metric), revealed centred under the scoreline once the animation
+       settles. Rows are all on the SAME baseline (no per-team column drift). */
+    #hud13 .mstats { margin-top: 26px; display: none; flex-direction: column; gap: 15px;
+      width: min(360px, 74vw); opacity: 0; transition: opacity .8s ease; }
+    #hud13 .mstats.show { display: flex; opacity: 1; }
+    #hud13 .mstats .mrow { display: flex; flex-direction: column; gap: 6px; }
+    #hud13 .mstats .mtop { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    #hud13 .mstats .mlab { font-family: var(--s13-grot); font-size: 10.5px; letter-spacing: .16em;
+      text-transform: uppercase; color: #b8b5cc; text-shadow: 0 1px 7px rgba(0,0,0,.85); }
+    #hud13 .mstats .mval { font-family: var(--s13-mono); font-size: 17px; color: #fff; font-weight: 700;
+      font-variant-numeric: tabular-nums; text-shadow: 0 1px 7px rgba(0,0,0,.9), 0 0 3px rgba(0,0,0,.95); min-width: 42px; }
+    #hud13 .mstats .mval--a { text-align: right; }
+    #hud13 .mstats .mbar { display: flex; align-items: stretch; height: 5px; border-radius: 3px;
+      overflow: hidden; background: rgba(255,255,255,.12); box-shadow: 0 1px 5px rgba(0,0,0,.55); }
+    #hud13 .mstats .mbar > i { display: block; height: 100%; }
+    #hud13 .mstats .mbar-h { background: var(--home-color, #21d07a); }
+    #hud13 .mstats .mbar-a { background: var(--away-color, #e23b3b); margin-left: auto; }
+    #hud13 .mstats .mbar-gap { flex: 0 0 2px; background: transparent; }
+
+    /* GOAL SCORER — hover the disc+minute and the scorer's SURNAME slides in on a plate to the
+       RIGHT (the disc and minute stay put). Custom plate, not a native title. */
+    /* on hover the WHOLE row becomes ONE plate — the disc ● + minute STAY, the scorer's SURNAME
+       slides in inside the same plate → [● 89' Haaland]. */
+    #hud13 .ev.goal-ev { pointer-events: auto; cursor: default; gap: 9px;
+      border-radius: 8px; padding: 4px 10px; margin: -4px -10px;
+      transition: background .16s ease, box-shadow .16s ease; }
+    #hud13 .ev.goal-ev:hover { background: #0b0b13; box-shadow: 0 7px 20px rgba(0,0,0,.5); }
+    #hud13 .ev.goal-ev::after { content: attr(data-tip);
+      font-family: var(--s13-grot); font-size: 12.5px; font-weight: 600; color: #fff; letter-spacing: .02em;
+      white-space: nowrap; max-width: 0; opacity: 0; overflow: hidden; margin-left: -9px;
+      transition: max-width .2s ease, opacity .16s ease, margin-left .2s ease; }
+    #hud13 .ev.goal-ev:hover::after { max-width: 220px; opacity: 1; margin-left: 0; }
+
+    /* END-STATE VIGNETTE — an elegant scrim over the field that fades in as the match settles,
+       darkening the cloth (edges most) so the post-match stats read cleanly. Driven in JS
+       (opacity = settle ramp, off during the shootout). */
+    #endscrim { position: absolute; inset: 0; pointer-events: none; z-index: 6; opacity: 0;
+      background: radial-gradient(130% 100% at 48% 52%, rgba(7,7,14,0.36) 0%, rgba(5,5,11,0.62) 50%, rgba(3,3,8,0.85) 100%); }
 
     /* floating xG-peak labels — a small pill anchored to the peak, positioned per-frame in JS */
     #xglabels { position: absolute; inset: 0; pointer-events: none; z-index: 26; }
@@ -378,8 +405,10 @@
       :root { --col-w: 100vw; }
       #composition { width: 100vw; max-width: 100vw; }
 
-      #hud13 .head { top: 20px; left: 18px; right: 18px; }
+      #hud13 .head { top: 20px; left: 18px; right: 18px; flex-wrap: wrap; }
       #hud13 .teams { gap: 18px; }
+      /* stats drop to their OWN full-width row below the scoreline (never overlap the clock) */
+      #hud13 .mstats { flex: 0 0 100%; width: 100%; order: 5; margin-top: 20px; }
       #hud13 .abbr { font-size: 12px; letter-spacing: .16em; }
       #hud13 .flag { width: 20px; height: 13px; }
       #hud13 .rail { height: 5px; margin-top: 7px; min-width: 60px; }
@@ -414,6 +443,8 @@
   <!-- STAGE11 #4 — centered ~1000px composition column: 3D canvas + HUD -->
   <div id="composition">
     <canvas id="stage"></canvas>
+    <!-- end-state vignette: fades in on settle so the post-match stats read over the cloth -->
+    <div id="endscrim"></div>
 
     <!-- OLD goal-markers canvas kept for compatibility but DISABLED (drawMarkers is a
          no-op in stage13.js); goals + reds now render under the teams in #hud13. -->
@@ -430,8 +461,6 @@
             <div class="rail"></div>
             <div class="score" id="hScore">0</div>
             <div class="events" id="hEvents"><!-- goals / red / shootout rows injected by updateEventBlocks() --></div>
-            <!-- post-match stats (revealed when the animation settles) -->
-            <div class="tstats" id="hStats"></div>
           </div>
           <!-- AWAY team -->
           <div class="team team--away">
@@ -439,9 +468,11 @@
             <div class="rail"></div>
             <div class="score" id="aScore">0</div>
             <div class="events" id="aEvents"><!-- goals / red / shootout rows injected by updateEventBlocks() --></div>
-            <div class="tstats" id="aStats"></div>
           </div>
         </div>
+
+        <!-- unified post-match comparison stats (revealed centred under the scoreline on settle) -->
+        <div class="mstats" id="mStats"></div>
 
         <!-- clock (top-right) — NO LIVE indicator -->
         <div class="clock">

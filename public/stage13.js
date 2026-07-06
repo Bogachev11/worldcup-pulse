@@ -100,10 +100,18 @@ function applyDefaultCamera() {
 // cloth+relief comfortably in the centered column with a little margin. Width follows the
 // aspect. camera.zoom (driven by OrbitControls dolly) scales it in updateProjectionMatrix.
 const ORTHO_VIEW = 9.2;
+// CONTENT_HALF_W = world-unit HORIZONTAL half-extent that the tilted pitch (+relief) spans
+// on screen along the camera's right axis. On WIDE aspects the height-driven width already
+// exceeds this so it's inert (desktop unchanged). On NARROW/PORTRAIT aspects (phones) the
+// height-driven width shrinks below the pitch → it overflows the sides; we then grow the
+// frustum (zoom out) so the FULL pitch width is contained. "contain" fit, not "cover".
+const CONTENT_HALF_W = 9.2;
 function setOrthoFrustum(aspect) {
   if (!camera || !camera.isOrthographicCamera) return;
-  const h = ORTHO_VIEW;
-  const w = h * Math.max(0.0001, aspect);
+  const a = Math.max(0.0001, aspect);
+  // fit BOTH dims: half-height ≥ ORTHO_VIEW AND half-width ≥ CONTENT_HALF_W
+  const h = Math.max(ORTHO_VIEW, CONTENT_HALF_W / a);
+  const w = h * a;
   camera.left = -w; camera.right = w; camera.top = h; camera.bottom = -h;
   camera.updateProjectionMatrix();
 }
@@ -187,14 +195,14 @@ const EVENT_LAG_S = 0.7;
 // team's colour (a soft mini-goal-flood), so the more dangerous side visibly «floods with its
 // colour» during its chances — NEVER a local island in the opponent's half (that was wrong).
 // In WALL seconds so it plays under the dramatic clock (scrub-safe). Strength ∝ xG × the knob.
-const DANGER_XG = 0.14;            // floods only for a real chance (goals excluded — they have their own flood)
+const DANGER_XG = 0.05;            // LOW bar so every dangerous episode shows a finger-выпад (goals excluded — own flood). On-target/saved shots qualify regardless of xG (see dangerShots build). Depth follows shot POSITION, not xG.
 const DANGER_FLOOD_S = 1.7;        // wall-seconds life of the danger wash (rise → peak → recede)
 const XG_SPIRE_MAX = 2.5;          // hard cap on a (non-goal) xG spire's world-Y — a chance PEAKS clearly LOWER than a GOAL crest (xG ≈ half a goal, per the user: «xG всегда меньше гола раза в два»).
 const STREAK_XG = 0.08;            // a shot counts toward a streak if xg ≥ this (goals always count)
 const STREAK_WIN_MIN = 6.0;        // look-back window (match-minutes) for the streak
 const STREAK_MAX = 4;              // cap the streak count so a chaotic spell doesn't tower absurdly
 const GOAL_CREST_LEAD_S = 0.5;     // WALL-seconds of pre-goal build — a short RISE that peaks AT the goal
-const GOAL_CREST_DECAY_S = 2.5;    // WALL-seconds decay τ AFTER the hold — long enough that the GOAL peak stands THROUGH the flood (which lasts ~3.6s), so a goal always reads as the TALLEST feature. Magnitude = cfg.A.goalH.
+const GOAL_CREST_DECAY_S = 1.1;    // WALL-seconds decay τ AFTER the hold — the GOAL peak stands during the goal MOMENT (roll+hold ~2s) then RECEDES with the flood/rollback, NOT a bump lingering long after. Magnitude = cfg.A.goalH.
 
 // ============================================================================
 // CONFIG — every layer's enable flag + its own knobs. This whole object is what
@@ -264,14 +272,14 @@ const DEFAULTS = () => ({
     // goalHold — hold the goal spire AT ITS PEAK for this many WALL seconds before it
     //           decays (rise → HOLD → decay). Rendered outside the lull-flatten so the
     //           held peak isn't pressed down by the post-goal штиль.
-    goalHold: 1.6,
+    goalHold: 0.9,
     // goalReset — the front's ROLLBACK-to-centre duration after the flood (was the hard
     //           FLOOD_RELAX_S). Wall seconds.
     goalReset: 1.8,
     // goalPause — a SMALL extra calm dwell AFTER the whole wave, on top of the auto goal
     //           room (which now tracks the real flood envelope so there's no dead time).
     //           Wall seconds.
-    goalPause: 0.4,
+    goalPause: 0.5,
     // ВЫПАД ▸ сила — THRUST FINGER strength. A FAST FORWARD pass by the attacking
     // team makes the colour front STAB FORWARD as a sharp, narrow FINGER of that
     // team's colour into the opponent half (in the PLANE of the blanket — the
@@ -389,6 +397,28 @@ async function init() {
   const isHex = (s) => typeof s === 'string' && /^#?[0-9a-fA-F]{6}$/.test(s);
   if (isHex(teamMeta.home.color)) FRA_HEX = teamMeta.home.color;
   if (isHex(teamMeta.away.color)) SEN_HEX = teamMeta.away.color;
+  // LIFT near-BLACK team colours (Germany's black, etc.) to a visible neutral GREY — pure black
+  // reads as a dead "hole" on the dark pitch. Genuinely coloured teams are untouched. If BOTH
+  // teams are near-black, give them two DISTINCT greys so the halves still read apart.
+  {
+    // DARK team colours read as washed-out/near-black "holes" on the dark pitch (the shader mixes
+    // toward a light clay base, so low-lum hues desaturate to grey — Mexico's #00634b renders grey,
+    // not green). LIFT them: a near-NEUTRAL dark (Germany's #464646, black kits) → a visible light
+    // GREY; a SATURATED dark (dark green/navy) → the SAME hue raised in LIGHTNESS so it reads as its
+    // true colour. Bright colours are untouched.
+    const _lift = (hex, grey) => {
+      const c = new THREE.Color(hex);
+      const lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+      if (lum >= 0.34) return hex;                            // bright enough already
+      const hsl = { h: 0, s: 0, l: 0 }; c.getHSL(hsl);
+      if (hsl.s < 0.22) return grey;                          // neutral/black → grey
+      c.setHSL(hsl.h, hsl.s, Math.max(hsl.l, 0.46));          // saturated dark → brighten, keep hue
+      return '#' + c.getHexString();
+    };
+    FRA_HEX = _lift(FRA_HEX, '#9a9aa2');
+    SEN_HEX = _lift(SEN_HEX, '#9a9aa2');
+    if (FRA_HEX === '#9a9aa2' && SEN_HEX === '#9a9aa2') SEN_HEX = '#5f5f68';   // both neutral-dark → two distinct greys
+  }
   COL_HOME.set(FRA_HEX); COL_AWAY.set(SEN_HEX);
   timeline = buildTimelineFromDoc(tlDoc);
   ballLocus = buildBallLocus(timeline);
@@ -409,6 +439,7 @@ async function init() {
     if (rich && rich.possession && Number.isFinite(rich.possession.home)) matchPossession = rich.possession;
     if (rich && Array.isArray(rich.shots)) richShots = rich.shots;   // player names for the xG-peak labels
   } catch { momentum = []; }
+  buildGoalScorers();        // resolve each goal's scorer NAME by team+order (robust to minute/xg drift)
   buildXgLabels();           // floating player-name labels on the strongest xG peaks
   buildGoalMarkers();        // STAGE11 CHANGE #5 — persistent goal-token row (open-play/penalty)
   buildMatchStats();         // aggregate post-match stats (shown after the animation settles)
@@ -1422,6 +1453,18 @@ function arWeight(a, atk, rel) {
   const rise = atk > 0.02 ? (1 - Math.exp(-a / atk)) : 1;
   return rise * Math.exp(-a / rel);
 }
+// DANGER-FINGER envelope — a MORPH, not a pop-and-hang. Argument is WALL-SECONDS since the shot
+// (via the warp), NOT match-minutes: the drama clock DWELLS on a dangerous moment, so a match-min
+// envelope would FREEZE the finger at full extension for the whole dwell (~1–1.5s of "висение без
+// движения"). Wall-seconds keep advancing through the dwell → the выпад REACHES IN over DG_REACH
+// then PULLS BACK to 0 over DG_PULL at a CONSTANT visual pace, always moving, never stuck.
+const DG_REACH = 0.4, DG_PULL = 0.9;   // WALL-seconds
+function dangerFingerEnv(wsec) {
+  if (!(wsec >= 0)) return 0;   // <0 (before the shot) or NaN (warp not ready)
+  if (wsec < DG_REACH) { const f = wsec / DG_REACH; return f * f * (3 - 2 * f); }
+  const f = (wsec - DG_REACH) / DG_PULL;
+  return f >= 1 ? 0 : (1 - f * f * (3 - 2 * f));
+}
 
 // ============================================================================
 // POSSESSION TIDE — territory by BALL FIELD-POSITION (stage5 feel) -------------
@@ -1864,15 +1907,28 @@ function computeA(t, dt) {
   // PEAKS at the goal, a HOLD at the peak for cfg.A.goalHold wall-seconds («держать пик»),
   // then a decay. Independent of the shot's recorded xG so low-xG / own goals still read as
   // rising danger → GOAL → flood. env is 0..1 (magnitude comes from goalH in the vertex loop).
+  // The crest lifetime is TIED to the flood wave phases (goalWaveAt) so the peak can NEVER
+  // outlive the flood: it RISES into the goal, HOLDS at full while the flood covers the
+  // conceded end (roll + flatten), then FADES exactly as the front ROLLS BACK to centre
+  // (the RESET phase, cover→0). No stranded hill left behind in the opponent half after the
+  // rollback. Same phase durations as goalWaveAt → crest and flood move as one event.
   const gLead = GOAL_CREST_LEAD_S;
-  const gHold = Number.isFinite(cfg.A.goalHold) ? clamp(cfg.A.goalHold, 0, 6) : 0.4;
+  const gRoll = FLOOD_SWEEP_S;
+  const gFloodHold = Number.isFinite(cfg.A.floodHold) ? clamp(cfg.A.floodHold, 0, 12) : FLOOD_HOLD_DEFAULT_S;
+  const gLull = Number.isFinite(cfg.A.lull) ? clamp(cfg.A.lull, 0, 12) : 0;
+  const gExtra = Number.isFinite(cfg.A.goalHold) ? clamp(cfg.A.goalHold, 0, 6) : 0.4;  // «держать пик» — extra hold, but WITHIN the flood flatten so it can't strand
+  const gFlat = gFloodHold + gLull;
+  const gHoldEnd = gRoll + Math.min(gFlat, gRoll + gFlat);          // peak holds through roll+flatten
+  const gReset = Number.isFinite(cfg.A.goalReset) ? clamp(cfg.A.goalReset, 0, 8) : FLOOD_RELAX_S;
+  const gPeakEnd = gRoll + gFlat + Math.min(gExtra, gFlat);         // clamp extra hold so fade still lands within the flood's reset
+  const gTotal = gRoll + gFlat + gReset;
   for (const g of goalSpots) {
     const w = wallSecondsSinceGoal(g.t, t);              // wall-seconds since goal (<0 before)
-    if (!Number.isFinite(w) || w < -gLead) continue;     // not building yet
+    if (!Number.isFinite(w) || w < -gLead || w >= gTotal) continue;  // build window = flood window
     let env;
-    if (w < 0) { const f = (w + gLead) / gLead; env = f * f * (3 - 2 * f); }   // RISE → peak at goal
-    else if (w < gHold) env = 1;                                               // HOLD at peak
-    else env = Math.exp(-(w - gHold) / GOAL_CREST_DECAY_S);                    // decay
+    if (w < 0) { const f = (w + gLead) / gLead; env = f * f * (3 - 2 * f); }        // RISE → peak at goal
+    else if (w < gPeakEnd) env = 1;                                                  // HOLD while flood covers
+    else { const f = clamp((w - gPeakEnd) / Math.max(0.1, gTotal - gPeakEnd), 0, 1); env = 1 - f * f * (3 - 2 * f); }  // FADE with the rollback to centre
     if (env < 0.02) continue;
     const Ggrid = g.team === 'home' ? A_gH : A_gA;
     stamp(Ggrid, gx, gy, g.u, g.v, env, sharpRad);
@@ -2036,9 +2092,8 @@ function computeA(t, dt) {
   // Deterministic from t (arWeight) → scrub-safe. Disabled during the shootout.
   const activeDg = [];
   if (!shootActive && !wave) {   // NO danger finger during a GOAL wave — it fought the roll/reset (strange rollback + a spurious 2nd peak near the goal). The goal flood owns the front then.
-    const _fatk = Math.max(0.02, cfg.A.atk), _frel = Math.max(0.1, cfg.A.rel);
     for (const e of dangerShots) {
-      const env = arWeight(t - e.t, _fatk, _frel);
+      const env = dangerFingerEnv(wallSecondsSinceGoal(e.t, t));   // WALL-time so it never freezes mid-reach during a drama-dwell
       if (env < 0.12) continue;
       activeDg.push({ home: e.team === 'home', su: e.u, jc: (1 - e.v) * (gy - 1), sig: 0.085 * (gy - 1), env });
     }
@@ -2098,7 +2153,8 @@ function goalWaveAt(t) {
   const lullV = Number.isFinite(cfg.A.lull) ? clamp(cfg.A.lull, 0, 12) : 0;
   const flat = floodHoldV + lullV;
   const reset = Number.isFinite(cfg.A.goalReset) ? clamp(cfg.A.goalReset, 0, 8) : FLOOD_RELAX_S;
-  const total = roll + flat + reset;
+  const kick = Number.isFinite(cfg.A.goalPause) ? clamp(cfg.A.goalPause, 0, 6) : 0.4;  // KICKOFF HOLD at centre
+  const total = roll + flat + reset + kick;
   if (elapsed < 0 || elapsed >= total) return null;
   // end E extreme front-u: home covers everything up to u=1 (E=1), away up to u=0 (E=0).
   const endE = g.team === 'home' ? 1.0 : 0.0;
@@ -2115,12 +2171,21 @@ function goalWaveAt(t) {
     // FLATTEN — the conceded side is fully covered; the front holds at E while the
     // height levels out (goalLullAt handles the height flatten). Full cover.
     front = endE; cover = 1;
-  } else {
-    // RESET — the front EASES back to the middle (kickoff) and the wave releases the
-    // boundary back to the natural tide. front→mid AND cover→0 together.
+  } else if (elapsed < roll + flat + reset) {
+    // RESET — the front SWEEPS all the way back to the MIDDLE (kickoff) with cover STILL
+    // FULL, so the whole field visibly rolls to a clean 50/50 (a firm ОТКАТ НА ЦЕНТР, not
+    // a natural-tide bleed-through). endE → mid.
     const f = (elapsed - roll - flat) / reset; const e = f * f * (3 - 2 * f);
     front = lerp(endE, mid, e);
-    cover = 1 - e;
+    cover = 1;
+  } else {
+    // KICKOFF HOLD — the front RESTS at the centre (kickoff). cover stays FULL for the first
+    // ~65% of the hold so the 50/50 is clearly SEEN, then eases to 0 over the tail, releasing
+    // the boundary back to the natural tide. So after a goal the field settles at CENTRE for a
+    // real beat, THEN normal play resumes — never a residual hump stranded in the opponent half.
+    const f = (elapsed - roll - flat - reset) / Math.max(0.1, kick);   // 0..1 through the hold
+    front = mid;
+    cover = f < 0.65 ? 1 : (1 - smoothstep(0.65, 1, f));
   }
   return { team: g.team, front: clamp(front, 0, 1), cover: clamp(cover, 0, 1) };
 }
@@ -3079,6 +3144,9 @@ window.__frontStats = () => {
   if (A_frontRaw) for (let j = 0; j < A_frontRaw.length; j++) { const v = A_frontRaw[j]; if (v < rmn) rmn = v; if (v > rmx) rmx = v; rs += v; }
   return { clock: +clock.toFixed(2), mean: +(s / A_frontDisp.length).toFixed(3), min: +mn.toFixed(3), max: +mx.toFixed(3), mom: +momentumAt(clock).toFixed(3), momFront: +_dbgMomFront.toFixed(3), ballMean: +_dbgBallMean.toFixed(3), rawMean: A_frontRaw ? +(rs / A_frontRaw.length).toFixed(3) : null, rawMin: +rmn.toFixed(3), rawMax: +rmx.toFixed(3) };
 };
+// dev/verification hook — raw goal-WAVE phase at a match-minute (front target + cover), so the
+// post-goal rollback-to-centre can be measured without the front-smoothing lag.
+window.__waveAt = (t) => { const w = goalWaveAt(t); return w ? { t: +(+t).toFixed(2), front: +w.front.toFixed(3), cover: +w.cover.toFixed(3), team: w.team } : null; };
 // dev/verification hook — DWELL of the dramatic clock at a match-minute: screen-seconds
 // spent on a ±half-minute window around t (higher = the clock lingers there). Lets us
 // verify penetration room objectively (e.g. a 14' thrust minute should now out-dwell an
@@ -3441,6 +3509,28 @@ let matchPossession = null;   // {home, away} ball-possession % (from the rich r
 let richShots = [];           // rich-record shots (carry PLAYER names, matched to timeline by minute+xg)
 let xgLabels = [];            // {t, team, u, v, player, xg} — strongest xG peaks get a floating player-name label
 const XGLABEL_MIN = 0.30;     // only the STRONGEST chances get a label (avoid clutter)
+// GOAL SCORER resolver — timeline goal → scorer NAME. Matching by minute+xg FAILS for goals:
+// FotMob (rich) numbers stoppage/ET differently from WhoScored (timeline) — e.g. a 99' goal in
+// the timeline is minute 90 in rich — and a goal's xg is often null. So match goals by TEAM +
+// ORDER instead: the Nth goal a team scores in the timeline = the Nth goal that team scores in
+// rich (robust to minute/xg drift). Keyed by the timeline goal's t. Built once after load.
+let _goalScorers = new Map();
+function buildGoalScorers() {
+  _goalScorers = new Map();
+  const rich = { home: [], away: [] };
+  for (const rs of (richShots || [])) {
+    if ((rs.isGoal || rs.type === 'Goal') && (rs.team === 'home' || rs.team === 'away') && rs.player) rich[rs.team].push(rs);
+  }
+  rich.home.sort((a, b) => (a.minute || 0) - (b.minute || 0));
+  rich.away.sort((a, b) => (a.minute || 0) - (b.minute || 0));
+  const idx = { home: 0, away: 0 };
+  const tlGoals = (timeline || []).filter((e) => e.kind === 'shot' && e.isGoal).sort((a, b) => a.t - b.t);
+  for (const g of tlGoals) {
+    const arr = rich[g.team] || [];
+    const i = idx[g.team]++;
+    if (i < arr.length && arr[i].player) _goalScorers.set(g.t, String(arr[i].player));
+  }
+}
 // Build the floating xG-peak labels: the biggest chances (xg ≥ XGLABEL_MIN), each with the
 // shooter's NAME (the timeline shot has no player, so we match the rich shot by minute + xg).
 function buildXgLabels() {
@@ -3449,18 +3539,23 @@ function buildXgLabels() {
   const shots = (timeline || []).filter((e) => e.kind === 'shot' && Number.isFinite(e.u) && Number.isFinite(e.v)
     && ((Number(e.xg) || 0) >= XGLABEL_MIN || e.isGoal));
   for (const e of shots) {
-    // nearest rich shot by minute, then closest xg — carries the player name.
-    let best = null, bestD = 1e9;
-    for (const rs of richShots) {
-      const dm = Math.abs((Number(rs.minute) || 0) - (Number(e.minute) || 0));
-      if (dm > 2) continue;
-      const d = dm + Math.abs((Number(rs.xg) || 0) - (Number(e.xg) || 0)) * 3;
-      if (d < bestD) { bestD = d; best = rs; }
+    // GOALS resolve their scorer by team+order (robust to minute/xg drift); chances match by
+    // minute+xg. A GOAL is ALWAYS labelled at the moment of the goal — never skipped.
+    let player = e.isGoal ? (_goalScorers.get(e.t) || null) : null;
+    if (!player) {
+      // nearest rich shot by minute, then closest xg — carries the player name.
+      let best = null, bestD = 1e9;
+      for (const rs of richShots) {
+        const dm = Math.abs((Number(rs.minute) || 0) - (Number(e.minute) || 0));
+        if (dm > 2) continue;
+        const d = dm + Math.abs((Number(rs.xg) || 0) - (Number(e.xg) || 0)) * 3;
+        if (d < bestD) { bestD = d; best = rs; }
+      }
+      player = best && best.player ? String(best.player) : null;
     }
-    const player = best && best.player ? String(best.player) : null;
-    if (!player) continue;
+    if (!player && !e.isGoal) continue;            // chances need a name; a GOAL is shown regardless
     const isPen = /penalt/i.test(String(e.situation || '')) || /penalt/i.test(String(e.type || ''));
-    xgLabels.push({ t: e.t, team: e.team, u: e.u, v: e.v, player, xg: Number(e.xg) || 0, isGoal: !!e.isGoal, isPen });
+    xgLabels.push({ t: e.t, team: e.team, u: e.u, v: e.v, player: player || 'Goal', xg: Number(e.xg) || 0, isGoal: !!e.isGoal, isPen });
   }
   xgLabels.sort((a, b) => a.t - b.t);
   // DEDUPE — a shot + its rebound/follow-up (or two events the rich data maps to the same
@@ -3468,9 +3563,14 @@ function buildXgLabels() {
   // then the higher xg. Keeps just one clean name-tag per chance.
   const kept = [];
   for (const L of xgLabels) {
-    const dup = kept.find((k) => k.player === L.player && Math.abs(k.t - L.t) < 4.0);
+    // MERGE a label into an existing one if it's the same shooter close in time, OR the SAME
+    // logged chance (same team, identical xG, close in time — a WhoScored double-log the rich
+    // match may have named differently). Either way it's one moment → one name-tag.
+    const dup = kept.find((k) => Math.abs(k.t - L.t) < 4.0 && (
+        k.player === L.player ||
+        (k.team === L.team && Math.abs(k.xg - L.xg) < 1e-4)));
     if (!dup) { kept.push(L); continue; }
-    if ((L.isGoal && !dup.isGoal) || L.xg > dup.xg) { dup.t = L.t; dup.u = L.u; dup.v = L.v; dup.xg = L.xg; dup.isGoal = L.isGoal; dup.isPen = L.isPen; }
+    if ((L.isGoal && !dup.isGoal) || L.xg > dup.xg) { dup.t = L.t; dup.u = L.u; dup.v = L.v; dup.xg = L.xg; dup.isGoal = L.isGoal; dup.isPen = L.isPen; dup.player = L.player; }
   }
   xgLabels = kept;
 }
@@ -3500,15 +3600,39 @@ function countGoals() {
   {
     // DANGER FLOOD source — dangerous NON-goal shots (goals flood via goalWaveAt). Newest ≤ t
     // washes the whole field toward the shooter's colour (dangerFloodAt).
-    dangerShots = timeline.filter((it) => it.kind === 'shot' && !it.isGoal && (Number(it.xg) || 0) >= DANGER_XG
-                          && Number.isFinite(it.u) && Number.isFinite(it.v))
+    dangerShots = timeline.filter((it) => {
+                            if (it.kind !== 'shot' || it.isGoal) return false;
+                            if (!Number.isFinite(it.u) || !Number.isFinite(it.v)) return false;
+                            // DANGEROUS = a shot the keeper had to deal with (ON TARGET / saved / off the
+                            // post) OR a decent chance by xG. Low-xG box shots & keeper SAVES are exactly
+                            // the dangerous episodes the viz must show — EVERY one earns a coloured
+                            // FINGER-выпад toward the goal (its depth follows the shot's pitch POSITION,
+                            // not xG, so a saved box shot still reads as a deep thrust). Every match.
+                            const onTarget = it.type === 'SavedShot' || it.type === 'ShotOnPost';
+                            return onTarget || (Number(it.xg) || 0) >= DANGER_XG;
+                          })
                           .map((s) => ({ t: s.t, team: s.team, xg: Number(s.xg) || 0, u: s.u, v: s.v,
                             pen: /penalt/i.test(String(s.situation || '')) || /penalt/i.test(String(s.type || '')) }))
                           .sort((a, b) => a.t - b.t);
-    // ONE PENALTY = ONE finger. A penalty in the data is two events (awarded → the kick), so a
-    // run of penalty shots by the same team close in time collapses to a single (last) event.
-    dangerShots = dangerShots.filter((s, i) => !(s.pen && i > 0 && dangerShots[i - 1].pen
-                          && dangerShots[i - 1].team === s.team && (s.t - dangerShots[i - 1].t) < 5.0));
+    // ONE CHANCE = ONE finger. WhoScored routinely logs a single chance as TWO shot events
+    // (e.g. a penalty as award→kick, or a fast break as MissedShots+SavedShot) with an
+    // IDENTICAL xG. Collapse consecutive same-team events that are the same logged chance —
+    // detected by either both being penalties, or xG matching to full precision — into one
+    // (keep the earlier). Prevents duplicate fingers/labels for a single moment.
+    {
+      const _dd = [];
+      for (const s of dangerShots) {
+        const p = _dd.length ? _dd[_dd.length - 1] : null;
+        const sameChance = p && p.team === s.team && (
+          (s.t - p.t) < 0.8 ||                                                      // rebound / same phase (any xg)
+          ((s.t - p.t) < 5.0 && ((p.pen && s.pen)                                   // one penalty logged as award+kick
+            || (p.xg > 0 && Math.abs(p.xg - s.xg) < 1e-4)))                         // same chance double-logged (identical >0 xG)
+        );
+        if (sameChance) continue;   // drop the duplicate, keep the earlier event
+        _dd.push(s);
+      }
+      dangerShots = _dd;
+    }
     const danger = timeline.filter((it) => it.kind === 'shot' && ((Number(it.xg) || 0) >= STREAK_XG || it.isGoal))
                            .sort((a, b) => a.t - b.t);
     for (const e of timeline) {
@@ -3554,9 +3678,23 @@ function buildGoalMarkers() {
     const ty = (e.type || '').toLowerCase();
     return s === 'penalty' || ty === 'penalty' || /penalt/.test(s) || /penalt/.test(ty);
   };
+  // scorer NAME from the team+order resolver (robust to minute/xg drift); fall back to a
+  // minute+xg rich match if the resolver has no entry.
+  const scorerOf = (g) => {
+    const byOrder = _goalScorers.get(g.t);
+    if (byOrder) return byOrder;
+    let best = null, bestD = 1e9;
+    for (const rs of richShots) {
+      const dm = Math.abs((Number(rs.minute) || 0) - (Number(g.minute) || 0));
+      if (dm > 2) continue;
+      const d = dm + Math.abs((Number(rs.xg) || 0) - (Number(g.xg) || 0)) * 3;
+      if (d < bestD) { bestD = d; best = rs; }
+    }
+    return best && best.player ? String(best.player) : null;
+  };
   goalMarkers = timeline
     .filter((it) => it.kind === 'shot' && it.isGoal)
-    .map((g) => ({ t: g.t, minute: g.minute || Math.floor(g.t), team: g.team, pen: isPen(g) }))
+    .map((g) => ({ t: g.t, minute: g.minute || Math.floor(g.t), team: g.team, pen: isPen(g), player: scorerOf(g) }))
     .sort((a, b) => a.t - b.t);
 }
 // SCORE at clock t — counts every goal whose goalTime ≤ t, the EXACT same time
@@ -3695,9 +3833,12 @@ function eventsMarkupFor(team, t) {
     for (const k of shootoutOrder) { if (cnt >= shootoutRevealed) break; if (k.team === team) pens.push(k.scored); cnt++; }
   }
 
+  const escAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   let html = '';
   for (const g of goals) {
-    html += `<div class="ev"><span class="v"><span class="mk goal"></span>${g.minute}'</span></div>`;
+    // hover reveals the scorer's SURNAME on a plate to the RIGHT of the disc+minute (which stay).
+    const surname = g.player ? String(g.player).split(' ').filter(Boolean).pop() : 'Goal';
+    html += `<div class="ev goal-ev" data-tip="${escAttr(surname)}"><span class="v"><span class="mk goal"></span>${g.minute}'</span></div>`;
   }
   for (const c of reds) {
     html += `<div class="ev"><span class="v"><span class="mk red"></span>${c.minute}'</span></div>`;
@@ -3724,26 +3865,40 @@ function updateEventBlocks(t) {
 // animation is over; for a shootout match, once the shootout has fully resolved). Shows the
 // real per-team xG / possession / shots / corners / cards. Signature-diffed so it only writes
 // the DOM when the markup changes.
-let _statsSig = { home: '', away: '' };
+let _statsSig = '';
 function drawStatsPanel(t) {
-  const hS = el('hStats'), aS = el('aStats');
-  if (!hS || !aS) return;
+  const host = el('mStats');
   const midShoot = shootActive && shootoutOrder && shootoutOrder.length && (((shootoutSeq() || {}).reveal) || 0) < shootoutOrder.length;
+  // END-STATE VIGNETTE — fade the scrim in as the match settles (off during the shootout so the
+  // finale stays bright); the stats then read cleanly over the darkened cloth.
+  const scrim = el('endscrim');
+  if (scrim) {
+    const sv = midShoot ? 0 : smoothstep(0, 1, clamp((settle - 0.05) / 0.6, 0, 1));
+    const op = sv.toFixed(3);
+    if (scrim.style.opacity !== op) scrim.style.opacity = op;
+  }
+  if (!host) return;
   const show = !!matchStats && settle > 0.55 && !midShoot;
-  hS.classList.toggle('show', show); aS.classList.toggle('show', show);
+  host.classList.toggle('show', show);
   if (!show) return;
-  const mk = (team) => {
-    const s = matchStats[team]; if (!s) return '';
-    const rows = [];
-    if (s.poss != null) rows.push(['Владение', s.poss + '%']);
-    rows.push(['xG', (Number(s.xg) || 0).toFixed(2)]);
-    rows.push(['Удары', s.shots]);
-    rows.push(['Угловые', s.corners]);
-    rows.push(['Карточки', s.cards]);
-    return rows.map(([l, v]) => `<div class="srow"><span class="slab">${l}</span><span class="sval">${v}</span></div>`).join('');
-  };
-  const hm = mk('home'); if (hm !== _statsSig.home) { hS.innerHTML = hm; _statsSig.home = hm; }
-  const am = mk('away'); if (am !== _statsSig.away) { aS.innerHTML = am; _statsSig.away = am; }
+  const h = matchStats.home, a = matchStats.away; if (!h || !a) return;
+  // ONE label per metric; home value LEFT, away value RIGHT (matches the scoreboard), all rows
+  // on the SAME baseline; a split mini-bar under each shows the share. English labels.
+  const rows = [];
+  if (h.poss != null && a.poss != null) rows.push(['POSSESSION', h.poss, a.poss, h.poss + '%', a.poss + '%']);
+  rows.push(['xG', h.xg, a.xg, (Number(h.xg) || 0).toFixed(2), (Number(a.xg) || 0).toFixed(2)]);
+  rows.push(['SHOTS', h.shots, a.shots, h.shots, a.shots]);
+  rows.push(['CORNERS', h.corners, a.corners, h.corners, a.corners]);
+  rows.push(['CARDS', h.cards, a.cards, h.cards, a.cards]);
+  const html = rows.map(([lab, hv, av, hd, ad]) => {
+    const tot = (Number(hv) || 0) + (Number(av) || 0);
+    const hp = tot > 0 ? (Number(hv) || 0) / tot * 100 : 50;
+    const ap = 100 - hp;
+    return `<div class="mrow"><div class="mtop">`
+      + `<span class="mval mval--h">${hd}</span><span class="mlab">${lab}</span><span class="mval mval--a">${ad}</span>`
+      + `</div><div class="mbar"><i class="mbar-h" style="width:${hp.toFixed(1)}%"></i><i class="mbar-gap"></i><i class="mbar-a" style="width:${ap.toFixed(1)}%"></i></div></div>`;
+  }).join('');
+  if (html !== _statsSig) { host.innerHTML = html; _statsSig = html; }
 }
 // FLOATING xG-PEAK LABELS — a small "PlayerName · 0.79 xG" pill anchored above the strongest
 // chances, appearing WITH the peak (never before → no spoiler) and fading as it decays. The
@@ -3762,9 +3917,28 @@ function drawXgLabels(t) {
   for (let i = 0; i < xgLabels.length; i++) {
     const L = xgLabels[i], d = _xgDivs[i];
     const age = t - L.t;                                  // match-minutes since the shot
-    // appear WITH the peak (age≥0), quick rise then decay with the crest; NEVER before it.
     let env = 0;
-    if (age >= 0) env = Math.min(1, age / 0.25) * Math.exp(-Math.max(0, age - 0.25) / 1.7);
+    if (L.isGoal) {
+      // GOAL name — tied to the FLOOD in WALL seconds: appears when the goal LANDS (score
+      // updates, EVENT_LAG_S — so it never leads the perceived goal), HOLDS while the flood
+      // covers the field, then FADES OUT during the rollback — GONE before the kickoff/центр,
+      // so no player name is left hanging over the receding wave.
+      const w = wallSecondsSinceGoal(L.t, t);
+      if (Number.isFinite(w)) {
+        const fh = Number.isFinite(cfg.A.floodHold) ? clamp(cfg.A.floodHold, 0, 12) : FLOOD_HOLD_DEFAULT_S;
+        const lu = Number.isFinite(cfg.A.lull) ? clamp(cfg.A.lull, 0, 12) : 0;
+        const rs = Number.isFinite(cfg.A.goalReset) ? clamp(cfg.A.goalReset, 0, 8) : FLOOD_RELAX_S;
+        const holdEnd = FLOOD_SWEEP_S + fh + lu, fadeEnd = holdEnd + rs;
+        if (w >= EVENT_LAG_S && w < fadeEnd) {
+          const rise = smoothstep(EVENT_LAG_S, EVENT_LAG_S + 0.35, w);
+          const fall = w < holdEnd ? 1 : (1 - smoothstep(holdEnd, fadeEnd, w));
+          env = rise * fall;
+        }
+      }
+    } else {
+      // chance name — appears WITH the peak (age≥0), quick rise then decay with the crest.
+      if (age >= 0) env = Math.min(1, age / 0.25) * Math.exp(-Math.max(0, age - 0.25) / 0.9);
+    }
     if (env < 0.06) { if (d.style.opacity !== '0') d.style.opacity = '0'; continue; }
     _xgV3.set(worldX(L.u), 2.8, worldZ(L.v)).project(camera);   // peak spot, lifted a touch above the crest tip
     if (_xgV3.z > 1) { d.style.opacity = '0'; continue; }
@@ -3817,10 +3991,25 @@ function resizeOverlays() {
 }
 // current momentum-strip duration (last momentum minute, else match duration).
 function pulseDuration() {
-  if (momentum.length && Number.isFinite(momentum[momentum.length - 1].minute)) {
-    return Math.max(1, momentum[momentum.length - 1].minute);
-  }
-  return Math.max(1, teamMeta.duration || 93);
+  // FULL match football span — the pulse axis AND the drag-scrubber must cover the WHOLE match
+  // incl. extra time. FotMob momentum data often STOPS early (~83'), which must NOT cap the
+  // timeline, or the ET goals (89', 99') become unreachable by the scrubber. Take the max of
+  // the momentum end, the last event's football minute (_fmMax), and the full clock's minute.
+  const momEnd = (momentum.length && Number.isFinite(momentum[momentum.length - 1].minute))
+    ? momentum[momentum.length - 1].minute : 0;
+  return Math.max(1, momEnd, _fmMax || 0, footballMinuteAt(teamMeta.duration || 0));
+}
+// Inverse of footballMinuteAt: given a FOOTBALL minute, the EXPANDED (engine) clock that lands
+// on it. Used by the drag-scrubber (the pulse x-axis is football-minute-linear, but `clock` is
+// expanded minutes). _fmTable {t:expanded, m:football} is monotonic in t; m non-decreasing.
+function expandedOfFootballMinute(fm) {
+  if (!_fmTable || !_fmTable.length) return fm;
+  const target = clamp(fm, 0, _fmMax || fm);
+  let lo = 0, hi = _fmTable.length - 1, ans = 0;
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (_fmTable[mid].m <= target) { ans = mid; lo = mid + 1; } else hi = mid - 1; }
+  const a = _fmTable[ans], b = _fmTable[Math.min(ans + 1, _fmTable.length - 1)];
+  if (b.t > a.t && b.m > a.m) return a.t + (b.t - a.t) * clamp((target - a.m) / (b.m - a.m), 0, 1);
+  return a.t;
 }
 
 // ---- STAGE13 — OLD top goal-token row DISABLED ------------------------------
@@ -4086,7 +4275,8 @@ function bindGlobalUI() {
     const seekTo = (clientX) => {
       const r = pw.getBoundingClientRect();
       const f = clamp((clientX - r.left) / Math.max(1, r.width), 0, 1);
-      const min = f * pulseDuration();
+      const fMin = f * pulseDuration();                       // FOOTBALL minute under the cursor
+      const min = clamp(expandedOfFootballMinute(fMin), 0, teamMeta.duration || fMin);  // → EXPANDED clock
       resetSettle(); clock = min; wallProgress = clamp(progressOfMatchT(min), 0, 1);
       _dramaCursor = 0; _ballCursor = 0; playing = false; snapASmoothing();
     };
