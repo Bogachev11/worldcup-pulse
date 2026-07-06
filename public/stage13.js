@@ -189,11 +189,12 @@ const EVENT_LAG_S = 0.7;
 // In WALL seconds so it plays under the dramatic clock (scrub-safe). Strength ∝ xG × the knob.
 const DANGER_XG = 0.14;            // floods only for a real chance (goals excluded — they have their own flood)
 const DANGER_FLOOD_S = 1.7;        // wall-seconds life of the danger wash (rise → peak → recede)
+const XG_SPIRE_MAX = 2.5;          // hard cap on a (non-goal) xG spire's world-Y — a chance PEAKS clearly LOWER than a GOAL crest (xG ≈ half a goal, per the user: «xG всегда меньше гола раза в два»).
 const STREAK_XG = 0.08;            // a shot counts toward a streak if xg ≥ this (goals always count)
 const STREAK_WIN_MIN = 6.0;        // look-back window (match-minutes) for the streak
 const STREAK_MAX = 4;              // cap the streak count so a chaotic spell doesn't tower absurdly
 const GOAL_CREST_LEAD_S = 0.5;     // WALL-seconds of pre-goal build — a short RISE that peaks AT the goal
-const GOAL_CREST_DECAY_S = 1.4;    // WALL-seconds decay τ AFTER the hold. Magnitude is now the cfg.A.goalH slider (per-team A_gH/A_gA grid), independent of the xG spire.
+const GOAL_CREST_DECAY_S = 2.5;    // WALL-seconds decay τ AFTER the hold — long enough that the GOAL peak stands THROUGH the flood (which lasts ~3.6s), so a goal always reads as the TALLEST feature. Magnitude = cfg.A.goalH.
 
 // ============================================================================
 // CONFIG — every layer's enable flag + its own knobs. This whole object is what
@@ -259,11 +260,11 @@ const DEFAULTS = () => ({
     // goalH   — HEIGHT of the dedicated goal spire, SEPARATE from the xG spire (xgH).
     //           Rendered from its OWN grid (A_gH/A_gA) so a goal can tower above or sit
     //           below the xG peaks independently. World-Y units.
-    goalH: 4.5,
+    goalH: 7.5,
     // goalHold — hold the goal spire AT ITS PEAK for this many WALL seconds before it
     //           decays (rise → HOLD → decay). Rendered outside the lull-flatten so the
     //           held peak isn't pressed down by the post-goal штиль.
-    goalHold: 0.4,
+    goalHold: 1.6,
     // goalReset — the front's ROLLBACK-to-centre duration after the flood (was the hard
     //           FLOOD_RELAX_S). Wall seconds.
     goalReset: 1.8,
@@ -406,7 +407,9 @@ async function init() {
       .filter((d) => Number.isFinite(d.minute));
     // real ball-possession % (backfilled from FotMob into the rich record) for the post-match stats
     if (rich && rich.possession && Number.isFinite(rich.possession.home)) matchPossession = rich.possession;
+    if (rich && Array.isArray(rich.shots)) richShots = rich.shots;   // player names for the xG-peak labels
   } catch { momentum = []; }
+  buildXgLabels();           // floating player-name labels on the strongest xG peaks
   buildGoalMarkers();        // STAGE11 CHANGE #5 — persistent goal-token row (open-play/penalty)
   buildMatchStats();         // aggregate post-match stats (shown after the animation settles)
 
@@ -1562,7 +1565,7 @@ function buildTideFront(t, gx, gy, band) {
 const THRUST_ATK_S = 0.25;      // finger rises ~immediately (fast attack τ, seconds)
 const THRUST_HALF_S = 3.0;      // finger half-life (seconds) — unsustained forays recede fast
 const THRUST_MIN_FWD = 0.06;    // min forward gain (u-units) to count as a thrust
-const THRUST_SIGV = 0.07;       // finger lateral half-width in v (NARROW — ~1–2 channels)
+const THRUST_SIGV = 0.11;       // finger lateral half-width in v — wide enough that the lunge TONGUE carries the whole xG crest onto the shooting team's (green) blanket, so the peak reads green, not half on the opponent's red
 // Per-team thrust targets: A_thrustH[j] = deepest home finger end-depth (u→1) this
 // frame at channel j, A_thrustA[j] = deepest away finger end-depth (u→0). NaN/sentinel
 // = no finger in that channel. Sized to gy in ensureA.
@@ -1619,8 +1622,12 @@ function buildThrustFingers(t, gx, gy, band) {
     // forward passes no longer finger (that is what made the edge roll up even).
     let fv, endU, w;
     if (isShot) {
-      fv = Number.isFinite(e.ev) ? e.ev : (Number.isFinite(e.v) ? e.v : 0.5);
-      endU = isH ? hi : lo;                        // stab to the goal band
+      fv = Number.isFinite(e.v) ? e.v : 0.5;       // the SHOT SPOT flank (so the tongue lands under the crest, not at the goal mouth)
+      // stab to the SHOT'S ACTUAL depth (a penalty at u≈0.88 is PAST the goal band, so the
+      // lunge must reach it, not stop at the defender's band) — but at least to the goal band
+      // for a shot from range. This is what carries the shooting team's colour ONTO the shot.
+      const su = Number.isFinite(e.u) ? e.u : (isH ? hi : lo);
+      endU = isH ? Math.min(1, Math.max(hi, su) + 0.05) : Math.max(0, Math.min(lo, su) - 0.05);   // reach just PAST the shot so its colour fully covers the crest
       const xg = clamp(e.xg || 0, 0, 1);
       // a DANGEROUS shot = a strong forward LUNGE (выпад) — the attacking colour tongues
       // toward the goal band at that flank. Boosted (×~2) + scaled by dangerPush so a side
@@ -1964,7 +1971,7 @@ function computeA(t, dt) {
   // be able to yank the whole boundary from deep-in-away-half all the way back across the
   // pitch (that's what made the front collapse toward centre). So CAP how far a finger can
   // pull the front PAST the backbone toward its attacker — beyond that, it just tongues.
-  const THRUST_MAX_PULL = 0.35;   // max u-units a finger advances the front past the backbone. Fingers are now DANGER-GATED (only real chances: shots ∝xg, box-reaching/through/fast passes) + NARROW (1-2 channels), so they're sparse sharp tongues at real danger zones — they can stab DEEP into the box without cancelling the momentum backbone's gross swing (which ordinary forward passes used to do at ±0.22 across the whole edge).
+  const THRUST_MAX_PULL = 0.72;   // max u-units a finger advances the front past the backbone. HIGH so a DANGEROUS shot's lunge REACHES the shot spot (even a penalty at the goal line, deep in the opponent's half) → the shooting team's blanket is on top THERE → the xG peak shows in THEIR colour, on THEIR green. Danger-gated + narrow, so it's a sharp connected TONGUE to the chance, not a blanket flip.
   const rlo = clamp(band, 0, 0.45), rhi = 1 - rlo;
   for (let j = 0; j < gy; j++) {
     let fr = A_front[j];
@@ -2021,12 +2028,34 @@ function computeA(t, dt) {
   // (kickoff) as cover releases. Deterministic from the clock (goalWaveAt) → scrub-safe.
   // …or, after full time, a SCORED shootout kick floods the whole field the kicker's colour.
   const wave = goalWaveAt(t) || (shootActive ? shootoutWaveAt() : null);
+  // DANGER FINGER — force a narrow TONGUE of the SHOOTING team's colour to REACH each active
+  // dangerous shot, DIRECTLY (bypassing the possession combine — backbone + reach-hold kept a
+  // counter's finger from ever arriving). This IS the выпад: a connected finger from the team's
+  // own half to the chance, ending exactly where the xG peak stands, so the peak sits on the
+  // shooter's colour (green peak in the red half, but a CONNECTED tongue, not an island).
+  // Deterministic from t (arWeight) → scrub-safe. Disabled during the shootout.
+  const activeDg = [];
+  if (!shootActive && !wave) {   // NO danger finger during a GOAL wave — it fought the roll/reset (strange rollback + a spurious 2nd peak near the goal). The goal flood owns the front then.
+    const _fatk = Math.max(0.02, cfg.A.atk), _frel = Math.max(0.1, cfg.A.rel);
+    for (const e of dangerShots) {
+      const env = arWeight(t - e.t, _fatk, _frel);
+      if (env < 0.12) continue;
+      activeDg.push({ home: e.team === 'home', su: e.u, jc: (1 - e.v) * (gy - 1), sig: 0.085 * (gy - 1), env });
+    }
+  }
   for (let j = 0; j < gy; j++) {
     A_frontDisp[j] += (A_frontEff[j] - A_frontDisp[j]) * kd;
     // during the shootout the base is a CLEAN 50/50 colour split (not the jagged end-of-match
     // territory); a SCORED kick floods it fully to the kicker's colour, a MISS leaves the split.
     let fr = shootActive ? 0.5 : A_frontDisp[j];
     if (wave && wave.cover > 0) fr = lerp(fr, wave.front, wave.cover);
+    for (const d of activeDg) {
+      const dj = j - d.jc; const g = Math.exp(-(dj * dj) / (2 * d.sig * d.sig)) * d.env;
+      if (g < 0.1) continue;
+      const w = Math.min(1, g * 2.2);   // at the finger core the tongue reaches the shot FULLY (env<1 otherwise stops short)
+      if (d.home) { const tgt = lerp(fr, Math.min(1, d.su + 0.03), w); if (tgt > fr) fr = tgt; }   // home stabs toward u=1
+      else { const tgt = lerp(fr, Math.max(0, d.su - 0.03), w); if (tgt < fr) fr = tgt; }           // away stabs toward u=0
+    }
     const row = j * gx;
     for (let i = 0; i < gx; i++) A_own[row + i] = fr;   // front-u, constant along u
   }
@@ -2693,9 +2722,15 @@ function computeField(t, dt) {
         let moundH = (rH * 0.5 * amp * moundMask * notch) * reliefMul;
         let moundA = (rA * 0.5 * amp * moundMask * notch) * reliefMul;
         moundH = Math.min(moundH, 4.0); moundA = Math.min(moundA, 4.0);
-        let reliefH = moundH + (xH * crestK * fmCrest * crestNotch) * reliefMul + gCrH * goalK * crestNotch;
-        let reliefA = moundA + (xA * crestK * fmCrest * crestNotch) * reliefMul + gCrA * goalK * crestNotch;
-        reliefH = Math.min(reliefH, 7.5); reliefA = Math.min(reliefA, 7.5);
+        // xG SPIRE — per team (its OWN blanket), CAPPED LOW (XG_SPIRE_MAX) so a chance's peak
+        // is clearly SHORTER than a goal (xG ≈ half a goal). The peak shows in the SHOOTING
+        // team's colour because a dangerous shot's LUNGE (thrust finger, high reach) pushes
+        // that team's front TO the shot spot → their blanket is on top there → coloured peak.
+        const xCrH = Math.min((xH * crestK * fmCrest * crestNotch) * reliefMul, XG_SPIRE_MAX);
+        const xCrA = Math.min((xA * crestK * fmCrest * crestNotch) * reliefMul, XG_SPIRE_MAX);
+        let reliefH = moundH + xCrH + gCrH * goalK * crestNotch;
+        let reliefA = moundA + xCrA + gCrA * goalK * crestNotch;
+        reliefH = Math.min(reliefH, 9.0); reliefA = Math.min(reliefA, 9.0);   // total cap high so a GOAL crest towers
         // PER-TEAM RELIEF — each blanket carries its OWN (notched-at-seam) height, so
         // the two sheets are TWO DISTINCT surfaces; the visible LAP is the TOP sheet's
         // short lip fold (vertex shader), never a merged plane.
@@ -3403,6 +3438,42 @@ let goalMarkers = [];  // {t, minute, team, pen} in match-time order, for the ma
 let shotMarks = [];    // {minute, team, xg, isGoal} — xG/shot markers on the momentum pulse
 let momentum = [];     // [{minute, v}] valueNorm +home/−away, real data (rich record)
 let matchPossession = null;   // {home, away} ball-possession % (from the rich record)
+let richShots = [];           // rich-record shots (carry PLAYER names, matched to timeline by minute+xg)
+let xgLabels = [];            // {t, team, u, v, player, xg} — strongest xG peaks get a floating player-name label
+const XGLABEL_MIN = 0.30;     // only the STRONGEST chances get a label (avoid clutter)
+// Build the floating xG-peak labels: the biggest chances (xg ≥ XGLABEL_MIN), each with the
+// shooter's NAME (the timeline shot has no player, so we match the rich shot by minute + xg).
+function buildXgLabels() {
+  xgLabels = [];
+  // the STRONGEST chances (xg ≥ XGLABEL_MIN) + EVERY goal (a goal is always worth naming).
+  const shots = (timeline || []).filter((e) => e.kind === 'shot' && Number.isFinite(e.u) && Number.isFinite(e.v)
+    && ((Number(e.xg) || 0) >= XGLABEL_MIN || e.isGoal));
+  for (const e of shots) {
+    // nearest rich shot by minute, then closest xg — carries the player name.
+    let best = null, bestD = 1e9;
+    for (const rs of richShots) {
+      const dm = Math.abs((Number(rs.minute) || 0) - (Number(e.minute) || 0));
+      if (dm > 2) continue;
+      const d = dm + Math.abs((Number(rs.xg) || 0) - (Number(e.xg) || 0)) * 3;
+      if (d < bestD) { bestD = d; best = rs; }
+    }
+    const player = best && best.player ? String(best.player) : null;
+    if (!player) continue;
+    const isPen = /penalt/i.test(String(e.situation || '')) || /penalt/i.test(String(e.type || ''));
+    xgLabels.push({ t: e.t, team: e.team, u: e.u, v: e.v, player, xg: Number(e.xg) || 0, isGoal: !!e.isGoal, isPen });
+  }
+  xgLabels.sort((a, b) => a.t - b.t);
+  // DEDUPE — a shot + its rebound/follow-up (or two events the rich data maps to the same
+  // player) double the label. Merge same-player labels within a wider window; prefer a goal,
+  // then the higher xg. Keeps just one clean name-tag per chance.
+  const kept = [];
+  for (const L of xgLabels) {
+    const dup = kept.find((k) => k.player === L.player && Math.abs(k.t - L.t) < 4.0);
+    if (!dup) { kept.push(L); continue; }
+    if ((L.isGoal && !dup.isGoal) || L.xg > dup.xg) { dup.t = L.t; dup.u = L.u; dup.v = L.v; dup.xg = L.xg; dup.isGoal = L.isGoal; dup.isPen = L.isPen; }
+  }
+  xgLabels = kept;
+}
 let matchStats = null;        // aggregated post-match stats {home:{...}, away:{...}} (buildMatchStats)
 // Aggregate the REAL post-match stats per team (xG, possession, shots, corners, cards) from
 // the timeline + cornersByTime + cardEvents + the rich possession. Shown after the animation
@@ -3429,8 +3500,15 @@ function countGoals() {
   {
     // DANGER FLOOD source — dangerous NON-goal shots (goals flood via goalWaveAt). Newest ≤ t
     // washes the whole field toward the shooter's colour (dangerFloodAt).
-    dangerShots = timeline.filter((it) => it.kind === 'shot' && !it.isGoal && (Number(it.xg) || 0) >= DANGER_XG)
-                          .map((s) => ({ t: s.t, team: s.team, xg: Number(s.xg) || 0 })).sort((a, b) => a.t - b.t);
+    dangerShots = timeline.filter((it) => it.kind === 'shot' && !it.isGoal && (Number(it.xg) || 0) >= DANGER_XG
+                          && Number.isFinite(it.u) && Number.isFinite(it.v))
+                          .map((s) => ({ t: s.t, team: s.team, xg: Number(s.xg) || 0, u: s.u, v: s.v,
+                            pen: /penalt/i.test(String(s.situation || '')) || /penalt/i.test(String(s.type || '')) }))
+                          .sort((a, b) => a.t - b.t);
+    // ONE PENALTY = ONE finger. A penalty in the data is two events (awarded → the kick), so a
+    // run of penalty shots by the same team close in time collapses to a single (last) event.
+    dangerShots = dangerShots.filter((s, i) => !(s.pen && i > 0 && dangerShots[i - 1].pen
+                          && dangerShots[i - 1].team === s.team && (s.t - dangerShots[i - 1].t) < 5.0));
     const danger = timeline.filter((it) => it.kind === 'shot' && ((Number(it.xg) || 0) >= STREAK_XG || it.isGoal))
                            .sort((a, b) => a.t - b.t);
     for (const e of timeline) {
@@ -3572,6 +3650,7 @@ function updateHud() {
   // STAGE13 — per-team event rows (goals / red / shootout) from live data.
   updateEventBlocks(t);
   drawStatsPanel(t);
+  drawXgLabels(t);
   // the scrubber tracks WALL-PROGRESS through the 15s dramatic pass (not linear
   // match-minutes), so its position matches how long each moment holds on screen.
   if (document.activeElement !== el('clock')) el('clock').value = String(wallProgress * 100);
@@ -3665,6 +3744,42 @@ function drawStatsPanel(t) {
   };
   const hm = mk('home'); if (hm !== _statsSig.home) { hS.innerHTML = hm; _statsSig.home = hm; }
   const am = mk('away'); if (am !== _statsSig.away) { aS.innerHTML = am; _statsSig.away = am; }
+}
+// FLOATING xG-PEAK LABELS — a small "PlayerName · 0.79 xG" pill anchored above the strongest
+// chances, appearing WITH the peak (never before → no spoiler) and fading as it decays. The
+// peak's pitch spot is projected to screen each frame (works with the ortho camera).
+let _xgDivs = [];
+const _xgV3 = new THREE.Vector3();
+function drawXgLabels(t) {
+  const host = el('xglabels'); if (!host) return;
+  while (_xgDivs.length < xgLabels.length) {
+    const d = document.createElement('div'); d.className = 'xglabel';
+    d.innerHTML = '<span class="xg-p"></span><span class="xg-v"></span>';
+    host.appendChild(d); _xgDivs.push(d);
+  }
+  const canvas = el('stage'); if (!canvas || !camera) return;
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  for (let i = 0; i < xgLabels.length; i++) {
+    const L = xgLabels[i], d = _xgDivs[i];
+    const age = t - L.t;                                  // match-minutes since the shot
+    // appear WITH the peak (age≥0), quick rise then decay with the crest; NEVER before it.
+    let env = 0;
+    if (age >= 0) env = Math.min(1, age / 0.25) * Math.exp(-Math.max(0, age - 0.25) / 1.7);
+    if (env < 0.06) { if (d.style.opacity !== '0') d.style.opacity = '0'; continue; }
+    _xgV3.set(worldX(L.u), 2.8, worldZ(L.v)).project(camera);   // peak spot, lifted a touch above the crest tip
+    if (_xgV3.z > 1) { d.style.opacity = '0'; continue; }
+    const sx = (_xgV3.x * 0.5 + 0.5) * W, sy = (-_xgV3.y * 0.5 + 0.5) * H;
+    d.style.transform = `translate(${sx.toFixed(1)}px, ${sy.toFixed(1)}px) translate(-50%, -100%)`;
+    const tag = L.isPen ? 'penalty' : '';
+    const sig = L.player + '|' + tag;
+    if (d._sig !== sig) {
+      d.querySelector('.xg-p').textContent = L.player;
+      d.querySelector('.xg-v').textContent = tag;
+      d._sig = sig;
+    }
+    d.style.opacity = String(clamp(env * 1.35, 0, 1));
+  }
+  for (let i = xgLabels.length; i < _xgDivs.length; i++) _xgDivs[i].style.opacity = '0';
 }
 function updateCamReadout() {
   if (!controls) return;

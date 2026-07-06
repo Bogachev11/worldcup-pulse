@@ -276,6 +276,19 @@
     #hud13 .tstats .sval { font-family: var(--s13-mono); font-size: 16px; color: #fff;
       font-variant-numeric: tabular-nums; font-weight: 700; text-shadow: 0 1px 7px rgba(0,0,0,.9), 0 0 3px rgba(0,0,0,.95); }
 
+    /* floating xG-peak labels — a small pill anchored to the peak, positioned per-frame in JS */
+    #xglabels { position: absolute; inset: 0; pointer-events: none; z-index: 26; }
+    #xglabels .xglabel { position: absolute; left: 0; top: 0; transform: translate(-50%, -100%);
+      white-space: nowrap; opacity: 0; transition: opacity .18s ease; will-change: transform, opacity;
+      padding: 5px 11px 6px; border-radius: 8px; background: #0a0a10;
+      box-shadow: 0 5px 18px rgba(0,0,0,.6); }
+    #xglabels .xglabel::after { content: ""; position: absolute; left: 50%; bottom: -5px; transform: translateX(-50%);
+      border: 5px solid transparent; border-top-color: #0a0a10; border-bottom: 0; }
+    #xglabels .xglabel .xg-p { font-family: var(--s13-grot); font-weight: 600; font-size: 13px;
+      letter-spacing: .02em; color: #fff; }
+    #xglabels .xglabel .xg-v { font-family: var(--s13-mono); font-size: 11px; letter-spacing: .02em;
+      color: var(--s13-dim); margin-left: 7px; }
+
     #hud13 .score { font-family: var(--s13-mono); font-weight: 700; font-size: 116px; line-height: .9;
       letter-spacing: -.02em; color: #fff; margin-top: 14px;
       font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
@@ -466,6 +479,9 @@
           <span><b>Data:</b> FotMob · WhoScored (Opta)</span>
         </div>
       </div>
+
+      <!-- floating player-name labels on the strongest xG peaks (positioned per-frame) -->
+      <div id="xglabels"></div>
     </div>
   </div>
 
