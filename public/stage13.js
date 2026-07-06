@@ -224,7 +224,7 @@ const DEFAULTS = () => ({
   //  opaque sheet tucks this far PAST the front under the other). cOWN..cALL =
   //  contributor on/off; wOWN..wALL = weights.
   A: {
-    on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 6.15,
+    on: true, open: false, atk: 0.15, rel: 1.6, grid: 0.45, height: 7.0,
     colour: 1.0, blur: 0.75, sharp: 1.0, floor: 0.0, lap: 0.005,
     // КРОМКА ▸ подъём — LIP HEIGHT (world-Y) of the fabric fold where the TOP
     // blanket laps OVER the under one at the seam. A SHORT, thin folded edge so the
@@ -263,7 +263,7 @@ const DEFAULTS = () => ({
     // surface "выпрямилось, обнулилось") for this many SECONDS of wall time, then
     // normal play resumes. Coordinated with the dramatic clock so the goal beat
     // gets its room. 0 = no post-goal lull (old behaviour).
-    lull: 1.2,
+    lull: 0.5,
     // ── GOAL CREST + POST-GOAL TIMING (all adjustable in the panel) ──────────────
     // goalH   — HEIGHT of the dedicated goal spire, SEPARATE from the xG spire (xgH).
     //           Rendered from its OWN grid (A_gH/A_gA) so a goal can tower above or sit
@@ -272,7 +272,7 @@ const DEFAULTS = () => ({
     // goalHold — hold the goal spire AT ITS PEAK for this many WALL seconds before it
     //           decays (rise → HOLD → decay). Rendered outside the lull-flatten so the
     //           held peak isn't pressed down by the post-goal штиль.
-    goalHold: 0.9,
+    goalHold: 1.3,
     // goalReset — the front's ROLLBACK-to-centre duration after the flood (was the hard
     //           FLOOD_RELAX_S). Wall seconds.
     goalReset: 1.8,
@@ -2108,8 +2108,10 @@ function computeA(t, dt) {
       const dj = j - d.jc; const g = Math.exp(-(dj * dj) / (2 * d.sig * d.sig)) * d.env;
       if (g < 0.1) continue;
       const w = Math.min(1, g * 2.2);   // at the finger core the tongue reaches the shot FULLY (env<1 otherwise stops short)
-      if (d.home) { const tgt = lerp(fr, Math.min(1, d.su + 0.03), w); if (tgt > fr) fr = tgt; }   // home stabs toward u=1
-      else { const tgt = lerp(fr, Math.max(0, d.su - 0.03), w); if (tgt < fr) fr = tgt; }           // away stabs toward u=0
+      // reach toward the shot but KEEP A MARGIN from the goal line (cap 0.90 / floor 0.10) so a
+      // deep attack doesn't push the cloth past the pitch edge — the выпад stays ON the field.
+      if (d.home) { const tgt = lerp(fr, Math.min(0.90, d.su + 0.03), w); if (tgt > fr) fr = tgt; }   // home stabs toward u→1
+      else { const tgt = lerp(fr, Math.max(0.10, d.su - 0.03), w); if (tgt < fr) fr = tgt; }           // away stabs toward u→0
     }
     const row = j * gx;
     for (let i = 0; i < gx; i++) A_own[row + i] = fr;   // front-u, constant along u
@@ -3535,15 +3537,11 @@ function buildGoalScorers() {
 // shooter's NAME (the timeline shot has no player, so we match the rich shot by minute + xg).
 function buildXgLabels() {
   xgLabels = [];
-  // the STRONGEST chances (xg ≥ XGLABEL_MIN) + EVERY goal (a goal is always worth naming).
-  const shots = (timeline || []).filter((e) => e.kind === 'shot' && Number.isFinite(e.u) && Number.isFinite(e.v)
-    && ((Number(e.xg) || 0) >= XGLABEL_MIN || e.isGoal));
-  for (const e of shots) {
-    // GOALS resolve their scorer by team+order (robust to minute/xg drift); chances match by
-    // minute+xg. A GOAL is ALWAYS labelled at the moment of the goal — never skipped.
+  // resolve a shot's shooter NAME — GOAL by team+order (robust to minute/xg drift), CHANCE by
+  // nearest rich shot on minute+xg.
+  const resolvePlayer = (e) => {
     let player = e.isGoal ? (_goalScorers.get(e.t) || null) : null;
     if (!player) {
-      // nearest rich shot by minute, then closest xg — carries the player name.
       let best = null, bestD = 1e9;
       for (const rs of richShots) {
         const dm = Math.abs((Number(rs.minute) || 0) - (Number(e.minute) || 0));
@@ -3553,9 +3551,29 @@ function buildXgLabels() {
       }
       player = best && best.player ? String(best.player) : null;
     }
-    if (!player && !e.isGoal) continue;            // chances need a name; a GOAL is shown regardless
+    return player;
+  };
+  const halfOf = (min) => (min <= 45 ? 1 : (min <= 90 ? 2 : 3));   // 1st / 2nd / ET bucket
+  const pushLabel = (e) => {
+    const player = resolvePlayer(e);
+    if (!player && !e.isGoal) return;              // chances need a name; a GOAL is shown regardless
     const isPen = /penalt/i.test(String(e.situation || '')) || /penalt/i.test(String(e.type || ''));
-    xgLabels.push({ t: e.t, team: e.team, u: e.u, v: e.v, player: player || 'Goal', xg: Number(e.xg) || 0, isGoal: !!e.isGoal, isPen });
+    xgLabels.push({ t: e.t, team: e.team, u: e.u, v: e.v, player: player || 'Goal',
+      xg: Number(e.xg) || 0, isGoal: !!e.isGoal, isPen, half: halfOf(Number(e.minute) || 0) });
+  };
+  const cand = (timeline || []).filter((e) => e.kind === 'shot' && Number.isFinite(e.u) && Number.isFinite(e.v));
+  // STRONGEST chances (xg ≥ XGLABEL_MIN) + EVERY goal.
+  for (const e of cand) { if ((Number(e.xg) || 0) >= XGLABEL_MIN || e.isGoal) pushLabel(e); }
+  // GUARANTEE a named xG chance PER HALF — if a half has NO labelled non-goal chance, promote its
+  // STRONGEST chance (with a matched player) even below XGLABEL_MIN, so ≥1 attempt per half is named.
+  const haveHalf = new Set(xgLabels.filter((L) => !L.isGoal).map((L) => L.half));
+  const byHalf = {};
+  for (const e of cand) { if (e.isGoal) continue; const h = halfOf(Number(e.minute) || 0); (byHalf[h] = byHalf[h] || []).push(e); }
+  for (const h of Object.keys(byHalf)) {
+    if (haveHalf.has(Number(h))) continue;
+    const top = byHalf[h].filter((e) => (Number(e.xg) || 0) > 0 && resolvePlayer(e))
+      .sort((a, b) => (Number(b.xg) || 0) - (Number(a.xg) || 0))[0];
+    if (top) pushLabel(top);
   }
   xgLabels.sort((a, b) => a.t - b.t);
   // DEDUPE — a shot + its rebound/follow-up (or two events the rich data maps to the same
