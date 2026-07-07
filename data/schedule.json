@@ -1,5 +1,5 @@
 {
-  "generatedAtUTC": "2026-07-07T17:10:10Z",
+  "generatedAtUTC": "2026-07-07T17:40:09Z",
   "windowStart": "20260706",
   "windowEnd": "20260714",
   "timezone": "Europe/Paris",
@@ -39,7 +39,7 @@
       "kickoffUTC": "2026-07-07T16:00:00.000Z",
       "status": "live",
       "stage": "1/8",
-      "scoreStr": "0 - 1"
+      "scoreStr": "0 - 2"
     },
     {
       "matchId": "4653849",
