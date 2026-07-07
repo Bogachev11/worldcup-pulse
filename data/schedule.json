@@ -1,5 +1,5 @@
 {
-  "generatedAtUTC": "2026-07-07T14:40:10Z",
+  "generatedAtUTC": "2026-07-07T17:10:10Z",
   "windowStart": "20260706",
   "windowEnd": "20260714",
   "timezone": "Europe/Paris",
@@ -37,9 +37,9 @@
       "home": "Argentina",
       "away": "Egypt",
       "kickoffUTC": "2026-07-07T16:00:00.000Z",
-      "status": "scheduled",
+      "status": "live",
       "stage": "1/8",
-      "scoreStr": null
+      "scoreStr": "0 - 1"
     },
     {
       "matchId": "4653849",
