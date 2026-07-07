@@ -1,0 +1,108 @@
+{
+  "generatedAtUTC": "2026-07-07T12:40:10Z",
+  "windowStart": "20260706",
+  "windowEnd": "20260714",
+  "timezone": "Europe/Paris",
+  "count": 11,
+  "matches": [
+    {
+      "matchId": "4653847",
+      "home": "Mexico",
+      "away": "England",
+      "kickoffUTC": "2026-07-06T01:00:00.000Z",
+      "status": "finished",
+      "stage": "1/8",
+      "scoreStr": "2 - 3"
+    },
+    {
+      "matchId": "4653844",
+      "home": "Portugal",
+      "away": "Spain",
+      "kickoffUTC": "2026-07-06T19:00:00.000Z",
+      "status": "finished",
+      "stage": "1/8",
+      "scoreStr": "0 - 1"
+    },
+    {
+      "matchId": "4653845",
+      "home": "USA",
+      "away": "Belgium",
+      "kickoffUTC": "2026-07-07T00:00:00.000Z",
+      "status": "finished",
+      "stage": "1/8",
+      "scoreStr": "1 - 4"
+    },
+    {
+      "matchId": "4653848",
+      "home": "Argentina",
+      "away": "Egypt",
+      "kickoffUTC": "2026-07-07T16:00:00.000Z",
+      "status": "scheduled",
+      "stage": "1/8",
+      "scoreStr": null
+    },
+    {
+      "matchId": "4653849",
+      "home": "Switzerland",
+      "away": "Colombia",
+      "kickoffUTC": "2026-07-07T20:00:00.000Z",
+      "status": "scheduled",
+      "stage": "1/8",
+      "scoreStr": null
+    },
+    {
+      "matchId": "5344667",
+      "home": "Denmark U19",
+      "away": "Italy U19",
+      "kickoffUTC": "2026-07-08T13:00:00.000Z",
+      "status": "scheduled",
+      "stage": "final",
+      "scoreStr": null
+    },
+    {
+      "matchId": "4653851",
+      "home": "France",
+      "away": "Morocco",
+      "kickoffUTC": "2026-07-09T20:00:00.000Z",
+      "status": "scheduled",
+      "stage": "1/4",
+      "scoreStr": null
+    },
+    {
+      "matchId": "4653853",
+      "home": "Spain",
+      "away": "Belgium",
+      "kickoffUTC": "2026-07-10T19:00:00.000Z",
+      "status": "scheduled",
+      "stage": "1/4",
+      "scoreStr": null
+    },
+    {
+      "matchId": "4653852",
+      "home": "Norway",
+      "away": "England",
+      "kickoffUTC": "2026-07-11T21:00:00.000Z",
+      "status": "scheduled",
+      "stage": "1/4",
+      "scoreStr": null
+    },
+    {
+      "matchId": "4653854",
+      "home": "Argentina/Egypt",
+      "away": "Switzerland/Colombia",
+      "kickoffUTC": "2026-07-12T01:00:00.000Z",
+      "status": "scheduled",
+      "stage": "1/4",
+      "scoreStr": null
+    },
+    {
+      "matchId": "4653855",
+      "home": "France/Morocco",
+      "away": "Spain/Belgium",
+      "kickoffUTC": "2026-07-14T19:00:00.000Z",
+      "status": "scheduled",
+      "stage": "1/2",
+      "scoreStr": null
+    }
+  ]
+}
