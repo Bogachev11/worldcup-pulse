@@ -1,28 +1,10 @@
 {
-  "generatedAtUTC": "2026-07-07T21:40:09Z",
-  "windowStart": "20260706",
-  "windowEnd": "20260714",
+  "generatedAtUTC": "2026-07-07T23:10:09Z",
+  "windowStart": "20260707",
+  "windowEnd": "20260715",
   "timezone": "Europe/Paris",
-  "count": 11,
+  "count": 10,
   "matches": [
-    {
-      "matchId": "4653847",
-      "home": "Mexico",
-      "away": "England",
-      "kickoffUTC": "2026-07-06T01:00:00.000Z",
-      "status": "finished",
-      "stage": "1/8",
-      "scoreStr": "2 - 3"
-    },
-    {
-      "matchId": "4653844",
-      "home": "Portugal",
-      "away": "Spain",
-      "kickoffUTC": "2026-07-06T19:00:00.000Z",
-      "status": "finished",
-      "stage": "1/8",
-      "scoreStr": "0 - 1"
-    },
     {
       "matchId": "4653845",
       "home": "USA",
@@ -46,7 +28,7 @@
       "home": "Switzerland",
       "away": "Colombia",
       "kickoffUTC": "2026-07-07T20:00:00.000Z",
-      "status": "live",
+      "status": "finished",
       "stage": "1/8",
       "scoreStr": "0 - 0"
     },
@@ -89,7 +71,7 @@
     {
       "matchId": "4653854",
       "home": "Argentina",
-      "away": "Switzerland/Colombia",
+      "away": "Switzerland",
       "kickoffUTC": "2026-07-12T01:00:00.000Z",
       "status": "scheduled",
       "stage": "1/4",
@@ -100,6 +82,15 @@
       "home": "France/Morocco",
       "away": "Spain/Belgium",
       "kickoffUTC": "2026-07-14T19:00:00.000Z",
+      "status": "scheduled",
+      "stage": "1/2",
+      "scoreStr": null
+    },
+    {
+      "matchId": "4653856",
+      "home": "Norway/England",
+      "away": "Argentina/Switzerland",
+      "kickoffUTC": "2026-07-15T19:00:00.000Z",
       "status": "scheduled",
       "stage": "1/2",
       "scoreStr": null
