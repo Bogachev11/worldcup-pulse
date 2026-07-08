@@ -1,5 +1,5 @@
 {
-  "generatedAtUTC": "2026-07-08T14:40:15Z",
+  "generatedAtUTC": "2026-07-08T16:10:10Z",
   "windowStart": "20260707",
   "windowEnd": "20260715",
   "timezone": "Europe/Paris",
@@ -37,7 +37,7 @@
       "home": "Denmark U19",
       "away": "Italy U19",
       "kickoffUTC": "2026-07-08T13:00:00.000Z",
-      "status": "live",
+      "status": "finished",
       "stage": "final",
       "scoreStr": "0 - 0"
     },
