@@ -1,9 +1,9 @@
 {
-  "generatedAtUTC": "2026-07-08T16:10:10Z",
+  "generatedAtUTC": "2026-07-08T21:40:10Z",
   "windowStart": "20260707",
   "windowEnd": "20260715",
   "timezone": "Europe/Paris",
-  "count": 10,
+  "count": 9,
   "matches": [
     {
       "matchId": "4653845",
@@ -30,15 +30,6 @@
       "kickoffUTC": "2026-07-07T20:00:00.000Z",
       "status": "finished",
       "stage": "1/8",
-      "scoreStr": "0 - 0"
-    },
-    {
-      "matchId": "5344667",
-      "home": "Denmark U19",
-      "away": "Italy U19",
-      "kickoffUTC": "2026-07-08T13:00:00.000Z",
-      "status": "finished",
-      "stage": "final",
       "scoreStr": "0 - 0"
     },
     {
