@@ -1,45 +1,18 @@
 {
-  "generatedAtUTC": "2026-07-08T21:40:10Z",
-  "windowStart": "20260707",
-  "windowEnd": "20260715",
+  "generatedAtUTC": "2026-07-09T22:10:10Z",
+  "windowStart": "20260709",
+  "windowEnd": "20260717",
   "timezone": "Europe/Paris",
-  "count": 9,
+  "count": 6,
   "matches": [
-    {
-      "matchId": "4653845",
-      "home": "USA",
-      "away": "Belgium",
-      "kickoffUTC": "2026-07-07T00:00:00.000Z",
-      "status": "finished",
-      "stage": "1/8",
-      "scoreStr": "1 - 4"
-    },
-    {
-      "matchId": "4653848",
-      "home": "Argentina",
-      "away": "Egypt",
-      "kickoffUTC": "2026-07-07T16:00:00.000Z",
-      "status": "finished",
-      "stage": "1/8",
-      "scoreStr": "3 - 2"
-    },
-    {
-      "matchId": "4653849",
-      "home": "Switzerland",
-      "away": "Colombia",
-      "kickoffUTC": "2026-07-07T20:00:00.000Z",
-      "status": "finished",
-      "stage": "1/8",
-      "scoreStr": "0 - 0"
-    },
     {
       "matchId": "4653851",
       "home": "France",
       "away": "Morocco",
       "kickoffUTC": "2026-07-09T20:00:00.000Z",
-      "status": "scheduled",
+      "status": "finished",
       "stage": "1/4",
-      "scoreStr": null
+      "scoreStr": "2 - 0"
     },
     {
       "matchId": "4653853",
@@ -70,7 +43,7 @@
     },
     {
       "matchId": "4653855",
-      "home": "France/Morocco",
+      "home": "France",
       "away": "Spain/Belgium",
       "kickoffUTC": "2026-07-14T19:00:00.000Z",
       "status": "scheduled",
