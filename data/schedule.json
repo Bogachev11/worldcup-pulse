@@ -1,5 +1,5 @@
 {
-  "generatedAtUTC": "2026-07-09T22:10:10Z",
+  "generatedAtUTC": "2026-07-10T21:10:10Z",
   "windowStart": "20260709",
   "windowEnd": "20260717",
   "timezone": "Europe/Paris",
@@ -19,9 +19,9 @@
       "home": "Spain",
       "away": "Belgium",
       "kickoffUTC": "2026-07-10T19:00:00.000Z",
-      "status": "scheduled",
+      "status": "finished",
       "stage": "1/4",
-      "scoreStr": null
+      "scoreStr": "2 - 1"
     },
     {
       "matchId": "4653852",
@@ -44,7 +44,7 @@
     {
       "matchId": "4653855",
       "home": "France",
-      "away": "Spain/Belgium",
+      "away": "Spain",
       "kickoffUTC": "2026-07-14T19:00:00.000Z",
       "status": "scheduled",
       "stage": "1/2",
