@@ -1,19 +1,10 @@
 {
-  "generatedAtUTC": "2026-07-10T21:10:10Z",
-  "windowStart": "20260709",
-  "windowEnd": "20260717",
+  "generatedAtUTC": "2026-07-10T22:10:09Z",
+  "windowStart": "20260710",
+  "windowEnd": "20260718",
   "timezone": "Europe/Paris",
   "count": 6,
   "matches": [
-    {
-      "matchId": "4653851",
-      "home": "France",
-      "away": "Morocco",
-      "kickoffUTC": "2026-07-09T20:00:00.000Z",
-      "status": "finished",
-      "stage": "1/4",
-      "scoreStr": "2 - 0"
-    },
     {
       "matchId": "4653853",
       "home": "Spain",
@@ -57,6 +48,15 @@
       "kickoffUTC": "2026-07-15T19:00:00.000Z",
       "status": "scheduled",
       "stage": "1/2",
+      "scoreStr": null
+    },
+    {
+      "matchId": "4653857",
+      "home": "France/Spain",
+      "away": "Loser SF 2",
+      "kickoffUTC": "2026-07-18T21:00:00.000Z",
+      "status": "scheduled",
+      "stage": "bronze",
       "scoreStr": null
     }
   ]
