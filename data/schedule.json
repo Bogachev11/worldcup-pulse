@@ -1,7 +1,7 @@
 {
-  "generatedAtUTC": "2026-07-14T21:00:16Z",
-  "windowStart": "20260713",
-  "windowEnd": "20260721",
+  "generatedAtUTC": "2026-07-15T21:30:11Z",
+  "windowStart": "20260714",
+  "windowEnd": "20260722",
   "timezone": "Europe/Paris",
   "count": 4,
   "matches": [
@@ -19,14 +19,14 @@
       "home": "England",
       "away": "Argentina",
       "kickoffUTC": "2026-07-15T19:00:00.000Z",
-      "status": "scheduled",
+      "status": "finished",
       "stage": "1/2",
-      "scoreStr": null
+      "scoreStr": "1 - 2"
     },
     {
       "matchId": "4653857",
-      "home": "France/Spain",
-      "away": "England/Argentina",
+      "home": "France",
+      "away": "England",
       "kickoffUTC": "2026-07-18T21:00:00.000Z",
       "status": "scheduled",
       "stage": "bronze",
@@ -34,8 +34,8 @@
     },
     {
       "matchId": "4653858",
-      "home": "France/Spain",
-      "away": "England/Argentina",
+      "home": "Spain",
+      "away": "Argentina",
       "kickoffUTC": "2026-07-19T19:00:00.000Z",
       "status": "scheduled",
       "stage": "final",
