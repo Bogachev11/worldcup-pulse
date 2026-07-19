@@ -1,27 +1,18 @@
 {
-  "generatedAtUTC": "2026-07-19T17:00:14Z",
-  "windowStart": "20260718",
-  "windowEnd": "20260726",
+  "generatedAtUTC": "2026-07-19T22:30:10Z",
+  "windowStart": "20260719",
+  "windowEnd": "20260727",
   "timezone": "Europe/Paris",
-  "count": 2,
+  "count": 1,
   "matches": [
-    {
-      "matchId": "4653857",
-      "home": "France",
-      "away": "England",
-      "kickoffUTC": "2026-07-18T21:00:00.000Z",
-      "status": "finished",
-      "stage": "bronze",
-      "scoreStr": "4 - 6"
-    },
     {
       "matchId": "4653858",
       "home": "Spain",
       "away": "Argentina",
       "kickoffUTC": "2026-07-19T19:00:00.000Z",
-      "status": "scheduled",
+      "status": "finished",
       "stage": "final",
-      "scoreStr": null
+      "scoreStr": "1 - 0"
     }
   ]
 }
