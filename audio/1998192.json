@@ -1,0 +1,24 @@
+{
+  "match": "1998192",
+  "approach": "B",
+  "mapping": "linear-1to1",
+  "bodyDurationS": 49.024,
+  "dramaTotalS": 49.024,
+  "baseSpeed": 1.0,
+  "sync": "audio.currentTime = wallProgress * bodyDurationS; audio.playbackRate = cfg.speed",
+  "startAtWallProgress": 0.0,
+  "loop": false,
+  "goals": [
+    {
+      "t": 97.1,
+      "wallSecond": 43.254,
+      "audioSecond": 44.168
+    }
+  ],
+  "penBeatsBaked": 0,
+  "penaltyWarpRisk": false,
+  "engineDurMin": 105.7,
+  "files": {
+    "mp3": "1998192.mp3"
+  }
+}

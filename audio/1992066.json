@@ -1,0 +1,29 @@
+{
+  "match": "1992066",
+  "approach": "B",
+  "mapping": "linear-1to1",
+  "bodyDurationS": 51.252,
+  "dramaTotalS": 51.252,
+  "baseSpeed": 1.0,
+  "sync": "audio.currentTime = wallProgress * bodyDurationS; audio.playbackRate = cfg.speed",
+  "startAtWallProgress": 0.0,
+  "loop": false,
+  "goals": [
+    {
+      "t": 10.0,
+      "wallSecond": 5.945,
+      "audioSecond": 6.74
+    },
+    {
+      "t": 50.8,
+      "wallSecond": 27.635,
+      "audioSecond": 28.312
+    }
+  ],
+  "penBeatsBaked": 0,
+  "penaltyWarpRisk": false,
+  "engineDurMin": 101.03,
+  "files": {
+    "mp3": "1992066.mp3"
+  }
+}

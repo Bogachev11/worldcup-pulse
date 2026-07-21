@@ -1,0 +1,1257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <base href="/">
+  <script>window.__MATCH_ID='1953888';</script>
+  <link rel="preload" as="image" href="/flags/fr.png" fetchpriority="high">
+  <link rel="preload" as="image" href="/flags/sn.png" fetchpriority="high">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>FRA 3–1 SEN — FIFA World Cup 2026 Data Portraits</title>
+  <meta name="description" content="A single 2026 World Cup match rebuilt as a living data-portrait — two territory blankets, a momentum pulse, honest football made beautiful." />
+
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'none'; img-src 'self' data: https://www.google-analytics.com https://*.google-analytics.com; media-src 'self' blob:; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com; connect-src 'self' https://www.googletagmanager.com https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com" />
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
+
+  <!-- Favicon — territory-blanket ridge/peak mark (SVG crisp, PNG + ICO fallbacks) -->
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
+  <link rel="alternate icon" href="/favicon.ico">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+
+  <!-- Google Analytics (GA4) — only fires on the live domain, never on localhost/video-render captures -->
+  <script>
+    if (location.hostname === 'wc26.bogachev.fr') {
+      var _ga = document.createElement('script'); _ga.async = true;
+      _ga.src = 'https://www.googletagmanager.com/gtag/js?id=G-BFH6VPLSCS';
+      document.head.appendChild(_ga);
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){ dataLayer.push(arguments); }
+      gtag('js', new Date());
+      gtag('config', 'G-BFH6VPLSCS');
+    }
+  </script>
+
+  <!-- Open Graph / social -->
+  <meta property="og:title" content="FRA 3–1 SEN — FIFA World Cup 2026 Data Portraits" />
+  <meta property="og:description" content="A single 2026 World Cup match rebuilt as a living data-portrait — two territory blankets, a momentum pulse, honest football made beautiful." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="/og-cover.png" />
+  <meta property="og:url" content="https://wc26.bogachev.fr/m/fra-sen" />
+  <meta name="twitter:url" content="https://wc26.bogachev.fr/m/fra-sen" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="FRA 3–1 SEN — FIFA World Cup 2026 Data Portraits" />
+  <meta name="twitter:description" content="A single 2026 World Cup match rebuilt as a living data-portrait — two territory blankets, a momentum pulse, honest football made beautiful." />
+  <meta name="twitter:image" content="/og-cover.png" />
+
+  <link rel="stylesheet" href="style.css?v=1f97922a92" />
+  <!-- Barlow (still used by 3D-canvas sprites / panels) + STAGE13 chrome fonts:
+       Space Grotesk (labels/UI) + Space Mono (numerics/telemetry), matching vB2. -->
+  <!-- Fonts SELF-HOSTED (woff2, font-display:swap) — Barlow + Space Grotesk + Space Mono,
+       only the weights actually used. No external render-blocking origin (was fonts.googleapis.com). -->
+  <link rel="stylesheet" href="/fonts/fonts.css">
+  <!-- three.js SELF-HOSTED (v0.160.0) — vendored under /vendor/three/ so the viz never
+       depends on a CDN (esm.sh) that can stall on a flaky mobile connection. The bare
+       "three" specifier resolves to the local core build; addon modules import 'three'
+       internally and resolve through this same map. Same version as before → no API drift. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/vendor/three/three.module.min.js?v=1f97922a92",
+      "three/addons/": "/vendor/three/addons/"
+    }
+  }
+  </script>
+  <style>
+    body, .pnl, .hud-w, .btn, #title2, #camread, input, select, textarea, button, label, option {
+      font-family: 'Barlow', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    /* STAGE11 CHANGE #4 — CENTERED ~1000px COMPOSITION COLUMN (poster/portrait).
+       The full-bleed score-tinted backdrop halo sits BEHIND everything; the 3D canvas,
+       HUD, goal-markers row and pulse strip all live within this centered 1000px band.
+       The SETTINGS PANEL stays OUTSIDE (floating left, see #panel). */
+    :root { --col-w: 1000px; }
+    /* full-bleed backdrop halo (score-tinted, painted in JS updateSky) — BEHIND everything.
+       It is a fallback base tone only; the WebGL sky dome now fills the whole viewport, so
+       there is no column-vs-backdrop mismatch to create a visible "square" anymore. */
+    #backdrop { position: fixed; inset: 0; z-index: 0; pointer-events: none; background: #05070d; }
+    /* STAGE13 FIX — the 3D canvas is FULL-VIEWPORT (full-bleed), NOT framed to the 1000px
+       column. The score-tinted sky dome therefore fills the ENTIRE page → ONE uniform
+       background edge-to-edge (no centred bright rectangle / seam). The pitch is kept the
+       same on-screen size + centred via the camera frustum re-tune (setOrthoFrustum, which
+       anchors the half-height to the old ~1000px-column framing). No edge feather is needed
+       now: there is no canvas boundary inside the frame to hide. */
+    #stage { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 1; display: block;
+      cursor: grab; pointer-events: auto; }
+    #stage:active { cursor: grabbing; }
+    /* the end-state vignette + (disabled) markers canvas are full-bleed too, over the field */
+    #endscrim, #markers { position: fixed; }
+    /* the centered composition column — now an HUD-OVERLAY container ONLY (no 3D canvas) */
+    #composition {
+      position: fixed; top: 0; bottom: 0; left: 50%; transform: translateX(-50%);
+      width: var(--col-w); max-width: 100vw; z-index: 10; pointer-events: none;
+    }
+    /* LOADING SPINNER — thin rotating muted-grey arc, truly centered in #composition (over the
+       pitch). NO plate/box (no-UI-plates rule): just the ring. Fades out when the scene is ready. */
+    #loadSpinner {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 46px; height: 46px; z-index: 5; pointer-events: none;
+      opacity: 1; transition: opacity .45s ease;
+    }
+    #loadSpinner.hidden { opacity: 0; }
+    #loadSpinner .ls-ring {
+      display: block; width: 100%; height: 100%; border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.12);          /* faint full ring */
+      border-top-color: rgba(255,255,255,0.66);          /* brighter arc = the rotating segment */
+      animation: ls-spin 0.9s linear infinite;
+    }
+    @keyframes ls-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { #loadSpinner .ls-ring { animation-duration: 2.2s; } }
+    .pnl {
+      position: fixed; z-index: 30; pointer-events: auto;
+      display: flex; flex-direction: column; gap: 11px;
+      background: rgba(10,12,20,0.62); border: 1px solid var(--stroke);
+      border-radius: 12px; padding: 14px 16px; width: 316px;
+      font-size: 13px; letter-spacing: 0.03em;
+      backdrop-filter: blur(7px);
+    }
+    #panel { top: 14px; left: 14px; max-height: calc(100vh - 28px); overflow-y: auto; overflow-x: hidden; }
+    #panel::-webkit-scrollbar { width: 9px; }
+    #panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 4px; }
+    #campanel { bottom: 14px; right: 14px; width: 264px; }
+    .pnl .row { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 2px 0; }
+    .pnl label { color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.07em; font-size: 13px; }
+    .pnl .val { min-width: 54px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); font-size: 13px; font-weight: 500; }
+    #title2 { font-size: 14px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink); font-weight: 600; }
+    #camread { min-width: auto; color: #9fd; letter-spacing: 0.06em; }
+
+    /* ---- two-line control: label/value row, then full-width slider ---- */
+    .ctl { display: flex; flex-direction: column; gap: 4px; }
+    .ctl-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .ctl-head label { flex: 1; min-width: 0; }
+
+    /* ---- BIGGER, more legible range sliders (panels only) ---- */
+    .pnl input[type=range] {
+      flex: 1; min-width: 0; -webkit-appearance: none; appearance: none;
+      height: 20px; background: transparent; cursor: pointer; margin: 0;
+    }
+    .pnl input[type=range]::-webkit-slider-runnable-track {
+      height: 7px; border-radius: 4px; background: rgba(255,255,255,0.14); border: 1px solid var(--stroke);
+    }
+    .pnl input[type=range]::-moz-range-track {
+      height: 7px; border-radius: 4px; background: rgba(255,255,255,0.14); border: 1px solid var(--stroke);
+    }
+    .pnl input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none; width: 19px; height: 19px; margin-top: -7px;
+      border-radius: 50%; background: #6aa0ff; border: 2px solid #0a0e16;
+      box-shadow: 0 0 0 1px rgba(106,160,255,0.5); transition: background 0.12s, box-shadow 0.12s;
+    }
+    .pnl input[type=range]::-moz-range-thumb {
+      width: 19px; height: 19px; border-radius: 50%; background: #6aa0ff; border: 2px solid #0a0e16;
+      box-shadow: 0 0 0 1px rgba(106,160,255,0.5);
+    }
+    .pnl input[type=range]:hover::-webkit-slider-thumb { background: #8fb9ff; box-shadow: 0 0 0 4px rgba(106,160,255,0.28); }
+    .pnl input[type=range]:hover::-moz-range-thumb { background: #8fb9ff; box-shadow: 0 0 0 4px rgba(106,160,255,0.28); }
+    .pnl input[type=range]:active::-webkit-slider-thumb { background: #b6d2ff; }
+
+    /* ---- LAYER GROUPS — the builder rows ---- */
+    .layer { border: 1px solid var(--stroke); border-radius: 9px; overflow: hidden; }
+    .layer.on { border-color: rgba(120,170,255,0.45); }
+    .layer-head {
+      display: flex; align-items: center; gap: 11px; padding: 11px 12px; cursor: pointer;
+      background: rgba(255,255,255,0.03); user-select: none;
+    }
+    .layer-head:hover { background: rgba(255,255,255,0.06); }
+    .layer-head .lname { flex: 1; font-size: 14px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink); font-weight: 700; }
+    .layer.on .lname { color: #bcd6ff; }
+    .layer-head .chev { color: var(--ink-dim); font-size: 13px; transition: transform 0.15s; }
+    .layer.open .chev { transform: rotate(90deg); }
+    .layer-body { display: none; flex-direction: column; gap: 10px; padding: 11px 13px 13px; border-top: 1px solid var(--stroke); }
+    .layer.open .layer-body { display: flex; }
+    /* a real checkbox toggle */
+    .lck { width: 20px; height: 20px; border-radius: 5px; border: 1px solid var(--stroke);
+      background: rgba(255,255,255,0.04); position: relative; flex: 0 0 auto; cursor: pointer; }
+    .layer.on .lck { background: #6aa0ff; border-color: #6aa0ff; }
+    .layer.on .lck::after { content: '✓'; position: absolute; inset: 0; display: flex; align-items: center;
+      justify-content: center; color: #04060c; font-size: 14px; font-weight: 800; }
+    .sub { display: flex; align-items: center; gap: 6px; }
+    .sub label { font-size: 12px; }
+    .subtoggle { display: flex; flex-wrap: wrap; gap: 6px; }
+    .pill { cursor: pointer; border: 1px solid var(--stroke); background: rgba(255,255,255,0.04);
+      color: var(--ink-dim); border-radius: 7px; padding: 5px 10px; font-size: 12px; letter-spacing: 0.03em; }
+    .pill.on { background: rgba(106,160,255,0.22); border-color: rgba(106,160,255,0.6); color: #cfe2ff; }
+
+    /* ---- A contributor rows: checkbox + label, then a weight slider below ---- */
+    .contrib { display: flex; flex-direction: column; gap: 5px; }
+    .contrib.off { opacity: 0.45; }
+    .contrib-head { display: flex; align-items: center; gap: 9px; }
+    .contrib-head label { flex: 1; min-width: 0; text-transform: none; letter-spacing: 0.02em; font-size: 13px; cursor: pointer; }
+    .lck.sm { width: 17px; height: 17px; border-radius: 4px; }
+    .lck.sm.on { background: #6aa0ff; border-color: #6aa0ff; }
+    .lck.sm.on::after { content: '✓'; position: absolute; inset: 0; display: flex; align-items: center;
+      justify-content: center; color: #04060c; font-size: 12px; font-weight: 800; }
+    .wslider { width: 100%; }
+
+    .grp { margin-top: 2px; color: #9fd; font-size: 12px; letter-spacing: 0.14em;
+      text-transform: uppercase; border-top: 1px solid var(--stroke); padding-top: 8px; }
+    .btn { cursor: pointer; border: 1px solid var(--stroke); background: rgba(255,255,255,0.05);
+      color: var(--ink); border-radius: 7px; padding: 6px 11px; font-size: 13px; }
+    .btn:hover { border-color: rgba(255,255,255,0.3); }
+    .preset { flex: 1; font-size: 12px; letter-spacing: 0.02em; padding: 7px 5px; }
+    /* config action row (COPY · SAVE · СБРОС) */
+    .cfgbar { display: flex; gap: 8px; }
+    .cfgbar .btn { flex: 1; text-align: center; padding: 7px 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .cfgbar .btn.ok { border-color: rgba(120,220,160,0.7); color: #bff3d4; }
+
+    /* free-floating, draggable HUD widgets */
+    .hud-w {
+      position: absolute; z-index: 31; white-space: nowrap; font-variant-numeric: tabular-nums;
+      color: var(--ink); letter-spacing: 0.06em; font-size: 13px; padding: 2px 4px;
+      transform-origin: top left; user-select: none; -webkit-user-select: none;
+    }
+    .hud-w.big { font-size: 30px; font-weight: 200; letter-spacing: 0.04em; }
+    .hud-w.dim { color: var(--ink-dim); font-size: 12px; letter-spacing: 0.12em; }
+    .hud-w .home { color: var(--home-color); font-weight: 600; }
+    .hud-w .away { color: var(--away-color); font-weight: 600; }
+    .hud-w .rsz { display: none; }
+    body:not(.hud-edit) .hud-w { pointer-events: none; }
+    body.hud-edit .hud-w { pointer-events: auto; cursor: move; outline: 1px dashed rgba(120,170,255,0.7); border-radius: 4px; }
+    body.hud-edit .hud-w .rsz {
+      display: block; position: absolute; right: -6px; bottom: -6px; width: 13px; height: 13px;
+      background: #6aa0ff; border: 1px solid #04050a; border-radius: 3px; cursor: nwse-resize; pointer-events: auto;
+    }
+    /* STAGE13 — the top dev play/scrub/speed bar is REMOVED from the UI: play now lives on
+       the bottom timeline button (#play13), speed moved into the left settings panel, and
+       seeking is done by clicking/dragging the pulse timeline. Kept in the DOM (hidden) so
+       the existing #play/#clock/#speed bindings keep working. */
+    #playbar { display: none !important; }
+    /* the pulse/timeline is now interactive — click or drag to seek.
+       touch-action:none lets a finger DRAG the playhead without the browser hijacking it as a
+       scroll/pan (which made touch scrubbing jerky). The ::before is an invisible, taller hit zone
+       over the thin seismograph line so a fingertip can grab the scrubber easily; pointer events on
+       it still target #pulse13wrap, so seek maths (its width) is unchanged. */
+    #hud13 #pulse13wrap { pointer-events: auto; cursor: pointer; touch-action: none; }
+    #hud13 #pulse13wrap::before { content: ''; position: absolute; left: 0; right: 0;
+      top: -18px; bottom: -18px; z-index: 2; }
+    /* global play bar (top centre) */
+    #playbar {
+      position: fixed; z-index: 40; top: 12px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 8px; align-items: center; padding: 6px 12px;
+      background: rgba(10,12,20,0.66); border: 1px solid var(--stroke); border-radius: 11px;
+      backdrop-filter: blur(6px); font-size: 11px; color: var(--ink-dim);
+    }
+    #playbar input[type=range] { width: 220px; accent-color: #6aa0ff; }
+    #playbar .clkv { font-variant-numeric: tabular-nums; color: var(--ink); min-width: 34px; }
+
+    /* ---- MATCH SWITCHER TABS (top centre, above the play bar) ---- */
+    #matchtabs {
+      position: fixed; z-index: 41; top: 12px; left: 14px;
+      display: flex; gap: 6px; align-items: center; padding: 5px;
+      background: rgba(10,12,20,0.66); border: 1px solid var(--stroke); border-radius: 11px;
+      backdrop-filter: blur(6px);
+    }
+    #matchtabs .mtab {
+      cursor: pointer; border: 1px solid transparent; background: transparent;
+      color: var(--ink-dim); border-radius: 8px; padding: 6px 13px;
+      font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+      transition: background 0.14s, color 0.14s, border-color 0.14s;
+    }
+    #matchtabs .mtab:hover { color: var(--ink); background: rgba(255,255,255,0.05); }
+    #matchtabs .mtab.on { background: rgba(106,160,255,0.20); border-color: rgba(106,160,255,0.55); color: #cfe2ff; }
+
+    /* ---- TEAM FLAGS beside the names (HUD) ---- */
+    .hud-w .flag {
+      display: inline-block; vertical-align: middle; width: 1.15em; height: 0.82em;
+      object-fit: cover; border-radius: 2px; box-shadow: 0 0 0 1px rgba(255,255,255,0.18);
+      margin: 0 0.28em;
+    }
+
+    /* ---- BOTTOM MOMENTUM / PULSE STRIP — within the centered column (STAGE11 #3) ----
+       Compressed to a centered band (NOT full-width) and made TALLER. It's a child of
+       #composition (max 1000px), and further inset so it doesn't span edge-to-edge. */
+    #pulse {
+      position: absolute; z-index: 20; bottom: 18px; left: 50%; transform: translateX(-50%);
+      width: 78%; height: 120px; display: block; pointer-events: none;
+    }
+    /* ---- GOAL MARKERS ROW above the pitch — within the centered column ---- */
+    /* STAGE13 — the OLD top goal-token row is DISABLED (goals + reds now live under
+       the teams). The canvas stays in the DOM (drawMarkers is a no-op in stage13.js)
+       but is hidden so it never paints duplicate goal indicators. */
+    #markers { display: none; }
+
+    /* ========================================================================
+       STAGE 13 — FINALIZED HUD CHROME (visual target: public/design/vB2.html).
+       Only the surrounding chrome is restyled; the 3D engine / pitch / camera /
+       constructor panel / sky / data loading are untouched. Fonts: Space Grotesk
+       (labels/UI) + Space Mono (numerics/telemetry).
+       ======================================================================== */
+    :root {
+      --s13-mono: 'Space Mono', ui-monospace, monospace;
+      --s13-grot: 'Space Grotesk', system-ui, sans-serif;
+      --s13-ink:   #e9e7f4;
+      --s13-dim:   #8f89ad;
+      --s13-faint: #4a4470;
+      --s13-fainter: #322c52;
+      --s13-red:   #e5333a;   /* sending-off red */
+      /* white soccer ball (opaque body+ring, transparent panel gaps); used as a MASK so the
+         box background-color becomes the tint. Timeline goals tint per scoring team (--tc);
+         the legend key is team-neutral. */
+      --s13-ball: url("data:image/png;base64,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");
+    }
+    /* the whole HUD overlay lives inside the centered composition column so it
+       centres with the pitch. It never eats pointer events except where noted. */
+    #hud13 { position: absolute; inset: 0; z-index: 22; pointer-events: none;
+      font-family: var(--s13-grot); color: var(--s13-ink); }
+
+    /* ---- header: teams (top-left) + clock (top-right) ---- */
+    /* back-to-gallery — pinned to the far LEFT of the VIEWPORT (outside the centred action column,
+       a body-level element so position:fixed is relative to the screen, not the transformed column) */
+    .backhome { position: fixed; top: 26px; left: 26px; z-index: 50; pointer-events: auto;
+      display: inline-flex; align-items: center; gap: 8px; text-decoration: none;
+      font-family: var(--s13-grot); font-weight: 600; font-size: 11px; letter-spacing: .16em;
+      text-transform: uppercase; color: var(--s13-dim); transition: color .16s ease; }
+    .backhome:hover { color: var(--s13-ink); }
+    .backhome svg { width: 13px; height: 13px; }
+    #hud13 .head { position: absolute; top: 48px; left: 46px; right: 46px;
+      display: flex; justify-content: space-between; align-items: flex-start; }
+    #hud13 .teams { display: flex; gap: 40px; }
+    #hud13 .team { display: flex; flex-direction: column; align-items: flex-start; }
+    #hud13 .team-id { display: flex; align-items: center; gap: 8px; height: 20px; }
+    #hud13 .flag { width: 24px; height: 16px; border-radius: 1.5px; overflow: hidden;
+      object-fit: cover; box-shadow: 0 0 0 1px rgba(255,255,255,.10); display: block; flex: 0 0 auto; }
+    #hud13 .abbr { font-family: var(--s13-grot); font-weight: 600; font-size: 14px;
+      letter-spacing: .22em; text-transform: uppercase; color: var(--s13-ink); padding-left: 1px; }
+
+    /* RED CARD indicator — small upright red card(s) as a SECOND COLUMN to the RIGHT of the
+       goal-minute chips (moved here from above the score, per art direction). One card per
+       sending-off, stacked vertically so it reads as its own quiet column beside the minutes. */
+    #hud13 .events-row { display: flex; align-items: flex-start; gap: 22px; }
+    #hud13 .redcards { display: flex; flex-direction: column; align-items: flex-start; gap: 12px;
+      margin-top: 20px; /* line the first card up with the first goal-minute row (.events margin-top) */ }
+    #hud13 .redcards:empty { display: none; }
+    #hud13 .redcards .rc { width: 13px; height: 18px; border-radius: 2px; background: var(--s13-red);
+      box-shadow: 0 0 7px rgba(229,51,58,.5); flex: 0 0 auto; }
+
+    /* thick country-colour rail (home = home colour, away = away colour) */
+    #hud13 .rail { height: 6px; margin-top: 6px; width: 100%; min-width: 88px; border-radius: 2px; }
+    #hud13 .team--home .rail { background: var(--home-color);
+      box-shadow: 0 0 10px color-mix(in srgb, var(--home-color) 55%, transparent); }
+    #hud13 .team--away .rail { background: var(--away-color);
+      box-shadow: 0 0 10px color-mix(in srgb, var(--away-color) 55%, transparent); }
+
+    /* POST-MATCH STATS — ONE unified comparison table (home value · LABEL · away value + a
+       split mini-bar per metric), revealed centred under the scoreline once the animation
+       settles. Rows are all on the SAME baseline (no per-team column drift). */
+    #hud13 .mstats { position: absolute; right: 4%; bottom: 26%; margin-top: 0;
+      width: min(340px, 42%); display: none; flex-direction: column; gap: 15px;
+      opacity: 0; transition: opacity .8s ease; }
+    #hud13 .mstats.show { display: flex; opacity: 1; }
+    #hud13 .mstats .mrow { display: flex; flex-direction: column; gap: 6px; }
+    #hud13 .mstats .mtop { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    #hud13 .mstats .mlab { font-family: var(--s13-grot); font-size: 10.5px; letter-spacing: .16em;
+      text-transform: uppercase; color: #b8b5cc; text-shadow: 0 1px 7px rgba(0,0,0,.85); }
+    #hud13 .mstats .mval { font-family: var(--s13-mono); font-size: 17px; color: #fff; font-weight: 700;
+      font-variant-numeric: tabular-nums; text-shadow: 0 1px 7px rgba(0,0,0,.9), 0 0 3px rgba(0,0,0,.95); min-width: 42px; }
+    #hud13 .mstats .mval--a { text-align: right; }
+    #hud13 .mstats .mbar { display: flex; align-items: stretch; height: 5px; border-radius: 3px;
+      overflow: hidden; background: rgba(255,255,255,.12); box-shadow: 0 1px 5px rgba(0,0,0,.55); }
+    #hud13 .mstats .mbar > i { display: block; height: 100%; }
+    #hud13 .mstats .mbar-h { background: var(--home-color, #21d07a); }
+    #hud13 .mstats .mbar-a { background: var(--away-color, #e23b3b); margin-left: auto; }
+    #hud13 .mstats .mbar-gap { flex: 0 0 2px; background: transparent; }
+
+    /* GOAL SCORER — hover the disc+minute and the scorer's SURNAME slides in on a plate to the
+       RIGHT (the disc and minute stay put). Custom plate, not a native title. */
+    /* on hover the WHOLE row becomes ONE plate — the disc ● + minute STAY, the scorer's SURNAME
+       slides in inside the same plate → [● 89' Haaland]. */
+    #hud13 .ev.goal-ev { pointer-events: auto; cursor: default; gap: 9px;
+      border-radius: 8px; padding: 4px 10px; margin: -4px -10px;
+      transition: background .16s ease, box-shadow .16s ease; }
+    #hud13 .ev.goal-ev:hover { background: #0b0b13; box-shadow: 0 7px 20px rgba(0,0,0,.5); }
+    #hud13 .ev.goal-ev::after { content: attr(data-tip);
+      font-family: var(--s13-grot); font-size: 12.5px; font-weight: 600; color: #fff; letter-spacing: .02em;
+      white-space: nowrap; max-width: 0; opacity: 0; overflow: hidden; margin-left: -9px;
+      transition: max-width .2s ease, opacity .16s ease, margin-left .2s ease; }
+    #hud13 .ev.goal-ev:hover::after { max-width: 220px; opacity: 1; margin-left: 0; }
+
+    /* END-STATE VIGNETTE — an elegant scrim over the field that fades in as the match settles,
+       darkening the cloth (edges most) so the post-match stats read cleanly. Driven in JS
+       (opacity = settle ramp, off during the shootout). */
+    #endscrim { position: absolute; inset: 0; pointer-events: none; z-index: 6; opacity: 0;
+      background: radial-gradient(130% 100% at 48% 52%, rgba(7,7,14,0.36) 0%, rgba(5,5,11,0.62) 50%, rgba(3,3,8,0.85) 100%); }
+
+    /* floating xG-peak labels — a small pill anchored to the peak, positioned per-frame in JS.
+       STAGE13 FIX — these are projected from WORLD coords using the FULL-VIEWPORT #stage
+       canvas box (stage.clientWidth/Height), so the host must span the SAME full viewport
+       (not the 1000px column) or the labels would land off the peaks. Fixed + full-bleed. */
+    #xglabels { position: fixed; inset: 0; pointer-events: none; z-index: 26; }
+    #xglabels .xglabel { position: absolute; left: 0; top: 0; transform: translate(-50%, -100%);
+      white-space: nowrap; opacity: 0; transition: opacity .18s ease; will-change: transform, opacity;
+      padding: 5px 11px 6px; border-radius: 8px; background: #0a0a10;
+      box-shadow: 0 5px 18px rgba(0,0,0,.6); }
+    #xglabels .xglabel::after { content: ""; position: absolute; left: 50%; bottom: -5px; transform: translateX(-50%);
+      border: 5px solid transparent; border-top-color: #0a0a10; border-bottom: 0; }
+    #xglabels .xglabel .xg-p { font-family: var(--s13-grot); font-weight: 600; font-size: 13px;
+      letter-spacing: .02em; color: #fff; }
+    #xglabels .xglabel .xg-v { font-family: var(--s13-mono); font-size: 11px; letter-spacing: .02em;
+      color: var(--s13-dim); margin-left: 7px; }
+    /* shootout-taker plate (surname over the pen hill) — a MISSED kick reads a touch muted. */
+    #xglabels .penlabel.miss .xg-p { color: var(--s13-dim); }
+
+    /* ========================================================================
+       DEV-ONLY scorer CARD (behind ?dev). A DARK SQUARE (width == height, ALWAYS)
+       shown at each goal — a clean geometric form that deliberately contrasts the
+       organic terrain. Art-director hierarchy = "contrast of forms and labels":
+         HERO   = a large NATURAL (untinted) square PHOTO across the top, ~66% of
+                  the card height, even inset on all four sides.
+         CAPTION= surname (secondary), on a line with the filled team-colour number
+                  badge (white number). Auto-shrinks / ellipsises to stay in-square.
+         3rd    = "age · club" (smallest, muted), one truncated line; hidden if empty.
+       The team colour lives ONLY on the number badge — the photo is untinted.
+       --sp-size is the ONE knob: it sets the card SIDE (width AND height, so the card
+       is square); everything else (photo, padding, fonts) scales from it. The square
+       proportions and photo size NEVER change to fit text — text shrinks/clips instead.
+       Full-bleed host; hidden unless body.dev. */
+    #scorerphotos { position: fixed; inset: 0; pointer-events: none; z-index: 25; --sp-size: 150px; }
+    /* PROD-DEFAULT (owner request): the scorer card is LIVE for all visitors — no longer gated
+       behind body.dev. (Was `body:not(.dev) #scorerphotos { display:none }`.) */
+    /* SQUARE card. --sp-pad = the ONE padding token → equal inset on all four edges. The card is
+       width==height==--sp-size and locked square (no growth): overflow is hidden, and the two text
+       tiers each clip/shrink so long content can never break the square. --sp-gap = photo→text
+       rhythm; --sp-gap-sm = the tighter name→info step. --sp-photo is DERIVED so photo + gaps +
+       two text lines exactly fill the padded square, keeping the photo the dominant ~66% block. */
+    #scorerphotos .sp-card { position: absolute; left: 0; top: 0; transform: translate(-50%, 0);
+      opacity: 0; transition: opacity .18s ease; will-change: transform, opacity;
+      --sp-pad: calc(var(--sp-size) * .066);
+      --sp-gap: calc(var(--sp-size) * .045);
+      --sp-gap-sm: calc(var(--sp-gap) * .5);
+      --sp-photo: calc(var(--sp-size) - var(--sp-pad) * 2);
+      box-sizing: border-box; width: var(--sp-size); height: var(--sp-size);
+      display: flex; flex-direction: column; gap: var(--sp-gap);
+      padding: var(--sp-pad); border-radius: calc(var(--sp-size) * .06);
+      background: rgba(10,10,16,.94); backdrop-filter: blur(3px);
+      overflow: hidden; box-shadow: 0 6px 20px rgba(0,0,0,.55); }
+    #scorerphotos .sp-card::after { content: ""; position: absolute; left: 50%; bottom: -5px; transform: translateX(-50%);
+      border: 5px solid transparent; border-top-color: rgba(10,10,16,.94); border-bottom: 0; }
+    /* HERO photo — big NATURAL (no team-colour tint) square across the top, full padded width,
+       ~66% of the card height. Fixed by --sp-photo (card side minus even padding); its height is
+       clamped so the two text tiers always fit under it and the card stays square. */
+    #scorerphotos .sp-photo { position: relative; width: var(--sp-photo);
+      height: calc(var(--sp-size) * .60); flex: 0 0 auto; align-self: stretch;
+      border-radius: calc(var(--sp-size) * .04);
+      overflow: hidden; background: #16161d; }
+    #scorerphotos .sp-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    /* text block below the HERO photo — CAPTION line (badge + surname) then the muted info tier.
+       min-width:0 lets the flex children clip rather than force the card wider than square. */
+    #scorerphotos .sp-txt { display: flex; flex-direction: column; gap: var(--sp-gap-sm);
+      min-width: 0; overflow: hidden; }
+    #scorerphotos .sp-line1 { display: flex; align-items: center; gap: calc(var(--sp-size) * .05);
+      line-height: 1; min-width: 0; }
+    /* SURNAME = caption. Base size set here; JS auto-shrinks it (down to a floor) to fit the row
+       width, then nowrap+ellipsis clips anything still too long. The badge stays fixed-size. */
+    #scorerphotos .sp-name { flex: 0 1 auto; min-width: 0;
+      font-family: var(--s13-grot); font-weight: 700;
+      font-size: calc(var(--sp-size) * .115);
+      letter-spacing: .01em; color: #fff; line-height: 1;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* shirt-number badge — SOLID FILLED in the kit colour, white number. Fixed size (never shrinks);
+       align-items:center on the row centres badge and name against each other. */
+    #scorerphotos .sp-num { display: inline-flex; align-items: center; justify-content: center;
+      flex: 0 0 auto; box-sizing: border-box;
+      min-width: calc(var(--sp-size) * .15); padding: calc(var(--sp-size) * .012) calc(var(--sp-size) * .036);
+      border-radius: calc(var(--sp-size) * .03);
+      background: var(--sp-col, #333); color: #fff;
+      font-family: var(--s13-mono); font-weight: 700; font-size: calc(var(--sp-size) * .085);
+      line-height: 1; letter-spacing: .01em; text-align: center; }
+    /* 3rd TIER — "23 · Real Madrid" (age · club), smallest + muted, one line, ellipsis-truncated. */
+    #scorerphotos .sp-info { font-family: var(--s13-mono); font-size: calc(var(--sp-size) * .068);
+      color: var(--s13-dim); line-height: 1;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #scorerphotos .sp-card.no-num .sp-num { display: none; }
+    #scorerphotos .sp-card.no-info .sp-info { display: none; }
+
+    #hud13 .score { font-family: var(--s13-mono); font-weight: 700; font-size: 116px; line-height: .9;
+      letter-spacing: -.02em; color: #fff; margin-top: 2px;
+      font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+
+    /* per-team event rows under the score — NO word labels, marker shape carries meaning. */
+    #hud13 .events { margin-top: 20px; display: flex; flex-direction: column; gap: 12px; }
+    #hud13 .ev { display: flex; align-items: center; gap: 10px; min-height: 18px; }
+    #hud13 .ev .v { font-family: var(--s13-mono); font-size: 15px; letter-spacing: .01em;
+      color: var(--s13-ink); display: inline-flex; align-items: center; gap: 9px; }
+    /* GOAL — filled disc in the team colour */
+    #hud13 .mk.goal { width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto; }
+    #hud13 .team--home .mk.goal { background: var(--home-color);
+      box-shadow: 0 0 8px color-mix(in srgb, var(--home-color) 55%, transparent); }
+    #hud13 .team--away .mk.goal { background: var(--away-color);
+      box-shadow: 0 0 8px color-mix(in srgb, var(--away-color) 55%, transparent); }
+    /* RED CARD — upright red card rect */
+    #hud13 .mk.red { width: 13px; height: 18px; border-radius: 2px; background: var(--s13-red);
+      box-shadow: 0 0 7px rgba(229,51,58,.5); flex: 0 0 auto; }
+    /* PENALTY SHOOTOUT — a row of dots. SCORED = filled disc in the KICKING TEAM's colour
+       (same --home-color / --away-color the .rail uses); MISSED = a dim hollow outline. */
+    #hud13 .ev.shoot { gap: 8px; }
+    #hud13 .pk { width: 13px; height: 13px; border-radius: 50%; box-sizing: border-box; flex: 0 0 auto; }
+    #hud13 .pk.miss { background: transparent; border: 2px solid var(--s13-faint); }
+    #hud13 .team--home .pk.scored { background: var(--home-color);
+      box-shadow: 0 0 7px color-mix(in srgb, var(--home-color) 55%, transparent); }
+    #hud13 .team--away .pk.scored { background: var(--away-color);
+      box-shadow: 0 0 7px color-mix(in srgb, var(--away-color) 55%, transparent); }
+
+    /* ---- clock (top-right) — no LIVE indicator anywhere ---- */
+    #hud13 .clock { text-align: right; }
+    /* the minute NUMBER is right-aligned (fixed right edge as digits grow); the apostrophe
+       hangs as a superscript ABOVE and just BEYOND that right edge. */
+    #hud13 .clock .t { position: relative; display: inline-block;
+      font-family: var(--s13-mono); font-weight: 700; font-size: 46px;
+      letter-spacing: -.01em; color: var(--s13-ink); font-variant-numeric: tabular-nums; line-height: 1; }
+    #hud13 .clock .t em { position: absolute; top: -0.02em; right: 0; transform: translateX(118%);
+      font-style: normal; font-size: 0.4em; font-weight: 600; color: var(--s13-ink); line-height: 1; }
+    #hud13 .clock .half { margin-top: 10px; font-family: var(--s13-grot); font-size: 10px;
+      letter-spacing: .22em; text-transform: uppercase; color: var(--s13-dim); }
+    /* CROWD SOUND toggle — under the minute/half, nudged DOWN a touch. NO plate/box (HUD rule):
+       a small speaker icon to the LEFT of a two-line, left-aligned text stack (SOUND over ON/OFF).
+       Right-aligned as a block to sit flush under the clock. */
+    #hud13 .clock .soundtoggle { margin-top: 22px; display: inline-flex;
+      align-items: flex-start; gap: 6px; background: none; border: 0; padding: 0; cursor: pointer;
+      pointer-events: auto; font-family: var(--s13-grot); font-size: 10px; letter-spacing: .22em;
+      text-transform: uppercase; color: var(--s13-dim); -webkit-tap-highlight-color: transparent;
+      transition: color .15s ease; }
+    #hud13 .clock .soundtoggle[hidden] { display: none; }
+    /* icon sits on the TOP line (the word SOUND), not centred against the two-line stack.
+       The tiny margin optically centres the 13px glyph on the ~10px SOUND cap-height. */
+    #hud13 .clock .soundtoggle .sndico { width: 13px; height: 13px; display: block; flex: 0 0 auto;
+      margin-top: -1px; }
+    /* two-line label: SOUND over ON/OFF, both sharing the SAME left edge (aligned to the WORD,
+       NOT the icon). text-align:left cancels the parent .clock's right-alignment inside the stack. */
+    #hud13 .clock .soundtoggle .sndtxt { display: inline-flex; flex-direction: column;
+      align-items: flex-start; text-align: left; gap: 1px; line-height: 1.05; }
+    #hud13 .clock .soundtoggle .sndstate { font-size: 9px; opacity: .8; }
+    /* OFF (default): dim, no sound waves, mute slash shown */
+    #hud13 .clock .soundtoggle .sndico .wave { opacity: 0; }
+    #hud13 .clock .soundtoggle .sndico .slash { opacity: 1; }
+    /* ON: brighten + show waves + hide slash */
+    #hud13 .clock .soundtoggle.on { color: var(--s13-ink); }
+    #hud13 .clock .soundtoggle.on .sndico .wave { opacity: 1; }
+    #hud13 .clock .soundtoggle.on .sndico .slash { opacity: 0; }
+    #hud13 .clock .soundtoggle:hover { color: var(--s13-ink); }
+    /* CLOCK TOP-ALIGNMENT — the minute digit's cap-top is now aligned to the SCORE digits' cap-top
+       in JS (see alignClockToScore in stage13.js), which measures both fonts and applies a
+       translateY. No hand-tuned vertical margin here — JS is the single source of truth. */
+
+    /* ---- DEV-ONLY (behind ?dev): "how to read it" text link, sits just ABOVE the clock ----
+       A bare underlined text link — NO chip/plate/button background — at a NORMAL, readable
+       font size (matching the site's quiet type). Reset the native <button> chrome so it reads
+       as inline text. Hidden by default; revealed only under body.dev (see PUBLIC GATE below).
+       The clock (below) is also nudged DOWN in dev so its top edge aligns with the team-rail's
+       bottom edge, leaving room for this link between the rail and the minute number. */
+    #hud13 .clock .howlink {
+      display: block; margin: 0 0 12px; padding: 0; border: 0; background: none;
+      font-family: var(--s13-grot); font-size: 14px; font-weight: 500; letter-spacing: .02em;
+      color: var(--s13-dim); text-decoration: underline dotted; text-underline-offset: 3px;
+      text-decoration-thickness: 1px; cursor: pointer; pointer-events: auto;
+      transition: color .16s ease; -webkit-appearance: none; appearance: none; }
+    #hud13 .clock .howlink:hover { color: var(--s13-ink); }
+    #hud13 .clock .howlink:focus-visible { outline: 2px solid var(--s13-dim); outline-offset: 3px; border-radius: 2px; }
+    /* FIX 2 — in the dev / "how to read it" view the clock previously sat LOW (margin-top:28px),
+       so the minute number no longer lined up with the MEX/ENG names row. Now the minute block
+       inherits the SAME -8px as prod, so the "60'" cap-top lands at the top of the flag/name row.
+       The dev-only "How to read it" link is taken OUT of flow (absolutely positioned, anchored to the
+       clock's top-right) so it no longer pushes the minute number DOWN — the number sits at the exact
+       same y as the prod clock. The link reads as a quiet underlined text link just above the score
+       column, clear of the (left-side) team names. UNGATED — the link is now live for ALL visitors,
+       so this positioning applies unconditionally (was scoped to body.dev / body.howread). */
+    #hud13 .clock { position: relative; }
+    #hud13 .clock .howlink { position: absolute; right: 0; top: -22px; margin: 0;
+      white-space: nowrap; }
+
+    /* ---- DEV-ONLY (behind ?dev): "HOW TO READ IT" — FROZEN MANTLE STILL + annotations ----------
+       LITERAL 1282×1273 DESIGN CANVAS. `.howframe` is a fixed, centre-anchored box with an intrinsic
+       1282×1273 size, uniformly scaled to fit the viewport by S = min(innerWidth/1282,
+       innerHeight/1273) (set on :root as --howS in JS, on open + resize). EVERY child coordinate is
+       LITERAL px in this 1282-space, so the user's Figma numbers land EXACTLY (no feature-anchoring).
+       Z-ORDER low→high: (1) live #stage · (2) mantle still (#howStill — its OWN scaled .howframe,
+       z8, BELOW the HUD) · (3) live HUD + bottom pulse (z10/22) · (4) full-viewport dark scrim
+       (#howScrim, z60, ABOVE the HUD) · (5) labels + leaders + dots (#howAnn — a SECOND scaled
+       .howframe, z61, ABOVE the scrim). The still + HUD + pulse are all dimmed by the scrim; only the
+       annotations pop. Playback is NOT paused (the live scene runs behind); the cloth only LOOKS
+       frozen because the still covers it. No plaques anywhere. */
+    .howframe { position: fixed; left: 50%; top: 50%; width: 1282px; height: 1273px;
+      transform: translate(-50%, -50%) scale(var(--howS, 1)); transform-origin: center center;
+      pointer-events: none; opacity: 0; visibility: hidden;
+      transition: opacity .18s ease, visibility .18s ease;
+      font-family: var(--s13-grot); }
+    .howscrim2 { position: fixed; inset: 0; z-index: 60; background: rgba(6,4,14,.62);
+      pointer-events: none; opacity: 0; visibility: hidden;
+      transition: opacity .18s ease, visibility .18s ease; }
+    body.howactive .howframe, body.howactive .howscrim2 { opacity: 1; visibility: visible; }
+    /* (2) still BELOW the HUD; (5) annotations ABOVE the scrim. Both are FULL-VIEWPORT (no 1282 scale):
+       the still is the user's full-canvas grab laid over the live cloth; annotations use viewport px. */
+    .howframe--still, .howframe--ann { transform: none; left: 0; top: 0; width: 100vw; height: 100vh; }
+    /* FULL-VIEWPORT dark BASE beneath the scrim. MUST match the frozen still's own near-black backdrop
+       (≈ the app bg #04050a): a lighter navy here (was #0a1230) showed through in the LEFT/RIGHT side
+       bands the centred still doesn't cover, so the bands read LIGHTER than the centre. Matching the
+       base to the still's black makes the darkening UNIFORM edge-to-edge at any viewport width. */
+    .howframe--still { z-index: 8; background: #04050a; }
+    .howframe--ann { z-index: 61; }
+    /* the mantle still — FULL HEIGHT (top→bottom), NATURAL aspect (never stretched wide), centred,
+       so the cloth keeps its real proportions like in the live project. */
+    #howPeak { position: fixed; top: 0; left: 50%; transform: translateX(-50%);
+      height: 100vh; width: auto; max-width: none; display: block; pointer-events: none; }
+    /* (5) LEADERS + DOTS — ONE SVG in VIEWPORT px (viewBox = viewport, preserveAspectRatio none):
+       thin 1px WHITE right-angle polylines + small white dots. */
+    .howframe-svg { position: absolute; left: 0; top: 0; width: 100vw; height: 100vh; overflow: visible; }
+    .howframe-svg polyline { fill: none; stroke: #fff; stroke-width: 1; }
+    .howframe-svg circle { fill: #fff; }
+    /* (5) CALLOUT LABELS — the PROJECT grotesk (var(--s13-grot), NOT Barlow), white, left-aligned,
+       positioned at literal px in the 1282-space. Line-breaks come from the markup (<br>). */
+    .hcall2 { position: absolute; font-family: var(--s13-grot); color: #fff; text-align: left;
+      font-weight: 400; line-height: 1.32; letter-spacing: .005em; white-space: nowrap;
+      text-shadow: 0 1px 3px rgba(0,0,0,.85), 0 2px 12px rgba(0,0,0,.7); }
+    /* (5) MOMENTUM heading + legend for the bottom pulse — sits inside #howAnn (above the scrim). */
+    .howlegend-wrap { position: absolute; left: 27%; bottom: 21vh; pointer-events: none; }
+    .howlegend-title { font-family: var(--s13-grot); font-weight: 600; color: #fff; font-size: 16px;
+      letter-spacing: .01em; margin-bottom: 9px; text-shadow: 0 1px 3px rgba(0,0,0,.85); }
+    .howlegend { display: flex; gap: 20px; }
+    .howlegend .hl-row { display: flex; align-items: center; gap: 7px; }
+    .howlegend .hl-glyph { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 16px; }
+    /* GOAL key — small soccer-ball icon (team-neutral); white ball PNG used as a MASK. */
+    .howlegend .hl-goal { width: 11px; height: 11px; background: #f4f4f8;
+      -webkit-mask: var(--s13-ball) center / contain no-repeat; mask: var(--s13-ball) center / contain no-repeat;
+      filter: drop-shadow(0 0 2px rgba(0,0,0,.45)); }
+    .howlegend .hl-card { width: 10px; height: 14px; border-radius: 2px; }
+    .howlegend .hl-red { background: var(--s13-red, #e5333a); }
+    .howlegend .hl-sub { color: #fff; line-height: 1; display: inline-flex; }
+    .howlegend .hl-sub svg { display: block; }
+    .howlegend .hl-text { font-family: var(--s13-grot); font-size: 13px; color: #fff;
+      letter-spacing: .01em; text-shadow: 0 1px 3px rgba(0,0,0,.85); }
+
+    /* CLOSE (X) — VIEWPORT-fixed (outside the transformed frame so it isn't scaled). Only shown in
+       TAP mode (body.howtap); desktop is hover-driven so no X is needed. */
+    .howscene-x { position: fixed; z-index: 62;
+      top: calc(14px + env(safe-area-inset-top, 0px)); right: calc(14px + env(safe-area-inset-right, 0px));
+      width: 40px; height: 40px; display: none; align-items: center; justify-content: center; padding: 0;
+      /* NO border/plate/backdrop — the bare X glyph reads cleaner (the box "cheapened" the look). The
+         40×40 box stays as the invisible tap target; only the focus-visible ring appears (keyboard a11y). */
+      border: 0; background: none;
+      color: var(--s13-ink); cursor: pointer; pointer-events: auto; touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      transition: color .16s ease; }
+    .howscene-x:hover, .howscene-x:active { color: #fff; }
+    .howscene-x:focus-visible { outline: 2px solid var(--s13-dim); outline-offset: 2px; }
+    .howscene-x svg { width: 20px; height: 20px; display: block; }
+    body.howtap.howactive .howscene-x { display: flex; }
+    body.howtap.howactive .howscrim2 { pointer-events: auto; }
+    /* While the overlay is OPEN in TAP mode, HIDE the "How to read it" link: it is redundant (the
+       overlay is already showing) and sits under the close (X), which would otherwise cover it. It
+       reappears the instant the overlay closes. Scoped to TAP mode only — in HOVER mode (desktop) the
+       link IS the show/hide trigger, so hiding it while active would fire mouseleave and close the
+       overlay immediately. Hover mode shows no X, so there is nothing covering the link there. */
+    body.howtap.howactive #hud13 .clock .howlink { display: none !important; }
+
+    /* MOBILE (body.howmobile) — do NOT shrink the 1282 canvas to unreadable. Instead the still is fit
+       to viewport WIDTH (centred) and the 3 labels sit at a readable project-font size in the dark
+       bands off the cloth, with short JS-computed leaders/dots (see HOW_DESIGN.mobile in stage13.js).
+       We neutralise the 1282 scale/centering on both frames and reposition their children in JS. */
+    body.howmobile .howframe--still { transform: none; left: 0; top: 0; width: 100vw; height: 100vh;
+      display: flex; align-items: center; justify-content: center; }
+    /* MUST reset the desktop #howPeak transform/offsets: it sets left:50% + translateX(-50%) which,
+       once position:static drops it into the flex flow, shoves the landscape still LEFT by half its
+       width (under the labels/HUD). Neutralise all of them and let flex + margin:auto centre it, both
+       axes. The grab is landscape (2108×1272, ~1.657); at 100vw it's a horizontal band centred on
+       screen, with the 3 mobile labels in the dark bands above/below it (HOW_DESIGN.mobile). */
+    body.howmobile #howPeak { position: static; transform: none; left: auto; top: auto;
+      display: block; margin: 0 auto; width: 100vw; height: auto; max-width: 100vw; max-height: 100vh; }
+    body.howmobile .howframe--ann { transform: none; left: 0; top: 0; width: 100vw; height: 100vh; }
+    body.howmobile .howframe-svg { width: 100vw; height: 100vh; }
+
+    /* While the explainer is active, hide the DEV chrome (constructor/camera panels, match tabs) +
+       scorer card + live xG labels so the annotations sit cleanly. The live HUD (#hud13) + GALLERY
+       STAY visible (they are dimmed by the scrim, per design). Restored the instant the overlay closes. */
+    body.howactive #panel,
+    body.howactive #campanel,
+    body.howactive #matchtabs { opacity: 0; pointer-events: none; transition: opacity .16s ease; }
+    body.howactive #scorerphotos { opacity: 0 !important; pointer-events: none; }
+    body.howactive #xglabels { opacity: 0 !important; pointer-events: none; }
+    /* Hide the post-match STATS panel (xG/SHOTS/CORNERS/CARDS) while the how-to-read overlay is open,
+       so it doesn't overlap the explainer. Returns to view when howactive is removed. */
+    body.howactive #hud13 .mstats { display: none !important; }
+
+    /* CLEAN-CAPTURE TOGGLE ("d") — hide ALL surrounding chrome/UI, leaving ONLY the #stage terrain. */
+    body.cleanview #hud13,
+    body.cleanview #panel,
+    body.cleanview #campanel,
+    body.cleanview #matchtabs,
+    body.cleanview #playbar,
+    body.cleanview .backhome,
+    body.cleanview #xglabels,
+    body.cleanview #scorerphotos,
+    body.cleanview #tlicons,
+    body.cleanview #endscrim { display: none !important; }
+
+    /* ---- merged control + pulse (transparent, no plate) — bottom ---- */
+    #hud13 .console { position: absolute; left: 46px; right: 46px; bottom: 98px; z-index: 24;
+      display: flex; align-items: center; gap: 16px; pointer-events: none; }
+    #hud13 .play13 { flex: 0 0 auto; width: 56px; height: 56px; border-radius: 50%;
+      border: none; background: #fff;
+      display: flex; align-items: center; justify-content: center; position: relative;
+      box-shadow: 0 2px 10px rgba(0,0,0,.35); cursor: pointer; pointer-events: auto; padding: 0; }
+    #hud13 .play13:hover { box-shadow: 0 2px 10px rgba(0,0,0,.35), 0 0 0 3px rgba(255,255,255,.30); }
+    #hud13 .play13 svg { display: block; }
+    /* the seismograph canvas fills the rest of the console; transparent bg (restyled in JS) */
+    #hud13 #pulse13wrap { flex: 1 1 auto; height: 120px; position: relative; margin-left: -2px; }
+
+    /* ---- footer reference strip (TEXT, video-safe, static) ---- */
+    /* two LEFT-aligned lines — one clean type system: same face, size, leading + spacing. */
+    /* footer/attribution is a VIDEO watermark only — hidden on the live site (you're already
+       on wc26.bogachev.fr), revealed only when the export adds body.capfoot for the video render. */
+    /* DESKTOP/WIDE — ONE single line: identity · socials · domain · sources, with tasteful
+       dot separators. It fits comfortably at the 1000px column width. (Stacks to two lines
+       only on narrow mobile — see the @media block.) */
+    #hud13 .footstrip { position: absolute; left: 46px; right: 46px; bottom: 20px; z-index: 25;
+      display: none; flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 10px;
+      white-space: nowrap;
+      border-top: 1px solid var(--s13-fainter); padding-top: 13px;
+      font-family: var(--s13-grot); font-size: 12.5px; line-height: 1.5; letter-spacing: .012em; color: var(--s13-dim); }
+    body.capfoot #hud13 .footstrip { display: flex; }
+    #hud13 .footstrip .fline { display: flex; flex-wrap: nowrap; align-items: center; gap: 10px; }
+    /* the between-groups separator dot (its own flex child on the single desktop line) */
+    #hud13 .footstrip > .f-sep { color: var(--s13-faint); }
+    #hud13 .footstrip .f-name { color: var(--s13-ink); font-weight: 600; }
+    #hud13 .footstrip .f-dot { color: var(--s13-faint); }
+    #hud13 .footstrip .f-social { display: inline-flex; align-items: center; gap: 5px; color: var(--s13-dim); }
+    #hud13 .footstrip .f-social svg { width: 13px; height: 13px; fill: currentColor; opacity: .85; }
+    #hud13 .footstrip .f-dom { color: var(--s13-ink); font-weight: 600; }
+    #hud13 .footstrip .f-meta { color: var(--s13-faint); }
+    #hud13 .footstrip .f-meta b { color: var(--s13-dim); font-weight: 600; }
+
+    /* ========================================================================
+       VIDEO-ONLY HUD ENLARGEMENT — the exported renders play back on phones where
+       the desktop-scale scoreboard is too small to read. When the exporter adds
+       body.capfoot (the SAME flag that reveals the footer watermark), scale the
+       scoreboard group ~1.5× so flags / abbr / score / goal-minutes and the match
+       clock are phone-legible. LIVE site (no .capfoot) is untouched.
+       We scale the two children of .head independently, each anchored at its own
+       corner: .teams grows from top-left, .clock grows from top-right — so both
+       stay pinned where they are and grow inward/downward (never off-frame). The
+       transform doesn't affect flow layout, so .head's space-between still pins
+       the two boxes to the left/right edges before they scale from their corner. */
+    body.capfoot #hud13 .teams { transform: scale(1.5); transform-origin: top left; }
+    body.capfoot #hud13 .clock { transform: scale(1.5); transform-origin: top right; }
+
+    /* FULL-TIME ANALYTICS (xG / SHOTS / CORNERS / CARDS bars) — the .mstats block is a
+       flex sibling of .teams inside .head, revealed only at full time.
+
+       SCALABILITY: the LEFT column (flags + score + goal-minute list) grows DOWNWARD with
+       every goal — a 6–7 goal match plus a penalty shootout produces a long left column.
+       So in capture mode we move the enlarged analytics to the BOTTOM-RIGHT corner, above
+       the pulse seismograph. This frees the whole left column: the goal list can grow all
+       the way down the left edge without ever meeting the stats block (which now lives in
+       the opposite corner).
+
+       PITCH CONSTRAINT (measured, faithful 1080² render): the 3D blanket is an ortho
+       rhombus filling the frame CENTRE (x≈[89,995], y≈[108,1019]); there is no clear zone
+       big enough for the 5-row block anywhere central, so a restrained dark backing card is
+       the clean way to keep the bars readable over terrain (the block reads as an
+       intentional stats card, not bars scattered on grass).
+
+       ANCHORING: we give .head an explicit `bottom:0` (in capfoot only) so it spans the
+       full frame height; its flex children (.teams top-left, .clock top-right) stay pinned
+       at flex-start, unaffected. The absolute .mstats then anchors to .head's box:
+       right:0 (= the 46px frame inset) and bottom:262px, which sits ABOVE the pulse
+       console. The console is `bottom:98` + 120px tall ⇒ it occupies the bottom 218px of
+       the frame; bottom:262 leaves a ~44px gap above it. transform-origin bottom right so
+       the 1.28× scale grows UP and LEFT, staying anchored in the corner.
+
+       GEOMETRY (true 1080² square): card bbox ≈ x[534,994] y[524,822]. Clear of: the pulse
+       console (top ≈ 862 > 822), the clock (bottom 151 ≪ card top 524), the frame edges
+       (right 994 < 1034), and the LEFT column / goal list (card left 534 ≫ a long left
+       column's right edge ≈ 410 — so even ~7 goal rows never reach it). In vertical
+       1080×1920 the frame is taller so the card sits higher above the (bottom-anchored)
+       pulse with even more clearance. LIVE site (no .capfoot) is completely untouched. */
+    body.capfoot #hud13 .head { bottom: 0; }
+    body.capfoot .mstats {
+      position: absolute; right: 0; bottom: 262px; left: auto; top: auto; margin: 0;
+      width: 360px;
+      transform: scale(1.28); transform-origin: bottom right;
+      padding: 20px 22px;
+      background: linear-gradient(180deg, rgba(8,10,20,.90), rgba(8,10,20,.86));
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 12px;
+      box-shadow: 0 14px 40px rgba(0,0,0,.55); }
+
+    /* ========================================================================
+       VERTICAL / REELS SAFE-ZONE LAYOUT (video capture only) — 1080×1920.
+       The `--vertical` and `--reels` exports render a portrait 1080×1920 frame.
+       Reels/Shorts/TikTok overlay their own UI in fixed blind zones: the TOP ~12%
+       (status/profile/sound), the BOTTOM ~32% (caption + username + like/comment/
+       share + nav bar), and the RIGHT ~14% (action buttons). The default desktop/
+       square layout puts the HUD at the very top, the pulse+footer at the very
+       bottom, and a huge centred blanket — all of which land under those overlays,
+       hiding the SCORE. So for portrait capture we pull every key element into the
+       cross-platform SAFE BAND: y ∈ [~12%(230px), ~68%(1306px)], x ∈ [0, ~86%(930px)].
+
+       Gated on `body.capfoot` (video only) AND a portrait aspect (max-aspect-ratio
+       3/4 = 0.75; portrait video is 0.5625 → matches; square 1.0 and landscape >1 do
+       NOT; the LIVE site — which never carries .capfoot — is untouched even on a
+       portrait phone). Square and landscape captures keep the layout above.
+
+       Measured (faithful pinned 1080×1920): the ortho blanket fills y≈[190,1811]
+       (10%→94%) and x≈[89,995] — deep into all three blind zones. We can't touch the
+       WebGL camera from CSS (JS-only), so we CSS-transform the #stage (+#markers)
+       canvas: translateY(-278px) scale(.58) about centre. That fills the safe band
+       well (winner-red hook flood reads strong) while keeping the blanket to
+       ≈ x[278,804] y[235,1176] — right edge <905 (clear of the 930 right-blind), top
+       >230, and bottom <1180 so it clears the pulse. (#backdrop stays full-bleed so
+       the score-tinted halo still fills the frame.)
+
+       Final portrait stack (all inside the safe band, no key ink in a blind zone):
+         HUD  top:280 (≈15%), clock right:160 → clock right edge ≈874 (<930)
+         pitch y[235,1176], x[278,804]   (score sits over it as in the base design)
+         stats card y[862,1160], right edge ≈874  (over the pitch on its dark plate)
+         pulse console y[1180,1300]; right:175 so ALL pulse ink (waveform + far-right
+           "now" end-marker) stays left of x≈898 (<920, clear of the right button col)
+       The FOOTER/attribution watermark is DROPPED in portrait: the lower safe band is
+       fully used by card+pulse, and the coordinator OK'd dropping it for reels (it was
+       previously buried in the bottom blind zone anyway). Nothing key remains in the
+       top 12% / bottom 32% / right 14%. ==================================== */
+    @media (max-aspect-ratio: 3/4) {
+      body.capfoot #stage,
+      body.capfoot #markers { transform: translateY(-278px) scale(0.58);
+        transform-origin: center center; }
+
+      /* HUD down into the upper safe band; clock kept left of the right button column.
+         .head keeps bottom:0 (inherited from the desktop capfoot rule) so it stays a
+         full-frame box that the bottom-anchored .mstats card can reference. */
+      body.capfoot #hud13 .head { top: 280px; right: 160px; }
+
+      /* pulse console lifted above the bottom blind zone (below the stats card); the
+         right inset is widened to 175 so the seismograph waveform + far-right end-marker
+         line stay left of x≈898, clear of the right-edge action-button column. */
+      body.capfoot #hud13 .console { bottom: 620px; right: 175px; }
+
+      /* footer/attribution: DROP in portrait — it lived in the bottom blind zone and the
+         lower safe band is needed for the card+pulse. (Square/landscape keep the footer.) */
+      body.capfoot #hud13 .footstrip { display: none; }
+
+      /* full-time stats card: re-anchor above the (now-raised) pulse instead of the
+         desktop bottom-262; sits in the lower safe band, still bottom-right, clear of
+         the right button column via the wider right inset it inherits */
+      body.capfoot .mstats { bottom: 760px; right: 114px; }
+    }
+
+    /* STAGE13 — the bottom pulse canvas is repositioned inside the console (transparent,
+       no plate). Override stage12's centered translucent-band placement. */
+    #pulse {
+      position: static; transform: none; width: 100%; height: 120px;
+      left: auto; bottom: auto; display: block; pointer-events: none;
+    }
+
+    /* SHORT-VIEWPORT FIX — the desktop console is anchored at bottom:98px, a gap sized to leave
+       room for the footer WATERMARK in the (tall) video export. On a short laptop viewport (e.g.
+       1366×768 → ~696px tall, the owner's machine) that fixed 98px leaves a big EMPTY dark band
+       BELOW the pulse. Pull the pulse console down into that band so the momentum seismograph sits
+       in the lower strip (no dead space, and it moves AWAY from the centred terrain, not into it).
+       Scoped to desktop widths (>700px keeps the mobile layout) and to short heights only, so tall
+       desktops and the tall capfoot video export are byte-unchanged. */
+    @media (min-width: 701px) and (max-height: 800px) {
+      #hud13 .console { bottom: 34px; }
+    }
+
+    /* ========================================================================
+       PROD-DEFAULT — INTERACTIVE EVENT-MARKER LAYER on the seismograph (goals / reds /
+       subs). An HTML overlay inside #pulse13wrap, positioned per-frame in stage13.js.
+       Markers are built (buildTimelineIcons) and positioned (positionTimelineIcons) for
+       ALL visitors now (gated on CARD_PULSE = true, not DEV), and the host renders by
+       default — LIVE on prod (owner request). Only RED cards + goals + subs render.
+       Hover→detail reuses the goals-under-the-score pattern (::after content: attr(data-tip)).
+       ======================================================================== */
+    #tlicons { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+    /* PROD-DEFAULT (owner request): the timeline event markers (goal dots, red-card rects,
+       substitution ↑↓) are LIVE for all visitors — no longer gated behind body.dev.
+       (Was `body:not(.dev) #tlicons { display:none }`.) */
+    /* each icon: a small hover target holding one glyph; the tip plate is its ::after.
+       Whisper-quiet at rest (slightly transparent), brightening only on hover. */
+    #tlicons .tl-ic {
+      position: absolute; transform: translate(-50%, -50%);
+      width: 14px; height: 14px; display: flex; align-items: center; justify-content: center;
+      pointer-events: auto; cursor: default; border-radius: 2px;
+      opacity: .78; transition: opacity .14s ease, background .14s ease, box-shadow .14s ease;
+    }
+    #tlicons .tl-ic:hover { opacity: 1; background: #0b0b13; box-shadow: 0 6px 18px rgba(0,0,0,.5); z-index: 5; }
+    /* the detail plate — slides open to the RIGHT on hover, mirroring .goal-ev::after */
+    #tlicons .tl-ic::after {
+      content: attr(data-tip); position: absolute; left: 100%; top: 50%; transform: translateY(-50%);
+      margin-left: 3px; white-space: nowrap; pointer-events: none;
+      font-family: var(--s13-grot); font-size: 11px; font-weight: 600; letter-spacing: .02em; color: #fff;
+      background: #0b0b13; border-radius: 6px; padding: 3px 8px;
+      box-shadow: 0 6px 18px rgba(0,0,0,.5);
+      max-width: 0; opacity: 0; overflow: hidden;
+      transition: max-width .2s ease, opacity .16s ease, padding .16s ease;
+    }
+    #tlicons .tl-ic:hover::after { max-width: 260px; opacity: 1; }
+    /* GOAL — small soccer-ball icon in the scoring team’s colour (white ball PNG used as a MASK; box background-color = the tint). Same 6px footprint as the old disc. */
+    #tlicons .tl-ic > .tl-goal { width: 10px; height: 10px; background: var(--tc, #fff);
+      -webkit-mask: var(--s13-ball) center / contain no-repeat; mask: var(--s13-ball) center / contain no-repeat;
+      filter: drop-shadow(0 0 2px color-mix(in srgb, var(--tc, #fff) 55%, transparent)); }
+    /* CARDS — real football-card shape: a clear VERTICAL PORTRAIT rectangle (distinctly taller
+       than wide) with softly rounded corners, sized big enough that the CARD shape reads at a
+       glance (not a square blob). Red = sending-off. (Only red cards render on the timeline.) */
+    /* TALL CARD — EXACT aspect of the top HUD red card (#hud13 .mk.red = 13x18, w:h = 0.722),
+       scaled down to fit the pulse. Was 6x12 (0.5, sliver), then 9x12.5; now 9.75x13.5 = 13:18
+       precisely, a touch larger so the upright-card shape reads unmistakably (never squareish). */
+    #tlicons .tl-card { width: 9.75px; height: 13.5px; border-radius: 1.5px; }
+    /* IMPORTANT: scope the card FILL to the .tl-card GLYPH only. buildTimelineIcons also puts
+       `tl-red`/`tl-yellow` on the 14x14 .tl-ic CONTAINER (class = `tl-ic tl-<type> team-<team>`),
+       so an unscoped `.tl-red { background }` painted a solid red 14x14 rounded SQUARE behind the
+       card — THAT was the "square/blob" the card kept reading as. Scoping to `.tl-card.tl-*`
+       keeps the container transparent at rest (its hover plate is the separate `.tl-ic:hover`). */
+    #tlicons .tl-card.tl-yellow { background: #e6c94f; box-shadow: 0 0 2px rgba(230,201,79,.35); }
+    #tlicons .tl-card.tl-red { background: var(--s13-red); box-shadow: 0 0 2px rgba(229,51,58,.45); }
+    /* SUBSTITUTION — a quiet swap glyph, tinted to the team */
+    #tlicons .tl-sub { line-height: 1; color: var(--tc, var(--s13-dim)); opacity: .85;
+      display: inline-flex; align-items: center; justify-content: center; }
+    #tlicons .tl-sub svg { display: block; }
+    /* COOLING / WATER break — a water-drop glyph, pinned ABOVE the events row (positioned
+       in positionTimelineIcons). Clearly visible, whisper-quiet neutral tint (belongs to neither team). */
+    #tlicons .tl-drop { width: 13px; height: 13px; display: block; }
+    #tlicons .tl-drop path { fill: #7fd2e8; opacity: .9; }
+    #tlicons .tl-cool { opacity: .8; width: 15px; height: 15px; overflow: visible; }
+
+    /* ========================================================================
+       PUBLIC GATE — hide the developer chrome by default; reveal with ?dev=1.
+       (stage13.js adds `body.dev` at boot when the URL contains dev.)
+       Kept in the DOM so the existing dev bindings still resolve via el().
+       ======================================================================== */
+    body:not(.dev) #panel,
+    body:not(.dev) #campanel,
+    body:not(.dev) #matchtabs { display: none !important; }
+    /* UNGATED (owner request) — the "how to read it" link + explainer overlay are now LIVE for
+       ALL visitors with no query string. (Was hidden behind body:not(.dev):not(.howread).) The
+       overlay layers still self-hide via their own opacity/visibility until body.howactive, and the
+       close (X) still shows only in TAP mode (body.howtap.howactive). The ?howedit=1 coordinate
+       EDITOR remains dev-only — it is gated on the HOWEDIT flag in stage13.js, not on this CSS. */
+
+    /* ========================================================================
+       CAPTURE GATE (owner request) — the VIDEO render shows terrain + HUD + the
+       momentum pulse + the GOAL SCORER CARDS (owner wants the scorer cards to appear
+       during goals in the video). Still hidden for the clean video: the pulse timeline
+       event-markers (#tlicons) and the site-only "How to read it" link + its overlay. */
+    body.capfoot #tlicons,
+    body.capfoot #hud13 .clock .howlink,
+    body.capfoot .howframe,
+    body.capfoot .howscrim2 { display: none !important; }
+
+    /* ========================================================================
+       MOBILE / RESPONSIVE — the composition is a fixed centered ~1000px column
+       with a HUD at 46px insets. On narrow viewports the column goes fluid and
+       the HUD paddings/fonts scale down so nothing overflows or overlaps. The
+       WebGL canvas is untouched — only the chrome LAYOUT is adjusted.
+       ======================================================================== */
+    @media (max-width: 700px) {
+      :root { --col-w: 100vw; }
+      #composition { width: 100vw; max-width: 100vw; }
+
+      /* MOBILE — the scorer card was dominating the small screen. --sp-size is the ONE knob:
+         everything (photo, padding, all three font tiers) scales from it via calc(), so shrinking
+         this single value shrinks the whole card uniformly while keeping every proportion + the
+         surname>info>badge hierarchy identical. ~150px ÷ 1.5 ≈ 100px. Desktop is untouched. */
+      #scorerphotos { --sp-size: 100px; }
+
+      .backhome { top: 16px; left: 16px; }
+      #hud13 .head { top: 46px; left: 18px; right: 18px; flex-wrap: wrap; }
+      #hud13 .teams { gap: 18px; }
+      /* stats drop to their OWN full-width row below the scoreline (never overlap the clock) */
+      /* MOBILE: stats pinned to the BOTTOM of the square, ABOVE the pulse (full width, side insets).
+         Anchors to #hud13 (position:absolute inset:0 = the square). Must NOT be at the top over the score. */
+      #hud13 .mstats { position: absolute; left: 16px; right: 16px; bottom: 200px; top: auto;
+        width: auto; margin: 0; order: 0; flex: none; }
+      #hud13 .abbr { font-size: 12px; letter-spacing: .16em; }
+      #hud13 .flag { width: 20px; height: 13px; }
+      #hud13 .redcards .rc { width: 11px; height: 15px; }
+      #hud13 .redcards { margin-top: 12px; gap: 8px; }
+      #hud13 .events-row { gap: 16px; }
+      #hud13 .rail { height: 5px; margin-top: 5px; min-width: 60px; }
+      #hud13 .score { font-size: 64px; margin-top: 2px; }
+      #hud13 .events { margin-top: 12px; gap: 8px; }
+      #hud13 .ev .v { font-size: 13px; gap: 7px; }
+
+      #hud13 .clock .t { font-size: 30px; }
+      #hud13 .clock .half { font-size: 9px; margin-top: 6px; letter-spacing: .18em; }
+      /* MOBILE keeps a SOLID underline (tap-to-open); the DOTTED style signals the desktop hover trigger. */
+      #hud13 .clock .howlink { font-size: 13px; margin-bottom: 9px; text-decoration-style: solid; }
+      /* clock vertical alignment is handled in JS (alignClockToScore) — no margin-top override here. */
+
+      /* MOBILE how-to-read: the readable mobile adaptation (still fit to viewport width + labels in
+         the dark bands with short leaders) is driven by body.howmobile CSS + HOW_DESIGN.mobile in JS. */
+
+      #hud13 .console { left: 18px; right: 18px; bottom: 88px; gap: 11px; }
+      #hud13 .play13 { width: 44px; height: 44px; }
+      #hud13 #pulse13wrap { height: 90px; }
+      #pulse { height: 90px; }
+
+      /* MOBILE — stack the footer back to TWO left-aligned lines (the single desktop row
+         won't fit at phone widths). Hide the between-group separator that only makes sense
+         on the one-line desktop layout. */
+      #hud13 .footstrip { left: 18px; right: 18px; bottom: 14px; padding-top: 10px;
+        flex-direction: column; flex-wrap: wrap; align-items: flex-start; white-space: normal;
+        font-size: 11px; line-height: 1.45; gap: 4px; }
+      #hud13 .footstrip .fline { flex-wrap: wrap; gap: 6px; }
+      #hud13 .footstrip > .f-sep { display: none; }
+    }
+
+    @media (max-width: 420px) {
+      #hud13 .score { font-size: 52px; }
+      #hud13 .teams { gap: 12px; }
+      #hud13 .footstrip { font-size: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <!-- back-to-gallery — pinned to the far left of the viewport (outside the centred action column) -->
+  <a class="backhome" href="/index.html" aria-label="Back to gallery">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 6l-6 6 6 6"/></svg>
+    Gallery
+  </a>
+
+  <!-- STAGE11 #2/#4 — full-bleed score-tinted backdrop halo, BEHIND everything -->
+  <div id="backdrop"></div>
+
+  <!-- STAGE13 FIX — the 3D canvas + field overlays are now FULL-VIEWPORT (full-bleed),
+       body-level siblings of #composition. They MUST live OUTSIDE #composition: that column
+       has a CSS transform, which would otherwise become the containing block for these
+       position:fixed layers and re-frame them back to 1000px. Keeping them here lets the
+       sky dome fill the whole page = one continuous background. -->
+  <canvas id="stage"></canvas>
+  <!-- end-state vignette: fades in on settle so the post-match stats read over the cloth -->
+  <div id="endscrim"></div>
+  <!-- OLD goal-markers canvas kept for compatibility but DISABLED (drawMarkers is a
+       no-op in stage13.js); goals + reds now render under the teams in #hud13. -->
+  <canvas id="markers"></canvas>
+
+  <!-- centered ~1000px composition column: HUD OVERLAY ONLY (the 3D canvas is full-bleed above) -->
+  <div id="composition">
+    <!-- LOADING SPINNER — a thin rotating grey arc, centered over the pitch, shown while the scene
+         builds (terrain geometry + flags/textures) and hidden once the first real frame renders AND
+         the flags have loaded. No plate/box behind it (no-UI-plates rule). Hidden in video export. -->
+    <div id="loadSpinner" aria-hidden="true"><span class="ls-ring"></span></div>
+    <!-- STAGE13 FINALIZED HUD CHROME (matches public/design/vB2.html) -->
+    <div id="hud13">
+      <div class="head">
+        <!-- teams + score + per-team event blocks -->
+        <div class="teams">
+          <!-- HOME team -->
+          <div class="team team--home">
+            <div class="team-id"><img class="flag" id="hFlag" alt=""><span class="abbr" id="hAbbr"></span></div>
+            <div class="rail"></div>
+            <div class="score" id="hScore">0</div>
+            <!-- goal minutes (left) + red-card column (right); red cards moved here from above the score -->
+            <div class="events-row">
+              <div class="events" id="hEvents"><!-- goals / shootout rows injected by updateEventBlocks() --></div>
+              <div class="redcards" id="hRed"><!-- red-card icon(s) injected by updateEventBlocks(); no minute --></div>
+            </div>
+          </div>
+          <!-- AWAY team -->
+          <div class="team team--away">
+            <div class="team-id"><img class="flag" id="aFlag" alt=""><span class="abbr" id="aAbbr"></span></div>
+            <div class="rail"></div>
+            <div class="score" id="aScore">0</div>
+            <!-- goal minutes (left) + red-card column (right); red cards moved here from above the score -->
+            <div class="events-row">
+              <div class="events" id="aEvents"><!-- goals / shootout rows injected by updateEventBlocks() --></div>
+              <div class="redcards" id="aRed"><!-- red-card icon(s) injected by updateEventBlocks(); no minute --></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- clock (top-right) — NO LIVE indicator -->
+        <div class="clock">
+          <!-- DEV-ONLY (behind ?dev) — quiet underlined "How to read it" text link that sits just
+               ABOVE the minute clock. No chip/plate/button background. Reveals the transparent
+               annotation overlay (hover on desktop, tap on touch).
+               Hidden by default (body:not(.dev)); the live/prod view is unchanged. -->
+          <button type="button" class="howlink" id="howToReadLink" aria-controls="howAnn">How to read it</button>
+          <div class="t"><span id="clk2">0</span><em>'</em></div>
+          <div class="half" id="clkHalf">1st Half</div>
+          <!-- CROWD SOUND toggle — sits directly UNDER the minute/half. No plate/box (HUD rule):
+               a small speaker icon + quiet grey "SOUND" label. Hidden until stage13.js confirms a
+               per-match audio asset exists. OFF by default (the click is the autoplay user gesture). -->
+          <button type="button" class="soundtoggle on" id="soundToggle" aria-label="Crowd sound" aria-pressed="true" hidden>
+            <svg class="sndico" viewBox="0 0 24 24" aria-hidden="true">
+              <path class="body" d="M3 9v6h4l5 4V5L7 9H3z" fill="currentColor"/>
+              <path class="wave wave1" d="M15.5 9.2a4 4 0 0 1 0 5.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              <path class="wave wave2" d="M18 6.8a7.5 7.5 0 0 1 0 10.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              <line class="slash" x1="15.5" y1="7.5" x2="22" y2="16.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+            <!-- two-line stacked label, LEFT-ALIGNED to each other (state word lines up under
+                 "SOUND", independent of the icon which sits to the left of this text block). -->
+            <span class="sndtxt">
+              <span class="sndlbl">SOUND</span>
+              <span class="sndstate" id="soundState">ON</span>
+            </span>
+          </button>
+        </div>
+      </div>
+
+      <!-- merged control + pulse (transparent, no plate) -->
+      <div class="console">
+        <button class="play13" id="play13" aria-label="Play/Pause">
+          <svg width="16" height="18" viewBox="0 0 16 18" aria-hidden="true">
+            <!-- triangle nudged ~1.3px right for optical centring inside the circular button -->
+            <path d="M1 1 L15 9 L1 17 Z" fill="none" stroke="#e9e7f4" stroke-width="1.4" stroke-linejoin="round" transform="translate(1.3 0)"/>
+          </svg>
+        </button>
+        <div id="pulse13wrap">
+          <!-- BOTTOM MOMENTUM / PULSE (whole-match seismograph + playhead), restyled to
+               a clean off-white seismograph in stage13.js drawPulse. -->
+          <canvas id="pulse"></canvas>
+        </div>
+      </div>
+
+      <!-- bottom reference strip — ONE line on desktop (identity · socials · domain · sources),
+           stacks to two lines only on narrow mobile. TEXT (video-safe). -->
+      <div class="footstrip">
+        <div class="fline">
+          <span class="f-name">Alexander Bogachev</span>
+          <span class="f-dot">•</span>
+          <span class="f-social"><svg viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>bogachev_al</span>
+          <span class="f-dot">•</span>
+          <span class="f-social"><svg viewBox="0 0 24 24"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>in/bogachev-aleksandr</span>
+        </div>
+        <!-- between-group separator — shown on the single desktop line; hidden when stacked (mobile) -->
+        <span class="f-sep f-dot">•</span>
+        <div class="fline f-meta">
+          <span class="f-dom">wc26.bogachev.fr</span>
+          <span class="f-dot">•</span>
+          <span><b>Data:</b> FotMob · WhoScored (Opta)</span>
+        </div>
+      </div>
+
+      <!-- unified post-match comparison stats — DIRECT CHILD of #hud13 so it anchors to the
+           full central square; pinned to the square's bottom-right (revealed at full time). -->
+      <div class="mstats" id="mStats"></div>
+
+    </div>
+  </div>
+
+  <!-- floating player-name labels on the strongest xG peaks (positioned per-frame).
+       STAGE13 FIX — body-level (full-viewport) so it shares the full-bleed #stage canvas's
+       coordinate space; kept OUT of the transformed #composition column. -->
+  <div id="xglabels"></div>
+
+  <!-- DEV-ONLY scorer-photo layer (behind ?dev) — a small kit-tinted headshot + shirt
+       number at each goal. Full-viewport host so it shares the #stage canvas coord space,
+       exactly like #xglabels. Hidden unless body.dev. -->
+  <div id="scorerphotos"></div>
+
+  <!-- DEV-ONLY (behind ?dev) — "HOW TO READ IT" frozen-mantle still + annotation overlay.
+       LITERAL 1282×1273 design canvas. #howStill (z8, BELOW the live HUD) holds the mantle-only
+       MEX-ENG@69' still; #howScrim (z60) is the full-viewport dark wash ABOVE the HUD; #howAnn (z61)
+       holds the leaders/dots (SVG) + labels ABOVE the scrim. Both .howframe layers are uniformly
+       scaled by S=min(iw/1282,ih/1273) so their literal 1282-px children land at the Figma coords.
+       ALL tunable geometry (label positions/text + leader/dot coords + mobile values) lives in ONE
+       block: HOW_DESIGN in stage13.js. These containers are built/populated from it in JS. Playback
+       is NOT paused; the cloth only looks frozen (covered by the still). Hidden unless body.dev + open. -->
+
+  <!-- (2) frozen mantle still — its OWN scaled design-canvas layer, BELOW the live HUD. -->
+  <div id="howStill" class="howframe howframe--still" aria-hidden="true">
+    <img id="howPeak" alt="" aria-hidden="true">
+  </div>
+
+  <!-- (4) full-viewport DARK scrim over still + scene + HUD/pulse (all dimmed). Also a tap-to-close catcher. -->
+  <div id="howScrim" class="howscrim2" data-how-close aria-hidden="true"></div>
+
+  <!-- (5) annotations — a SECOND scaled design-canvas layer ABOVE the scrim. SVG (leaders+dots) and
+       label divs are injected from HOW_DESIGN (stage13.js). viewBox matches the 1282-space. -->
+  <div id="howAnn" class="howframe howframe--ann" aria-hidden="true">
+    <svg class="howframe-svg" viewBox="0 0 1282 1273" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
+    <!-- MOMENTUM heading + legend for the bottom pulse (Goal · Red card · Substitution). -->
+    <div class="howlegend-wrap" aria-hidden="true">
+      <div class="howlegend-title">Momentum</div>
+      <div class="howlegend">
+        <div class="hl-row"><span class="hl-glyph"><span class="hl-goal"></span></span><span class="hl-text">Goal</span></div>
+        <div class="hl-row"><span class="hl-glyph"><span class="hl-card hl-red"></span></span><span class="hl-text">Red card</span></div>
+        <!-- SUBSTITUTION LOOP glyph — kept in sync with SUB_LOOP_SVG in stage13.js (single source of truth for the shape). -->
+        <div class="hl-row"><span class="hl-glyph"><span class="hl-sub"><svg width="13" height="13" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 22A13 13 0 0 1 35 16"/><path d="M37 26A13 13 0 0 1 13 32"/><path d="M34.27 9.04 35 16 28 15.75"/><path d="M13.73 38.96 13 32 20 32.25"/></svg></span></span><span class="hl-text">Substitution</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CLOSE — viewport-fixed; only shown in TAP mode (body.howtap); hidden on desktop hover. -->
+  <button type="button" class="howscene-x" id="howOverlayClose" data-how-close aria-label="Close">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+  </button>
+
+  <!-- MATCH SWITCHER TABS -->
+  <div id="matchtabs">
+    <button class="mtab" data-id="1953888">FRA · SEN</button>
+    <button class="mtab" data-id="1994739">PAR · FRA</button>
+    <button class="mtab" data-id="1990970">GER · PAR</button>
+    <button class="mtab" data-id="1990967">ICO · NOR</button>
+  </div>
+
+  <!-- GLOBAL play / scrub / speed -->
+  <div id="playbar">
+    <button id="play" class="btn">❚❚</button>
+    <button id="restart" class="btn">↺</button>
+    <input id="clock" type="range" min="0" max="100" step="0.05" value="0">
+    <span class="clkv" id="clk">0'</span>
+    <label style="text-transform:uppercase;letter-spacing:0.1em">speed</label>
+    <input id="speed" type="range" min="0.2" max="6" step="0.1" value="0.9" style="width:90px">
+    <span class="clkv" id="speedV">0.9×</span>
+  </div>
+
+  <!-- LEFT — the layer constructor -->
+  <div id="panel" class="pnl">
+    <div id="title2">STAGE 12 · CONSTRUCTOR · loading…</div>
+
+    <!-- pick ANY harvested match (dev playground) -->
+    <select id="matchsel" title="матч" style="width:100%;box-sizing:border-box;background:#0a0e16;color:var(--ink);border:1px solid var(--stroke);border-radius:7px;padding:7px 8px;font-size:12px;letter-spacing:0.02em"></select>
+
+    <div class="cfgbar">
+      <button id="cfgcopy" class="btn">копировать</button>
+      <button id="cfgsave" class="btn">сохранить</button>
+      <button id="cfgreset" class="btn">сброс</button>
+    </div>
+
+    <!-- STAGE13 — playback SPEED + RESTART, moved here from the removed top bar -->
+    <div class="ctl" style="margin-top:2px">
+      <div class="ctl-head"><label>скорость</label><span class="val" id="speedV2">1.0×</span></div>
+      <input id="speed2" type="range" min="0.2" max="6" step="0.1" value="1">
+    </div>
+    <div class="cfgbar"><button id="restart2" class="btn" style="flex:1">↺ сначала</button></div>
+
+    <!-- SHOOTOUT choreography timing (post-match penalties) -->
+    <div class="ctl" style="margin-top:2px">
+      <div class="ctl-head"><label>серия ▸ пауза</label><span class="val" id="shPause2">2.4s</span></div>
+      <input id="shPause" type="range" min="0" max="8" step="0.1" value="2.4">
+    </div>
+    <div class="ctl">
+      <div class="ctl-head"><label>серия ▸ шаг</label><span class="val" id="shGap2">1.7s</span></div>
+      <input id="shGap" type="range" min="0.5" max="5" step="0.1" value="1.7">
+    </div>
+    <textarea id="cfgPaste" readonly style="display:none;width:100%;height:84px;margin-top:2px;box-sizing:border-box;font:11px/1.35 ui-monospace,monospace;background:#0a0e16;color:#9fd;border:1px solid var(--stroke);border-radius:6px;padding:7px;resize:vertical"></textarea>
+
+    <div id="layers" style="display:flex;flex-direction:column;gap:8px"></div>
+  </div>
+
+  <!-- camera / layout -->
+  <div id="campanel" class="pnl">
+    <div class="row"><label>camera ▸ ракурс</label><span class="val" id="camread">—</span></div>
+    <div class="row">
+      <button id="copycam" class="btn">copy camera</button>
+      <button id="resetcam" class="btn">reset</button>
+    </div>
+    <div class="row" style="margin-top:2px">
+      <button id="hudedit" class="btn" style="flex:1">✥ двигать HUD</button>
+      <button id="hudsave" class="btn" style="flex:1">save</button>
+      <button id="hudreset" class="btn">reset</button>
+    </div>
+    <div class="dim" style="color:var(--ink-dim);font-size:10px">drag to orbit · wheel to zoom</div>
+  </div>
+
+  <noscript>This stage requires JavaScript (ES modules) and WebGL.</noscript>
+  <script type="module" src="stage13.js?v=1f97922a92"></script>
+</body>
+</html>

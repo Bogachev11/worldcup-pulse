@@ -1,0 +1,24 @@
+{
+  "match": "1992062",
+  "approach": "B",
+  "mapping": "linear-1to1",
+  "bodyDurationS": 46.967,
+  "dramaTotalS": 46.967,
+  "baseSpeed": 1.0,
+  "sync": "audio.currentTime = wallProgress * bodyDurationS; audio.playbackRate = cfg.speed",
+  "startAtWallProgress": 0.0,
+  "loop": false,
+  "goals": [
+    {
+      "t": 13.8,
+      "wallSecond": 5.858,
+      "audioSecond": 6.739
+    }
+  ],
+  "penBeatsBaked": 0,
+  "penaltyWarpRisk": false,
+  "engineDurMin": 105.47,
+  "files": {
+    "mp3": "1992062.mp3"
+  }
+}

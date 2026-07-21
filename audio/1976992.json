@@ -1,0 +1,24 @@
+{
+  "match": "1976992",
+  "approach": "B",
+  "mapping": "linear-1to1",
+  "bodyDurationS": 59.13,
+  "dramaTotalS": 59.13,
+  "baseSpeed": 1.0,
+  "sync": "audio.currentTime = wallProgress * bodyDurationS; audio.playbackRate = cfg.speed",
+  "startAtWallProgress": 0.0,
+  "loop": false,
+  "goals": [
+    {
+      "t": 81.1,
+      "wallSecond": 45.322,
+      "audioSecond": 45.946
+    }
+  ],
+  "penBeatsBaked": 0,
+  "penaltyWarpRisk": false,
+  "engineDurMin": 102.17,
+  "files": {
+    "mp3": "1976992.mp3"
+  }
+}

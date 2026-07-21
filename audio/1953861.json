@@ -1,0 +1,24 @@
+{
+  "match": "1953861",
+  "approach": "B",
+  "mapping": "linear-1to1",
+  "bodyDurationS": 47.162,
+  "dramaTotalS": 47.162,
+  "baseSpeed": 1.0,
+  "sync": "audio.currentTime = wallProgress * bodyDurationS; audio.playbackRate = cfg.speed",
+  "startAtWallProgress": 0.0,
+  "loop": false,
+  "goals": [
+    {
+      "t": 1.2,
+      "wallSecond": 1.48,
+      "audioSecond": 2.124
+    }
+  ],
+  "penBeatsBaked": 0,
+  "penaltyWarpRisk": false,
+  "engineDurMin": 102.55,
+  "files": {
+    "mp3": "1953861.mp3"
+  }
+}

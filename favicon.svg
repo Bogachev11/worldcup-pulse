@@ -1,0 +1,16 @@
+<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+  <!-- Terrain ridge / peak — the "blanket" signature. Two team ridges meeting at a sharp goal-peak.
+       Mark scaled UP to nearly fill the tile (small even margin); no spark circle. -->
+  <defs>
+    <clipPath id="tile"><rect x="0" y="0" width="48" height="48" rx="11"/></clipPath>
+  </defs>
+  <rect x="0" y="0" width="48" height="48" rx="11" fill="#07080e"/>
+  <g clip-path="url(#tile)">
+    <!-- back ridge (gold team) — peak apex near the top edge, base past the tile edges so it fills -->
+    <path d="M-2 50 L-2 26 L13 20 L24 2 L35 19 L50 13 L50 50 Z" fill="#ffd166"/>
+    <!-- front ridge (red team), overlapping to read as two blankets meeting at the peak -->
+    <path d="M-2 50 L-2 33 L14 28 L24 10 L34 27 L50 21 L50 50 Z" fill="#ef4b4b"/>
+    <!-- base shadow band grounding the tile -->
+    <rect x="-2" y="44" width="52" height="8" fill="#050609"/>
+  </g>
+</svg>

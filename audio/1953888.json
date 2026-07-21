@@ -1,0 +1,39 @@
+{
+  "match": "1953888",
+  "approach": "B",
+  "mapping": "linear-1to1",
+  "bodyDurationS": 61.11,
+  "dramaTotalS": 61.11,
+  "baseSpeed": 1.0,
+  "sync": "audio.currentTime = wallProgress * bodyDurationS; audio.playbackRate = cfg.speed",
+  "startAtWallProgress": 0.0,
+  "loop": false,
+  "goals": [
+    {
+      "t": 72.5,
+      "wallSecond": 34.831,
+      "audioSecond": 35.748
+    },
+    {
+      "t": 88.6,
+      "wallSecond": 44.48,
+      "audioSecond": 45.3
+    },
+    {
+      "t": 101.5,
+      "wallSecond": 53.296,
+      "audioSecond": 54.116
+    },
+    {
+      "t": 102.6,
+      "wallSecond": 57.045,
+      "audioSecond": 58.049
+    }
+  ],
+  "penBeatsBaked": 0,
+  "penaltyWarpRisk": false,
+  "engineDurMin": 106.65,
+  "files": {
+    "mp3": "1953888.mp3"
+  }
+}

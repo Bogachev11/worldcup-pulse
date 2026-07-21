@@ -1,0 +1,1102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- Security hardening. GitHub Pages cannot set HTTP headers, so the policy ships as a
+     <meta> CSP. Everything is self-hosted (three.js/fonts/flags/data are same-origin); the
+     only third party is Google Analytics, allowlisted below. 'unsafe-inline' is required
+     because the page uses an inline bootstrap script + inline styles (no build-time nonce).
+     object-src 'none' + base-uri 'self' block plugin and <base>-hijack vectors.
+     (frame-ancestors / X-Frame-Options need a real header — not settable on Pages.) -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'none'; img-src 'self' data: https://www.google-analytics.com https://*.google-analytics.com; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com; connect-src 'self' https://www.googletagmanager.com https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com" />
+<meta name="referrer" content="strict-origin-when-cross-origin" />
+<title>FIFA World Cup 2026 · Data Portraits</title>
+<meta name="description" content="FIFA World Cup 2026 Data Portraits — every match as a living data-portrait, two territory blankets and a momentum pulse, honest football made beautiful." />
+
+<!-- Favicon — territory-blanket ridge/peak mark (SVG crisp, PNG + ICO fallbacks) -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
+<link rel="alternate icon" href="/favicon.ico">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+
+<!-- Google Analytics (GA4) — only fires on the live domain, never on localhost/video-render captures -->
+<script>
+  if (location.hostname === 'wc26.bogachev.fr') {
+    var _ga = document.createElement('script'); _ga.async = true;
+    _ga.src = 'https://www.googletagmanager.com/gtag/js?id=G-BFH6VPLSCS';
+    document.head.appendChild(_ga);
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){ dataLayer.push(arguments); }
+    gtag('js', new Date());
+    gtag('config', 'G-BFH6VPLSCS');
+  }
+</script>
+
+<!-- Open Graph / social -->
+<meta property="og:title" content="FIFA World Cup 2026 Data Portraits" />
+<meta property="og:description" content="Every 2026 World Cup match as a living data-portrait — two territory blankets, a momentum pulse, honest football made beautiful." />
+<meta property="og:type" content="website" />
+<meta property="og:image" content="https://wc26.bogachev.fr/og-cover.png?v=3" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:url" content="https://wc26.bogachev.fr/" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="FIFA World Cup 2026 Data Portraits" />
+<meta name="twitter:description" content="Every 2026 World Cup match as a living data-portrait — two territory blankets, a momentum pulse, honest football made beautiful." />
+<meta name="twitter:image" content="https://wc26.bogachev.fr/og-cover.png?v=3" />
+
+<!-- Fonts SELF-HOSTED (woff2, font-display:swap) — no external render-blocking origin. -->
+<link rel="stylesheet" href="/fonts/fonts.css">
+
+<!-- three.js (UMD global) — powers ONLY the decorative hero backdrop below. Guarded so a
+     CDN miss never touches the gallery. SELF-HOSTED 0.160.0 UMD build (same as stage13's core). -->
+<script src="/vendor/three/three.min.js"></script>
+<style>
+  :root{
+    --bg:      #17102e;
+    --ink:     #f1eff8;   /* near-white editorial ink */
+    --ink-2:   #cfcbe4;   /* soft body ink */
+    --dim:     #8f89ad;   /* muted labels */
+    --faint:   #5b5686;   /* index markers */
+    --fainter: #2b2550;   /* the ONE hairline tone, used sparingly */
+    --accent:  #6f8cff;   /* refined periwinkle-blue */
+    --accent-2:#a9b8ff;
+    --mono:    'Space Mono', ui-monospace, monospace;
+    --grot:    'Space Grotesk', system-ui, sans-serif;
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ width:100%; }
+  html{ scroll-behavior:smooth; }
+  body{
+    background:
+      radial-gradient(140% 90% at 82% -6%, rgba(111,140,255,.16) 0%, transparent 46%),
+      radial-gradient(120% 100% at 50% -8%, #221a49 0%, var(--bg) 52%, #100a20 100%);
+    background-attachment:fixed;
+    color:var(--ink); font-family:var(--grot);
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+    min-height:100vh; overflow-x:hidden;
+  }
+  a{ color:inherit; }
+  ::selection{ background:rgba(111,140,255,.28); color:#fff; }
+
+  .wrap{ max-width:1340px; margin:0 auto; padding:0 clamp(20px,4.4vw,60px); }
+
+  /* ══════════════ INSTAGRAM HANDLE — right-aligned on the eyebrow row ══════════════
+     Lives inside the .edition row (see below): eyebrow on the left, IG link on the right,
+     same baseline/height, right edge lined up with the hero/gallery content column.
+     Quiet typographic treatment: muted ink + IG glyph, hover-brightens. */
+  .ig-link{
+    margin-left:auto;                 /* push to the right edge of the .edition row */
+    display:inline-flex; align-items:center; gap:9px;
+    min-width:0;                      /* allow the flex item to shrink → never overflows the column */
+    font-family:var(--grot); font-weight:500; font-size:16px; letter-spacing:.01em;
+    text-transform:none;              /* .edition uppercases; keep the handle as-typed */
+    color:var(--ink); text-decoration:none;   /* resting state is white (near-white editorial ink) */
+    padding-bottom:2px; border-bottom:1px solid transparent;
+    transition:color .2s ease, border-color .2s ease;
+  }
+  .ig-link:hover, .ig-link:focus-visible{ color:#fff; border-bottom-color:transparent; }
+  .ig-link svg{ width:19px; height:19px; flex:0 0 auto; stroke:currentColor; }
+  /* handle text: bounded + ellipsis so it truncates gracefully instead of spilling off-screen */
+  .ig-link span{ min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-bottom:2px; }
+  /* hover/focus: draw a THICK WHITE underline under the handle text only */
+  .ig-link:hover span, .ig-link:focus-visible span{
+    text-decoration:underline; text-decoration-color:#fff;
+    text-decoration-thickness:3px; text-underline-offset:3px;
+  }
+  @media (max-width:560px){
+    .ig-link{ font-size:14px; gap:7px; }
+    .ig-link svg{ width:17px; height:17px; }
+    /* mobile: IG link moves to its OWN line ABOVE the eyebrow, left-aligned.
+       .edition wraps; the link takes the full first row (order:-1, basis:100%) and
+       drops the right-edge pin so it lines up with the eyebrow/title left edge. */
+    .ig-link{ order:-1; flex-basis:100%; margin-left:0; margin-bottom:3px; }
+  }
+
+  /* ══════════════ HERO ══════════════ */
+  header.hd{
+    position:relative;
+    padding:clamp(64px,11vw,150px) 0 clamp(40px,6vw,80px);
+  }
+
+  /* ══ HERO BACKGROUND (generative tournament quilt) ══
+     A live woven "blanket of many colors" — one patch per real 2026 World Cup match,
+     coloured with the two teams' REAL kit colours and lifted into relief by each
+     match's real shots + goals. Breaks FULL-BLEED out of the content column
+     (100vw, edge-to-edge) and sits behind the hero text; a soft scrim keeps type crisp. */
+  .hero-bg{
+    position:absolute;
+    /* full-bleed: escape the centered .wrap column and span the whole viewport width */
+    top:0; left:50%; transform:translateX(-50%);
+    width:100vw; height:100%;
+    z-index:0; overflow:hidden; pointer-events:none;
+    /* melt into the void at the very edges + top so the quilt never hard-cuts and the
+       title never fights the colour. Radial keeps the middle rich, edges dissolve. */
+    -webkit-mask-image:
+      radial-gradient(132% 130% at 50% 104%, #000 50%, rgba(0,0,0,.55) 76%, transparent 100%),
+      linear-gradient(to bottom, transparent 0%, rgba(0,0,0,.45) 12%, #000 30%, #000 82%, rgba(0,0,0,.4) 95%, transparent 100%);
+    mask-image:
+      radial-gradient(132% 130% at 50% 104%, #000 50%, rgba(0,0,0,.55) 76%, transparent 100%),
+      linear-gradient(to bottom, transparent 0%, rgba(0,0,0,.45) 12%, #000 30%, #000 82%, rgba(0,0,0,.4) 95%, transparent 100%);
+    -webkit-mask-composite:source-in; mask-composite:intersect;
+  }
+  .hero-bg canvas{
+    display:block; width:100%; height:100%;
+    opacity:1;   /* rich by default; the scrim + top mask keep the title crisp */
+  }
+  /* SOFTWARE / WEAK-GPU FALLBACK — a decorative WebGL hero is very expensive on a software
+     rasteriser (owner's laptop = "Microsoft Basic Render Driver") and janky on very weak
+     integrated GPUs, so on those the JS below adds .hero-bg--static: the three.js quilt is
+     skipped entirely (no WebGL context, no rAF loop) and this cheap STATIC gradient — echoing
+     the tournament palette — stands in. It inherits the same edge mask as the live quilt, so it
+     dissolves at the edges identically. Strong/normal GPUs never get this class. */
+  .hero-bg--static canvas,
+  .hero-bg--img canvas{ display:none; }
+  .hero-bg--static::before{
+    content:""; position:absolute; inset:0;
+    background:
+      radial-gradient(116% 96% at 20% 14%, rgba(111,140,255,.52), transparent 56%),
+      radial-gradient(104% 86% at 82% 22%, rgba(255,122,89,.36), transparent 54%),
+      radial-gradient(120% 120% at 72% 102%, rgba(58,213,169,.30), transparent 60%),
+      linear-gradient(122deg, #1a1440 0%, #241a52 42%, #14102e 100%);
+  }
+  /* STATIC-IMAGE FALLBACK — a lightweight screenshot (~63KB webp) of the REAL animated quilt,
+     shown on software / weak GPUs instead of the live WebGL hero (no context, no rAF loop) or the
+     flat gradient. object-fit:cover via background-size; sits inside .hero-bg so it INHERITS the
+     same radial+linear edge mask as the live canvas (dissolves at the edges identically). The
+     .hero-scrim + title still layer on top, so the look matches the live hero. jpg first as a
+     fallback for the rare engine without webp/image-set; image-set upgrades to webp where supported. */
+  .hero-bg--img::before{
+    content:""; position:absolute; inset:0;
+    background-color:#14102e;
+    background-repeat:no-repeat; background-position:center top; background-size:cover;
+    background-image:url(hero-static.jpg);
+    background-image:image-set(url(hero-static.webp) type("image/webp"), url(hero-static.jpg) type("image/jpeg"));
+  }
+  /* SCRIM — a soft focal vignette drawn OVER the quilt but UNDER the text, so the
+     "Data / Portraits" title always sits on a calmer field no matter the colours behind. */
+  .hero-scrim{
+    position:absolute; top:0; left:50%; transform:translateX(-50%);
+    width:100vw; height:100%; z-index:1; pointer-events:none;
+    background:
+      /* focal calm zone directly under the title block (upper-left) — deepened so the
+         outlined "Portraits" reads cleanly; feathers out fast to keep the quilt vibrant. */
+      radial-gradient(66% 80% at 27% 34%, rgba(23,16,46,.78) 0%, rgba(23,16,46,.34) 40%, transparent 68%),
+      radial-gradient(78% 96% at 30% 30%, rgba(23,16,46,.42) 0%, rgba(23,16,46,.14) 46%, transparent 72%),
+      linear-gradient(to bottom, rgba(23,16,46,.30) 0%, transparent 26%, transparent 74%, rgba(23,16,46,.34) 100%);
+  }
+  /* the header's own content must sit ABOVE both the canvas and the scrim */
+  header.hd > .edition,
+  header.hd > h1.title,
+  header.hd > .hero-grid{ position:relative; z-index:2; }
+
+  /* a single quiet index marker instead of the eyebrow + hairline */
+  .edition{
+    font-family:var(--mono); font-size:12px; letter-spacing:.28em;
+    text-transform:uppercase; color:var(--dim);
+    display:flex; align-items:center; gap:14px; margin-bottom:clamp(26px,4vw,44px);
+  }
+  .edition .tick{ width:34px; height:1px; background:var(--faint); flex:0 0 auto; }
+  /* eyebrow label may shrink/ellipsis on narrow widths so the IG link stays on the same row */
+  .edition .edition-label{ min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  @media (max-width:560px){
+    /* allow the IG link (order:-1, flex-basis:100%) to break onto its own line above */
+    .edition{ flex-wrap:wrap; row-gap:0; }
+    /* pull the whole top group (IG link + eyebrow + title) higher so the IG link
+       sits near the top and reads as one tidy, balanced cluster — mobile only */
+    header.hd{ padding-top:clamp(28px,7vw,52px); }
+    /* the IG link now sits on its OWN line above the eyebrow, so the little leading
+       rule before "FIFA WORLD CUP 2026" reads as clutter — drop it on mobile only.
+       (gap:14px on .edition would otherwise leave a phantom indent, so kill the gap.) */
+    .edition .tick{ display:none; }
+    .edition{ gap:0; }
+    /* bump the hero title a step on phones so it reads bigger/bolder. vw-based so it
+       still scales down on narrow widths — "Football Data" (l1, nowrap) keeps fitting
+       the ~340px content column at 380px (≈38px) and never overflows. */
+    h1.title{ font-size:clamp(36px,10vw,46px); }
+  }
+  @media (max-width:400px){
+    /* .tick is hidden on mobile (≤560px); keep gap:0 so no phantom indent remains */
+    .edition{ gap:0; row-gap:0; }
+  }
+
+  h1.title{
+    font-family:var(--grot); font-weight:600; letter-spacing:-.028em;
+    /* Sized so the longest line — "Football Data" (line 1) — fits on ONE line inside the
+       content column with comfortable margin. The vw term scales it down on narrow widths
+       so it never wraps/overflows; the max is capped for breathing room at wide widths. */
+    font-size:clamp(32px,7.4vw,108px); line-height:.92;
+    display:flex; flex-direction:column;
+  }
+  /* "Football Data" — solid near-white ANCHOR: names the subject (football) instantly, grounds
+     the composition, and lets the multi-colour "Portraits" below sing without a rainbow title. */
+  h1.title .l1{
+    color:var(--ink);
+    white-space:nowrap;               /* keep "Football Data" on a single line */
+    /* a soft dark halo so the white word stays crisp where bright facets sit behind it */
+    text-shadow:0 2px 18px rgba(17,10,32,.55), 0 0 2px rgba(17,10,32,.5);
+  }
+  /* "Portraits" — MULTI-COLOUR display word. Each letter carries a real 2026 team colour
+     (assigned in JS from the SAME palette that dyes the quilt), so the title echoes the
+     tournament. Solid saturated fills — NOT outline — with a per-letter dark halo so every
+     glyph pops off the busy quilt and stays readable. */
+  h1.title .l2{
+    font-weight:600;
+    letter-spacing:-.024em;
+    white-space:nowrap;
+  }
+  h1.title .l2 .ch{
+    color:#fff;                       /* JS overrides per letter; white is the safe fallback */
+    /* tight dark halo + soft drop → the colour reads vividly AND separates cleanly from
+       whatever quilt facet sits behind it. */
+    text-shadow:
+      0 0 1px rgba(10,6,20,.92),
+      0 2px 7px rgba(10,6,20,.85),
+      0 0 18px rgba(10,6,20,.6);
+  }
+
+  .hero-grid{
+    margin-top:clamp(30px,4.5vw,52px);
+    display:grid; grid-template-columns:minmax(0,1fr) minmax(0,.86fr);
+    gap:clamp(24px,5vw,72px); align-items:end;
+  }
+  .lede{
+    max-width:600px; color:var(--ink-2);
+    font-size:clamp(16px,1.55vw,20px); line-height:1.62; font-weight:400;
+    text-wrap:balance;
+  }
+  .lede b{ font-weight:600; color:#fff; }
+  .lede .co{ color:var(--accent-2); font-weight:500; }
+
+  .hero-meta{
+    justify-self:end; text-align:right;
+    display:flex; flex-direction:column; align-items:flex-end; gap:20px;
+  }
+  .hero-meta .stat{ display:flex; flex-direction:column; align-items:flex-end; }
+  .hero-meta .stat .n{
+    font-family:var(--mono); font-weight:700; font-size:clamp(34px,4vw,52px);
+    color:var(--ink); line-height:1; letter-spacing:-.02em; font-variant-numeric:tabular-nums;
+  }
+  .hero-meta .stat .k{
+    font-family:var(--mono); font-size:11px; letter-spacing:.24em; text-transform:uppercase;
+    color:var(--dim); margin-top:9px;
+  }
+  .about-link{
+    font-family:var(--grot); font-weight:500; font-size:14px; letter-spacing:.02em;
+    color:var(--ink); text-decoration:none;
+    display:inline-flex; align-items:center; gap:9px;
+    padding-bottom:3px; border-bottom:1px solid var(--faint);
+    transition:border-color .2s ease, gap .2s ease, color .2s ease;
+  }
+  .about-link:hover, .about-link:focus-visible{ border-color:transparent; color:#fff; gap:14px; }
+  .about-link svg{ width:14px; height:14px; transition:transform .2s ease; }
+  .about-link:hover svg, .about-link:focus-visible svg{ transform:translateX(2px); }
+  /* hover/focus: draw a THICK WHITE underline under the link text only (matches .ig-link) */
+  .about-link:hover span, .about-link:focus-visible span{
+    text-decoration:underline; text-decoration-color:#fff;
+    text-decoration-thickness:3px; text-underline-offset:3px;
+  }
+
+  /* legend — one restrained line, no plates */
+  .legend{
+    margin-top:clamp(34px,5vw,60px);
+    display:flex; flex-wrap:wrap; gap:12px 30px; align-items:center;
+    font-family:var(--mono); font-size:11.5px; letter-spacing:.06em; color:var(--dim);
+  }
+  .legend span{ display:inline-flex; align-items:center; gap:10px; }
+  .legend .sw{ width:24px; height:9px; border-radius:1px; flex:0 0 auto;
+    box-shadow:0 0 0 1px rgba(255,255,255,.08); }
+
+  /* ══════════════ SECTION (Knockout / Group) ══════════════ */
+  section{ padding-bottom:clamp(30px,4vw,56px); }
+
+  /* the big editorial section marker — replaces the hairline "bar" treatment.
+     Left: an oversized ghost index numeral. Right: the phase name + count.
+     A hairline sits ONLY under the whole marker as a measured baseline. */
+  .phase{
+    display:grid; grid-template-columns:auto 1fr auto; align-items:end; gap:clamp(18px,3vw,40px);
+    margin-top:clamp(72px,9vw,124px); padding-bottom:22px;
+    border-bottom:1px solid var(--fainter);
+  }
+  section:first-of-type .phase{ margin-top:clamp(30px,4vw,44px); }
+  .phase .idx{
+    font-family:var(--mono); font-weight:700; color:var(--faint);
+    font-size:clamp(30px,4.2vw,58px); line-height:.8; letter-spacing:-.02em;
+    font-variant-numeric:tabular-nums; align-self:start;
+  }
+  .phase h2{
+    font-family:var(--grot); font-weight:600; color:var(--ink);
+    font-size:clamp(26px,4.4vw,52px); line-height:1; letter-spacing:-.02em;
+  }
+  .phase .count{
+    font-family:var(--mono); font-size:12.5px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--dim); white-space:nowrap; text-align:right;
+  }
+  .phase .count b{ color:var(--ink); font-weight:700; }
+
+  /* ROUND / GROUP sub-heading — the group LETTER or fraction is itself the marker.
+     No pill, no hairline: a large mono glyph + a small caps label. */
+  .band{
+    display:flex; align-items:baseline; gap:16px;
+    margin:clamp(46px,6vw,80px) 0 clamp(24px,3vw,36px);
+  }
+  section > .grid:first-of-type ~ .band{ }
+  .band .glyph{
+    font-family:var(--mono); font-weight:700; color:var(--accent-2);
+    font-size:clamp(22px,3vw,34px); line-height:1; letter-spacing:.02em;
+    font-variant-numeric:tabular-nums;
+  }
+  .band .lbl{
+    font-family:var(--grot); font-weight:600; font-size:14px; letter-spacing:.22em;
+    text-transform:uppercase; color:var(--ink);
+  }
+  .band .n{
+    font-family:var(--mono); font-size:11.5px; letter-spacing:.08em; color:var(--faint);
+    margin-left:2px;
+  }
+
+  /* ══════════════ GRID + CARDS ══════════════ */
+  .grid{
+    display:grid;
+    /* ROW gap kept enough for a tall peak spilling above a lower card to show (the thumb
+       overflows upward — see .thumb/.thumb-png), but HALVED per owner feedback ("в два раза
+       меньше") so the tiles sit closer vertically. Column gap unchanged. */
+    gap:clamp(48px,5.5vw,79px) clamp(28px,4.5vw,92px);
+    grid-template-columns:repeat(4, minmax(0, 1fr));
+  }
+  /* NO PLATE — cards float «in the air»: no background, border, radius or shadow. */
+  .card{
+    display:block; text-decoration:none; color:inherit;
+    transition:transform .28s cubic-bezier(.2,.7,.2,1);
+    will-change:transform;
+  }
+  .card:hover{ transform:translateY(-6px); }
+
+  /* thumbnail slot — essence PNG's PITCH sits at the card BOTTOM, a tall PEAK spills UPWARD
+     beyond the card's top edge (overflow:visible) into the row gap above. */
+  .thumb{
+    position:relative; width:100%; aspect-ratio:16/8; overflow:visible;
+    background:transparent;
+  }
+  .thumb .thumb-png{
+    position:absolute; left:0; right:0; bottom:0; top:auto; z-index:1;
+    width:100%; height:auto; display:block;
+    transition:transform .28s cubic-bezier(.2,.7,.2,1), filter .28s ease;
+  }
+  .card:hover .thumb-png{
+    transform:translateY(-3px) scale(1.015);
+    filter:drop-shadow(0 20px 34px rgba(94,120,230,.28));
+  }
+  /* a soft floor-glow that grounds the floating essence + warms on hover */
+  .thumb .glow{
+    position:absolute; left:6%; right:6%; bottom:-6px; height:34px; z-index:0;
+    background:radial-gradient(60% 100% at 50% 100%, rgba(150,168,255,.20), transparent 72%);
+    opacity:.55; transition:opacity .28s ease; pointer-events:none; filter:blur(2px);
+  }
+  .card:hover .thumb .glow{ opacity:1; }
+
+  .body{ padding:14px 2px 0; }
+  .row{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .team{ display:inline-flex; align-items:center; gap:10px; min-width:0; }
+  .team.away{ flex-direction:row-reverse; }
+  .flag{ width:26px; height:18px; border-radius:2px; object-fit:cover; display:block; flex:0 0 auto;
+    box-shadow:0 0 0 1px rgba(255,255,255,.14), 0 1px 4px rgba(0,0,0,.5); }
+  .dot{ width:12px; height:12px; border-radius:50%; flex:0 0 auto; box-shadow:0 0 8px currentColor; }
+  .abbr{ font-family:var(--grot); font-weight:600; font-size:15px; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--ink-2); transition:color .2s ease; }
+  .card:hover .abbr{ color:var(--ink); }
+  .nums{ font-family:var(--mono); font-weight:700; font-size:27px; letter-spacing:-.01em;
+    color:var(--ink); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .nums .win{ color:#fff; }
+  .nums .lose{ color:var(--faint); }
+  .nums .dash{ color:var(--faint); margin:0 5px; font-weight:400; }
+
+  #status{
+    font-family:var(--mono); font-size:13px; color:var(--dim); padding:56px 0;
+    letter-spacing:.04em;
+  }
+
+  /* ══════════════ FOOTER ══════════════ */
+  .footstrip{
+    max-width:1340px; margin:clamp(40px,6vw,80px) auto 0;
+    display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px;
+    border-top:1px solid var(--fainter); padding:26px clamp(20px,4.4vw,60px) 48px;
+    font-family:var(--grot); font-size:13px; color:var(--dim);
+  }
+  .footstrip .f-name{ color:var(--ink); font-weight:500; }
+  .footstrip .f-dot{ color:var(--faint); }
+  .footstrip .f-social{ display:inline-flex; align-items:center; gap:5px; color:var(--dim); text-decoration:none; }
+  .footstrip .f-social:hover{ color:var(--ink); }
+  .footstrip .f-social svg{ width:13px; height:13px; fill:currentColor; opacity:.85; }
+  .footstrip .f-sources{ margin-left:auto; font-family:var(--mono); font-size:11px;
+    letter-spacing:.02em; color:var(--faint); }
+  .footstrip .f-sources b{ color:var(--dim); font-weight:700; }
+  .footstrip a.f-site{ color:var(--dim); text-decoration:none; }
+  .footstrip a.f-site:hover{ color:var(--ink); }
+
+  /* ══════════════ MOTION — restrained load reveal ══════════════ */
+  .reveal{ opacity:0; transform:translateY(16px); }
+  .reveal.in{ opacity:1; transform:none;
+    transition:opacity .6s ease, transform .6s cubic-bezier(.2,.7,.2,1); }
+
+  /* ══════════════ RESPONSIVE ══════════════ */
+  @media (max-width:1000px){
+    .grid{ grid-template-columns:repeat(2, minmax(0,1fr)); gap:clamp(36px,6vw,55px) 56px; }
+    .hero-grid{ grid-template-columns:1fr; align-items:start; gap:34px; }
+    .hero-meta{ justify-self:start; text-align:left; align-items:flex-start; flex-direction:row;
+      flex-wrap:wrap; gap:28px 44px; }
+    .hero-meta .stat{ align-items:flex-start; }
+    .phase{ grid-template-columns:auto 1fr; }
+    .phase .count{ grid-column:2; text-align:left; margin-top:6px; }
+  }
+  @media (max-width:560px){
+    .footstrip .f-sources{ margin-left:0; width:100%; margin-top:6px; }
+    /* keep TWO per row on mobile with breathing room. */
+    .grid{ grid-template-columns:repeat(2, minmax(0,1fr)); gap:33px 40px; }
+    .band{ margin:44px 0 24px; }
+    .row{ gap:6px; }
+    .team{ gap:6px; }
+    .flag{ width:19px; height:13px; }
+    .abbr{ font-size:11px; letter-spacing:.03em; }
+    .nums{ font-size:18px; }
+    .nums .dash{ margin:0 2px; }
+    .hero-meta{ gap:22px 36px; }
+    /* present on a phone too, but a notch quieter than desktop for text contrast */
+    .hero-bg canvas{ opacity:.6; }
+  }
+
+  @media (prefers-reduced-motion:reduce){
+    html{ scroll-behavior:auto; }
+    .card, .card:hover, .thumb-png, .card:hover .thumb-png, .about-link, .about-link svg{
+      transition:none !important; transform:none !important; }
+    .reveal{ opacity:1 !important; transform:none !important; transition:none !important; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hd">
+      <div class="hero-bg" aria-hidden="true"><canvas id="hero-canvas"></canvas></div>
+      <div class="hero-scrim" aria-hidden="true"></div>
+      <div class="edition"><span class="tick"></span><span class="edition-label">FIFA World Cup 2026</span>
+        <a class="ig-link" href="https://www.instagram.com/wc26.dataportraits/" target="_blank" rel="noopener noreferrer" aria-label="Instagram: wc26.dataportraits">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="2.5" width="19" height="19" rx="5.2"/><circle cx="12" cy="12" r="4.2"/><circle cx="17.6" cy="6.4" r="1.15" fill="currentColor" stroke="none"/></svg>
+          <span>wc26.dataportraits</span>
+        </a>
+      </div>
+      <h1 class="title"><span class="l1">Football Data</span><span class="l2" id="titlePortraits"><span class="ch">P</span><span class="ch">o</span><span class="ch">r</span><span class="ch">t</span><span class="ch">r</span><span class="ch">a</span><span class="ch">i</span><span class="ch">t</span><span class="ch">s</span></span></h1>
+
+      <div class="hero-grid">
+        <p class="lede">
+          <b>It's an impression, but one built entirely from data.</b> Nothing is staged:
+          each match is reconstructed from <span class="co">roughly 1,500 recorded events</span>
+          — every touch, pass, shot and card.
+        </p>
+        <div class="hero-meta">
+          <div class="stat"><span class="n" id="count">—</span><span class="k">Matches</span></div>
+          <a class="about-link" href="/about.html">
+            <span>About the project</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <main id="gallery"></main>
+    <div id="status">Loading matches…</div>
+  </div>
+
+  <footer class="footstrip">
+    <span class="f-name">Alexander Bogachev</span>
+    <span class="f-dot">•</span>
+    <a class="f-social" href="https://x.com/bogachev_al" target="_blank" rel="noopener"><svg viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>bogachev_al</a>
+    <span class="f-dot">•</span>
+    <a class="f-social" href="https://www.linkedin.com/in/bogachev-aleksandr" target="_blank" rel="noopener"><svg viewBox="0 0 24 24"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>in/bogachev-aleksandr</a>
+    <span class="f-sources">
+      <a class="f-site" href="https://wc26.bogachev.fr" target="_blank" rel="noopener">wc26.bogachev.fr</a>
+      &nbsp;·&nbsp; <b>Data:</b> FotMob · WhoScored (Opta)
+    </span>
+  </footer>
+
+<script>
+// ══════════════════════════════════════════════════════════════════════════════
+// HERO BACKGROUND — a generative "tournament quilt": a woven blanket of MANY colours,
+// every one of them REAL. One patch per real 2026 World Cup match, sewn side by side
+// into a wide cloth. Each patch is dyed with the two teams' REAL kit colours
+// (matches.json → home.colorHex / away.colorHex, the same source the gallery uses),
+// and lifted into RELIEF by that match's REAL numbers: how many shots + goals it
+// produced. Nothing here is decorative noise — the colours and the peaks are data.
+// On top of the data-carved relief runs a slow cloth undulation so the blanket
+// "breathes" like fabric. Fully self-contained + guarded: if THREE or the data
+// miss, this IIFE bails silently and the gallery is untouched.
+// ══════════════════════════════════════════════════════════════════════════════
+(function heroBlanket(){
+  if (!window.THREE) return;                       // CDN miss → skip silently
+  const host = document.querySelector('.hero-bg');
+  const canvas = document.getElementById('hero-canvas');
+  if (!host || !canvas) return;
+
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const isPhone = window.innerWidth <= 560;
+
+  // ── GPU GATE — skip the decorative WebGL hero on software / very-weak GPUs ──────────────
+  // On a SOFTWARE rasteriser (Microsoft Basic Render Driver / SwiftShader / llvmpipe) any WebGL
+  // is CPU-rasterised and this animated quilt (per-frame computeVertexNormals + PBR + PMREM) costs
+  // the whole gallery its frames while scrolling. We classify the real GPU with the SAME
+  // renderer-string logic the stage uses (stage13.js classifyGPU/probeGPURenderer) so the two
+  // agree, and on software (always) or a weak integrated GPU with very little RAM we DROP the
+  // WebGL hero entirely — a cheap static CSS gradient (.hero-bg--static) stands in, no rAF loop.
+  // Strong/normal desktops keep the full animated blanket, unchanged.
+  function probeGPURenderer(){
+    try{
+      const c = document.createElement('canvas');
+      const gl = c.getContext('webgl2') || c.getContext('webgl') || c.getContext('experimental-webgl');
+      if (!gl) return '';
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      const s = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : (gl.getParameter(gl.RENDERER) || '');
+      const lose = gl.getExtension('WEBGL_lose_context'); if (lose){ try{ lose.loseContext(); }catch{} }
+      return s || '';
+    }catch{ return ''; }
+  }
+  function classifyGPU(str){
+    const s = String(str || '').toLowerCase();
+    if (/swiftshader|llvmpipe|microsoft basic|basic render|\bwarp\b|software|softpipe/.test(s)) return 'software';
+    if (/geforce|\brtx\b|\bgtx\b|quadro|nvidia|tesla|radeon rx|\brx ?\d{3,}|\bvega ?(56|64|frontier)|apple m\d|arc a\d|instinct/.test(s)) return 'strong';
+    if (/intel|uhd|iris|hd graphics|apple|mali|adreno|powervr|vega|radeon|microsoft|parallel|virgl|vmware/.test(s)) return 'weak';
+    return 'unknown';
+  }
+  // ?hero=on|img|off lets the verify harness exercise every path:
+  //   on  → force the live WebGL hero · img → force the static IMAGE · off → force the CSS gradient.
+  let heroForce = '';
+  try { heroForce = (new URLSearchParams(location.search).get('hero') || '').toLowerCase(); } catch {}
+  const gpuClass = classifyGPU(probeGPURenderer());
+  let lowMem = false; try { const dm = navigator.deviceMemory; lowMem = (typeof dm === 'number' && dm <= 3); } catch {}
+  // AUTO fallback trigger — a software rasteriser (always) or a weak integrated GPU with very
+  // little RAM. On these the live WebGL quilt is too expensive (owner's laptop = "Microsoft Basic
+  // Render Driver"), so we serve a STATIC IMAGE of the real hero instead — the owner LOVED the real
+  // quilt, and a ~63KB screenshot keeps that look with zero WebGL cost. (Gradient kept as ?hero=off.)
+  const weakGPU = gpuClass === 'software' || (gpuClass === 'weak' && lowMem);
+  const wantImg = heroForce === 'img' || (heroForce !== 'on' && heroForce !== 'off' && weakGPU);
+  const wantGradient = heroForce === 'off';
+  if (wantImg || wantGradient){
+    host.classList.add(wantImg ? 'hero-bg--img' : 'hero-bg--static');
+    try { console.info(`[hero-bg] ${wantImg ? 'static-image' : 'gradient'} fallback (gpu=${gpuClass}${lowMem ? ' lowMem' : ''}) — decorative WebGL hero disabled`); } catch {}
+    return;
+  }
+
+  // ---- gentle value-noise (only for the cloth BREATHING motion, never for structure) ----
+  function hash(x, y){
+    const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  }
+  function vnoise(x, y){
+    const xi = Math.floor(x), yi = Math.floor(y);
+    const xf = x - xi, yf = y - yi;
+    const u = xf*xf*(3-2*xf), v = yf*yf*(3-2*yf);
+    const a = hash(xi,yi), b = hash(xi+1,yi), c = hash(xi,yi+1), d = hash(xi+1,yi+1);
+    return (a*(1-u)+b*u)*(1-v) + (c*(1-u)+d*u)*v;
+  }
+
+  // #rrggbb → linear-ish sRGB triple (three handles the colour-space when we set it)
+  function hexRGB(hex){
+    const h = (hex || '#6f8cff').replace('#','');
+    return [ parseInt(h.slice(0,2),16)/255, parseInt(h.slice(2,4),16)/255, parseInt(h.slice(4,6),16)/255 ];
+  }
+
+  // Build the quilt once we have the real matches. Falls back to nothing on failure.
+  fetch('/matches.json', { cache:'no-cache' })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('matches ' + r.status)))
+    .then(matches => build(matches))
+    .catch(err => console.warn('[hero-bg] skipped:', err));
+
+  function build(matches){
+   try{
+    const THREE = window.THREE;
+    if (!Array.isArray(matches) || !matches.length) return;
+
+    // ---- lay the matches out as a rectangular patchwork, wider than tall (a blanket) ----
+    // Order by group→knockout then date so neighbouring patches feel intentional, not random.
+    const data = matches.slice().sort((a,b) =>
+      String(a.date||'').localeCompare(String(b.date||'')) || String(a.id).localeCompare(String(b.id)));
+    const N = data.length;                            // 94 real matches
+    const COLS = Math.ceil(Math.sqrt(N * 2.0));       // ~14 wide → blanket proportion
+    const ROWS = Math.ceil(N / COLS);                 // ~7 tall
+
+    // real-data → height. shotCount (≈11–41) is the dominant relief; goals add lift.
+    // MORE DYNAMIC than before: the mapping is amplified and CENTRED so busy matches rise
+    // noticeably HIGHER and quiet ones dip BELOW the mean — "где-то поднялось, где-то просело".
+    // Still 100% real data (real shots + real goals), just a steeper, contrastier mapping —
+    // no decorative noise is used for structure.
+    const shots = data.map(m => +m.shotCount || 0);
+    const sMin = Math.min(...shots), sMax = Math.max(...shots) || 1;
+    function patchHeight(m){
+      let s  = ((+m.shotCount || 0) - sMin) / (sMax - sMin || 1);      // 0..1 by real shots
+      s = Math.pow(s, 0.78);                                            // gentle gamma → widen the spread
+      const g  = (m.home?.score || 0) + (m.away?.score || 0);          // real total goals
+      // centre on the mid so ~half the patches sit ABOVE the plane and ~half BELOW it,
+      // then scale up hard for a blanket with real hills and real dips.
+      return (s - 0.42) * 3.6 + Math.min(g, 8) * 0.30;                 // shots = tall relief, goals = sharp lift
+    }
+    // per-match target height, indexed like the grid, so we can soften the seams below
+    const cellH = data.map(patchHeight);
+
+    // ---- geometry: each match patch = a small grid of quads so it undulates smoothly and
+    // the two team colours meet along a soft diagonal seam inside the patch. ----
+    const PSEG = isPhone ? 3 : 4;                     // sub-divisions per patch (per axis)
+    const gx = COLS * PSEG, gz = ROWS * PSEG;         // total plane segments
+    // world is OVERSIZED vs. the framed view so the quilt always bleeds past every
+    // screen edge — the edge mask then fades an already-full field, never a hard cut.
+    const WORLD_X = COLS * 1.9, WORLD_Z = ROWS * 1.9;
+    const geo = new THREE.PlaneGeometry(WORLD_X, WORLD_Z, gx, gz);
+    geo.rotateX(-Math.PI / 2);                        // lie flat in XZ
+    const pos = geo.attributes.position;
+    const vCount = pos.count;
+    const vx = gx + 1, vz = gz + 1;                   // vertices per row/col
+
+    const base = new Float32Array(vCount * 2);        // cached planar x,z
+    const baseY = new Float32Array(vCount);           // REAL data height per vertex
+    const colors = new Float32Array(vCount * 3);      // per-vertex REAL team colour
+
+    const teamsSeen = new Set();
+
+    for (let j = 0; j < vz; j++){
+      for (let i = 0; i < vx; i++){
+        const idx = j * vx + i;
+        base[idx*2]   = pos.getX(idx);
+        base[idx*2+1] = pos.getZ(idx);
+
+        // which match patch this vertex belongs to (clamp last row/col to its cell)
+        const ci = Math.min(COLS - 1, Math.floor(i / PSEG));
+        const rj = Math.min(ROWS - 1, Math.floor(j / PSEG));
+        const mIdx = rj * COLS + ci;
+        const m = data[mIdx % N];                     // wrap the short tail so no bald patch
+
+        // fractional position INSIDE the patch (0..1) → diagonal seam between the two colours
+        const fi = (i - ci * PSEG) / PSEG;
+        const fj = (j - rj * PSEG) / PSEG;
+        const homeSide = (fi + fj) < 1.0;             // home colour on one diagonal half, away on the other
+        const c = hexRGB(homeSide ? m.home?.colorHex : m.away?.colorHex);
+        colors[idx*3]   = c[0];
+        colors[idx*3+1] = c[1];
+        colors[idx*3+2] = c[2];
+        if (m.home?.abbr) teamsSeen.add(m.home.abbr);
+        if (m.away?.abbr) teamsSeen.add(m.away.abbr);
+
+        // HEIGHT — bilinearly blend the four surrounding matches' REAL heights so the
+        // relief flows like woven cloth across seams instead of standing in hard towers.
+        // Each patch still peaks at its own match's value; the transitions just soften.
+        const cellFn = (cc, rr) => cellH[(Math.max(0,Math.min(ROWS-1,rr))*COLS + Math.max(0,Math.min(COLS-1,cc))) % N];
+        const ax = fi - 0.5, az = fj - 0.5;                       // -0.5..0.5 offset from patch centre
+        const ni = ax < 0 ? ci - 1 : ci + 1, nj = az < 0 ? rj - 1 : rj + 1;
+        const wx = Math.abs(ax), wz = Math.abs(az);              // blend weight toward the neighbour
+        const h00 = cellFn(ci, rj), h10 = cellFn(ni, rj), h01 = cellFn(ci, nj), h11 = cellFn(ni, nj);
+        baseY[idx] = h00*(1-wx)*(1-wz) + h10*wx*(1-wz) + h01*(1-wx)*wz + h11*wx*wz;
+      }
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha:true, antialias:true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isPhone ? 1.5 : 1.75));
+    if (THREE.ACESFilmicToneMapping){ renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.06; }
+    if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const scene = new THREE.Scene();
+
+    // camera — angled down onto the cloth for the isometric blanket read. Pulled in
+    // close & low so the oversized quilt fills the frame and runs off every edge.
+    const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 200);
+    camera.position.set(0, 12.5, 13.5);
+    camera.lookAt(0, -0.2, 0);
+
+    // ---- material: vertex-coloured cloth, premium PBR (echoes stage13's studio look) ----
+    const mat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.62, metalness: 0.10,
+      flatShading: true, side: THREE.DoubleSide,
+    });
+    // EMISSIVE FLOOR — inject each vertex's OWN team colour as a faint self-glow so a deep,
+    // fully self-shadowed valley never crushes to pure black: it keeps its real hue, just dim.
+    // Driven per-vertex from the same `color` attribute, so the floor is always the real colour.
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uEmitFloor = { value: 0.30 };   // colour-tinted self-glow in shadow
+      shader.uniforms.uEmitBase  = { value: 0.055 };  // tiny NEUTRAL lift so even near-black
+                                                        // team colours (GHA/NZE/GER) never hit 0
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\n uniform float uEmitFloor;\n uniform float uEmitBase;')
+        // vColor carries the real per-vertex team colour; add it as low-level emission,
+        // plus a small neutral base so the darkest teams still read as colour, not a void.
+        .replace('#include <emissivemap_fragment>',
+                 '#include <emissivemap_fragment>\n totalEmissiveRadiance += vColor.rgb * uEmitFloor + vec3(uEmitBase);');
+    };
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.rotation.y = -0.16;                          // slight yaw for the angled blanket
+    scene.add(mesh);
+
+    // ---- soft studio environment so the saturated colours read rich, not flat/garish ----
+    let pmremTex = null;
+    try{
+      if (THREE.PMREMGenerator && THREE.RoomEnvironment){
+        const pmrem = new THREE.PMREMGenerator(renderer);
+        pmremTex = pmrem.fromScene(new THREE.RoomEnvironment(), 0.04).texture;
+        scene.environment = pmremTex;
+      }
+    }catch(_){ /* no addons → lit purely by the lights below, still fine */ }
+
+    // lights — a warm-white key + cool periwinkle fill + soft sky/ground hemisphere.
+    // The hemisphere GROUND colour is lifted well off black and its intensity raised, plus a
+    // low ambient, so shadowed valley facets keep a lit floor (their real colour stays visible).
+    const key = new THREE.DirectionalLight(0xffffff, 2.25);
+    key.position.set(-7, 12, 7); scene.add(key);
+    const fill = new THREE.DirectionalLight(0x9fc0ff, 0.7);
+    fill.position.set(8, 6, -7); scene.add(fill);
+    scene.add(new THREE.HemisphereLight(0xbcc4ff, 0x5a5286, 0.66));   // ground lifted off near-black
+    scene.add(new THREE.AmbientLight(0x9aa0d0, 0.44));                // even floor so no facet reads pure black
+
+    // ---- displacement = REAL data height + a VISIBLE, slow cloth "breathing" wave ----
+    // baseY (real shots+goals) is the fixed structure; the noise term is a broad travelling
+    // undulation. Amplitude + speed raised so you can clearly SEE the blanket living — big
+    // areas lift and drop over ~seconds — while the low spatial frequency keeps it a smooth,
+    // premium swell (cloth breathing), never jittery. Structure is still all real data.
+    const BREATHE = reduceMotion ? 0 : (isPhone ? 0.62 : 0.9);
+    function displace(t){
+      for (let i = 0; i < vCount; i++){
+        const x = base[i*2], z = base[i*2+1];
+        // two broad, low-frequency swells drifting in opposite directions → a clearly
+        // travelling wave that raises one region while another settles.
+        let wave = BREATHE * (
+            (vnoise(x*0.13 + t*0.14, z*0.13 - t*0.10) - 0.5)
+          + (vnoise(x*0.065 - t*0.075, z*0.085 + t*0.09) - 0.5) * 0.65);
+        // ease the DEEPEST dips a touch so valleys don't carve steep pits that self-shadow hard
+        if (wave < 0) wave *= 0.78;
+        pos.setY(i, baseY[i] + wave);
+      }
+      pos.needsUpdate = true;
+      geo.computeVertexNormals();
+    }
+
+    function size(){
+      const w = host.clientWidth, h = host.clientHeight;
+      if (!w || !h) return;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      // reframe: widen the FOV on narrow/tall viewports so the quilt still bleeds
+      // past both side edges (it's intentionally oversized; edges run off-screen).
+      camera.fov = w / h > 1.7 ? 34 : (w / h > 1.1 ? 40 : 52);
+      camera.updateProjectionMatrix();
+    }
+    size();
+
+    // ---- politeness: pause off-screen / hidden tab; single static frame if reduced-motion ----
+    let running = false, raf = 0, visible = true, onScreen = true;
+    const t0 = performance.now();
+
+    function frame(now){
+      if (!running) return;
+      displace((now - t0) / 1000);
+      renderer.render(scene, camera);
+      raf = requestAnimationFrame(frame);
+    }
+    function play(){
+      if (running || reduceMotion) return;
+      if (!visible || !onScreen) return;
+      running = true; raf = requestAnimationFrame(frame);
+    }
+    function stop(){ running = false; if (raf) cancelAnimationFrame(raf); raf = 0; }
+
+    if (reduceMotion){ displace(0); renderer.render(scene, camera); }
+    else { play(); }
+
+    if ('IntersectionObserver' in window){
+      new IntersectionObserver((entries) => {
+        onScreen = entries[0].isIntersecting;
+        onScreen ? play() : stop();
+      }, { threshold: 0 }).observe(host);
+    }
+    document.addEventListener('visibilitychange', () => {
+      visible = !document.hidden;
+      visible ? play() : stop();
+    });
+
+    let rz = 0;
+    window.addEventListener('resize', () => {
+      if (rz) return;
+      rz = requestAnimationFrame(() => {
+        rz = 0; size();
+        if (reduceMotion || !running) renderer.render(scene, camera);
+      });
+    });
+
+    window.addEventListener('pagehide', () => {
+      stop(); geo.dispose(); mat.dispose();
+      if (pmremTex) pmremTex.dispose();
+      renderer.dispose();
+    }, { once:true });
+
+    console.info(`[hero-bg] tournament quilt: ${N} real matches, ${teamsSeen.size} teams' colours woven`);
+   }catch(err){
+     console.warn('[hero-bg] skipped:', err);
+   }
+  }
+})();
+
+// ══════════════════════════════════════════════════════════════════════════════
+// COLOURFUL TITLE — dye the letters of "Portraits" with REAL 2026 team colours,
+// pulled from the SAME source that dyes the quilt (matches.json → team.colorHex), so
+// the title literally echoes the tournament palette. This is decoupled from WebGL: it
+// works even if THREE never loads. We hand-pick a CURATED, cohesive warm→cool ribbon
+// of real team colours (magenta → coral → orange → gold → green → teal → cyan → blue)
+// rather than random hues, so it reads premium, not like a ransom note.
+// ══════════════════════════════════════════════════════════════════════════════
+(function colourTitle(){
+  const wrap = document.getElementById('titlePortraits');
+  if (!wrap) return;
+  const chars = wrap.querySelectorAll('.ch');
+  if (!chars.length) return;
+
+  // CURATED ORDER — team abbrs whose REAL kit colours form a cohesive vivid spectrum.
+  // Colours themselves come from the data (below); this list is only the sequence/selection,
+  // chosen so adjacent letters flow in hue and none are muddy/near-black.
+  // P  o  r  t  r  a  i  t  s   — warm→cool, every adjacent letter a distinct real hue,
+  // finishing on a clean light→deep BLUE ombré (ARG→HAI→CVE) as a premium tail.
+  const PICK = ['JOR','NET','SPA','SEN','IRA','URU','ARG','HAI','CVE'];   // 9 real teams
+
+  // slightly lift a hex toward luminous so a saturated fill still pops on the dark-ish scrim
+  function lift(hex){
+    const h = (hex||'#8fa0ff').replace('#','');
+    let r = parseInt(h.slice(0,2),16), g = parseInt(h.slice(2,4),16), b = parseInt(h.slice(4,6),16);
+    const mix = (c) => Math.round(c + (255 - c) * 0.20);   // 20% toward white → vivid, readable
+    return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
+  }
+
+  fetch('/matches.json', { cache:'no-cache' })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('matches ' + r.status)))
+    .then(matches => {
+      // build abbr → real colourHex from the SAME data the quilt uses
+      const colour = {};
+      for (const m of matches){
+        if (m.home?.abbr) colour[m.home.abbr] = m.home.colorHex;
+        if (m.away?.abbr) colour[m.away.abbr] = m.away.colorHex;
+      }
+      let used = 0;
+      chars.forEach((el, i) => {
+        const abbr = PICK[i % PICK.length];
+        const hex = colour[abbr];
+        if (hex){ el.style.color = lift(hex); used++; }
+      });
+      console.info(`[title] "Portraits" dyed with ${used} real team colours`);
+    })
+    .catch(err => console.warn('[title] colour skipped:', err));
+})();
+</script>
+
+<script>
+// team abbr → ISO flag code (flagcdn). Mapped by COUNTRY, not by guessing the
+// abbr (AUS=Austria, BAN=Bosnia, IRA=Iraq, TUR=Türkiye, ICO=Côte d'Ivoire, DCO=DR Congo).
+const FLAG = {
+  MEX:'mx', SAF:'za', SKO:'kr', CZE:'cz', CAN:'ca', BAN:'ba', QAT:'qa',
+  SWI:'ch', BRA:'br', MOR:'ma', USA:'us', PAR:'py', HAI:'ht', SCO:'gb-sct',
+  GER:'de', CUR:'cw', NET:'nl', JAP:'jp', AUS:'at', TUR:'tr', ICO:'ci',
+  ECU:'ec', BEL:'be', EGY:'eg', SPA:'es', CVE:'cv', SAR:'sa', URU:'uy',
+  SWE:'se', TUN:'tn', IRA:'iq', NZE:'nz', FRA:'fr', SEN:'sn', NOR:'no',
+  JOR:'jo', ARG:'ar', ALG:'dz', ENG:'gb-eng', CRO:'hr', POR:'pt',
+  DCO:'cd', UZB:'uz', COL:'co', GHA:'gh', PAN:'pa',
+};
+// Some abbreviations collide across teams (AUS is used for BOTH Australia and
+// Austria in the source data). Resolve by NAME first when known so the two never
+// share a flag: Australia → au, Austria → at.
+const FLAG_BY_NAME = { australia:'au', austria:'at' };
+// Escape any feed-derived string before it enters innerHTML. Team abbr/name/colour
+// come from matches.json (built from external FotMob/WhoScored/Wikidata feeds), so
+// treat them as untrusted: neutralise &, <, >, " so they cannot break out of an
+// attribute/tag and inject markup (defence-in-depth stored-XSS guard).
+const escH = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+// A CSS colour token is only ever a hex string here; strip anything that is not a safe
+// colour char so it can never terminate the style attribute or add another declaration.
+const escColor = (c) => String(c).replace(/[^#0-9a-zA-Z(),.%\s-]/g,'');
+function flagEl(abbr, color, name){
+  const byName = name ? FLAG_BY_NAME[String(name).trim().toLowerCase()] : null;
+  const code = byName || FLAG[abbr];
+  const col = escColor(color);
+  if (!code) return `<span class="dot" style="color:${col};background:${col}"></span>`;
+  // LOCAL bundled flag raster (public/flags/<code>.png, flagcdn w320 ~0.2–5KB) — same-origin,
+  // cached with the site, no external CDN round-trips (was https://flagcdn.com/<code>.svg).
+  const a = escH(abbr);
+  return `<img class="flag" loading="lazy" decoding="async" alt="${a}" title="${a}" src="/flags/${encodeURIComponent(code)}.png">`;
+}
+
+// THUMBNAIL — the pre-rendered ESSENCE mini-portrait (public/thumbs/{id}.webp), a transparent
+// 3D-isometric distillation of the match. Anchored to card BOTTOM; a tall peak overflows upward.
+// Ships as WebP (~85% smaller than the PNG source) with a one-shot PNG fallback for browsers
+// without WebP support — mirrors the scorer-card photo idiom in stage13.js. If the PNG also
+// 404s, its onerror removes it — the card degrades gracefully (empty slot). onerror is
+// re-pointed then cleared before the retry so a broken image can never loop.
+function thumbImg(m){
+  const id = encodeURIComponent(String(m.id));
+  return `<img class="thumb-png" loading="lazy" alt="" src="/thumbs/${id}.webp"
+    onerror="this.onerror=function(){this.onerror=null;this.remove();};this.src='/thumbs/${id}.png';">`;
+}
+
+function card(m){
+  const a = document.createElement('a');
+  a.className = 'card reveal';
+  // CLEAN shareable URL /m/<slug> (real static page per match). Fall back to the
+  // classic ?id= link only if a match somehow lacks a slug, so nothing breaks.
+  a.href = m.slug ? `/m/${m.slug}` : `/stage13.html?id=${encodeURIComponent(m.id)}`;
+
+  const hc = escColor(m.home.colorHex || '#387ef0');
+  const ac = escColor(m.away.colorHex || '#e5333a');
+  const hs = m.home.score, as = m.away.score;
+  const hCls = hs > as ? 'win' : (hs < as ? 'lose' : '');
+  const aCls = as > hs ? 'win' : (as < hs ? 'lose' : '');
+
+  a.innerHTML = `
+    <div class="thumb">
+      <div class="glow"></div>
+      ${thumbImg(m)}
+    </div>
+    <div class="body">
+      <div class="row">
+        <span class="team home">${flagEl(m.home.abbr, hc, m.home.name)}<span class="abbr">${escH(m.home.abbr)}</span></span>
+        <span class="nums"><span class="${hCls}">${escH(hs)}</span><span class="dash">–</span><span class="${aCls}">${escH(as)}</span></span>
+        <span class="team away">${flagEl(m.away.abbr, ac, m.away.name)}<span class="abbr">${escH(m.away.abbr)}</span></span>
+      </div>
+    </div>
+  `;
+  return a;
+}
+
+// familiar fraction labels for the knockout rounds (user preference: 1/16, 1/8, …)
+const STAGE_LABEL = {
+  'Round of 32': '1/16', 'Round of 16': '1/8',
+  'Quarter-finals': '1/4', 'Quarter-final': '1/4',
+  'Semi-finals': '1/2', 'Semi-final': '1/2', 'Final': 'Final',
+  'Third place': '3rd',
+};
+const stageLabel = (s) => STAGE_LABEL[s] || s;
+
+// big editorial PHASE marker (Knockout / Group). idx = roman-ish index numeral.
+function phaseHead(idx, title, countN){
+  const h = document.createElement('div');
+  h.className = 'phase reveal';
+  h.innerHTML =
+    `<span class="idx">${escH(idx)}</span>` +
+    `<h2>${escH(title)}</h2>` +
+    `<span class="count"><b>${escH(countN)}</b> ${countN===1?'match':'matches'}</span>`;
+  return h;
+}
+// sub-BAND marker (round fraction or group letter as the glyph — no pill, no hairline).
+function bandHead(glyph, label, countN){
+  const b = document.createElement('div');
+  b.className = 'band reveal';
+  // omit the small-caps label when it just repeats the glyph (e.g. Final: glyph "Final" == label "Final")
+  const dupLabel = String(label).trim().toLowerCase() === String(glyph).trim().toLowerCase();
+  b.innerHTML =
+    `<span class="glyph">${escH(glyph)}</span>` +
+    (dupLabel ? '' : `<span class="lbl">${escH(label)}</span>`) +
+    `<span class="n">${escH(countN)} ${countN===1?'match':'matches'}</span>`;
+  return b;
+}
+
+async function main(){
+  const gallery = document.getElementById('gallery');
+  const statusEl = document.getElementById('status');
+  const countEl = document.getElementById('count');
+  try{
+    const res = await fetch('/matches.json', { cache:'no-store' });
+    if(!res.ok) throw new Error(`matches.json ${res.status}`);
+    const matches = await res.json();
+
+    const ko = matches.filter(m => m.round && m.round !== 'group');
+    const grp = matches.filter(m => !m.round || m.round === 'group');
+
+    let rendered = 0;
+    let phaseNo = 0;
+
+    if (ko.length){
+      const sec = document.createElement('section');
+      phaseNo++;
+      sec.appendChild(phaseHead(String(phaseNo).padStart(2,'0'), 'Knockout', ko.length));
+
+      // ---- Bucket by the TRUE stage (`stage` / `stageRank`), most-advanced first.
+      // A knockout match with null stage falls into a "Knockout" bucket rendered last.
+      const buckets = new Map();
+      for (const m of ko){
+        const hasStage = m.stage != null && m.stageRank != null;
+        const key = hasStage ? m.stageRank : 'na';
+        if (!buckets.has(key)){
+          buckets.set(key, { rank: hasStage ? m.stageRank : Infinity,
+            stageName: hasStage ? m.stage : 'Knockout',
+            glyph: hasStage ? stageLabel(m.stage) : '—', list: [] });
+        }
+        buckets.get(key).list.push(m);
+      }
+      const ordered = [...buckets.values()].sort((a,b) => a.rank - b.rank);
+      for (const b of ordered){
+        b.list.sort((x,y) => y.date.localeCompare(x.date) || String(y.id).localeCompare(String(x.id)));
+        sec.appendChild(bandHead(b.glyph, b.stageName, b.list.length));
+        const g = document.createElement('div'); g.className = 'grid';
+        for (const m of b.list){ g.appendChild(card(m)); rendered++; }
+        sec.appendChild(g);
+      }
+      gallery.appendChild(sec);
+    }
+
+    if (grp.length){
+      // ---- GROUP STAGE: bucket by real group letter (A..L), A→L order. Any match still
+      // lacking a group letter lands in a "—" bucket rendered last and is logged.
+      const sec = document.createElement('section');
+      phaseNo++;
+      sec.appendChild(phaseHead(String(phaseNo).padStart(2,'0'), 'Group Stage', grp.length));
+
+      const byGroup = new Map();
+      for (const m of grp){
+        const g = (m.group && /^[A-L]$/.test(m.group)) ? m.group : '—';
+        if (!byGroup.has(g)) byGroup.set(g, []);
+        byGroup.get(g).push(m);
+      }
+      const unmapped = byGroup.get('—') || [];
+      if (unmapped.length){
+        console.warn(`[gallery] ${unmapped.length} group-stage match(es) without a group letter (mapping miss):`,
+          unmapped.map(m => `${m.id} ${m.home?.name} vs ${m.away?.name}`));
+      }
+      const letters = [...byGroup.keys()].filter(k => k !== '—').sort();
+      const order = unmapped.length ? [...letters, '—'] : letters;
+
+      for (const letter of order){
+        const list = byGroup.get(letter);
+        list.sort((a,b) => a.date.localeCompare(b.date) || String(a.id).localeCompare(String(b.id)));
+        const label = letter === '—' ? 'Unassigned' : `Group ${letter}`;
+        sec.appendChild(bandHead(letter, label, list.length));
+        const g = document.createElement('div'); g.className='grid';
+        for (const m of list){ g.appendChild(card(m)); rendered++; }
+        sec.appendChild(g);
+      }
+      gallery.appendChild(sec);
+    }
+
+    statusEl.style.display = 'none';
+    if (countEl) countEl.textContent = String(rendered);
+
+    // ---- restrained scroll reveal (respects prefers-reduced-motion via the .reveal CSS) ----
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduce || !('IntersectionObserver' in window)){
+      document.querySelectorAll('.reveal').forEach(el => el.classList.add('in'));
+    } else {
+      const io = new IntersectionObserver((entries, obs) => {
+        for (const e of entries){
+          if (e.isIntersecting){ e.target.classList.add('in'); obs.unobserve(e.target); }
+        }
+      }, { rootMargin:'0px 0px -8% 0px', threshold:.06 });
+      document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+    }
+  }catch(e){
+    statusEl.textContent = `Failed to load matches: ${e.message}`;
+    console.error(e);
+  }
+}
+main();
+</script>
+</body>
+</html>
